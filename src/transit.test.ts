@@ -505,14 +505,26 @@ test('planner.js: resolveLiveOrStaticLegWindow uses live API ETAs on downstream 
   assert.equal(leg2Fallback.signalType, 'HEADWAY_PROJ');
 });
 
-test('GitHub Actions workflow /.github/workflows/actions.yml and Cloudflare worker.js pass deployment hygiene checks', () => {
+test('GitHub Actions workflows (.github/workflows/actions.yml, version.yml), .npmrc, package.json, and worker.js pass deployment hygiene checks', () => {
   const yml = fs.readFileSync('.github/workflows/actions.yml', 'utf8');
   const lines = yml.split('\n');
   assert.ok(yml.includes('name: Weekly Bus, MTR & Ferry Index Update'));
   assert.ok(yml.includes('update-index:'));
-  assert.ok(yml.includes('bus_index.min.json'));
+  assert.ok(yml.includes('public/bus_index.min.json'), 'actions.yml must read/write public/bus_index.min.json');
+  assert.ok(yml.includes('public/version.json'), 'actions.yml must update public/version.json');
   assert.equal(yml.includes('\t'), false, 'actions.yml must not contain tab characters');
-  assert.equal(lines[11], "      - 'icon.png'", 'Line 12 of actions.yml must be cleanly indented valid YAML');
+  for (const ignoredPath of [
+    "'public/bus_index.min.json'",
+    "'public/version.json'",
+    "'public/planner.js'",
+    "'public/hardcode.js'",
+    "'public/map.js'",
+    "'public/icon.png'",
+    "'public/_headers'",
+    "'.github/workflows/version.yml'",
+  ]) {
+    assert.ok(yml.includes(`      - ${ignoredPath}`), `actions.yml paths-ignore must include ${ignoredPath}`);
+  }
 
   // Verify embedded Node script inside run: | has valid >=10-space indentation and valid JS syntax
   const startIdx = lines.findIndex(l => l.includes("node << 'EOF'"));
@@ -528,9 +540,18 @@ test('GitHub Actions workflow /.github/workflows/actions.yml and Cloudflare work
   assert.equal(/\bhaversineKm\b/.test(jsCode), false, 'actions.yml must not reference undefined haversineKm');
   assert.ok(jsCode.includes('function loadHardcodeModule()'), 'actions.yml must define fault-tolerant loadHardcodeModule');
   assert.ok(jsCode.includes('const exitDistKm ='), 'actions.yml must define self-contained exitDistKm helper');
-  assert.ok(yml.includes("- '.github/workflows/version.yml'"), 'actions.yml paths-ignore must ignore version.yml');
+  assert.ok(jsCode.includes("const INDEX_PATH = 'public/bus_index.min.json'"), 'actions.yml must target public/bus_index.min.json');
+  assert.ok(jsCode.includes("const PUBLIC_VERSION_PATH = 'public/version.json'"), 'actions.yml must update public/version.json');
+  assert.ok(jsCode.includes("const REMOVED_COMPANIES = new Set(['DB', 'PITCL'])"), 'actions.yml must keep private residential bus operators excluded');
+  assert.ok(jsCode.includes('mergedMtrExits.length < 50 || stopsDict.length < 1000'), 'actions.yml must enforce mtrExits/stopsDict sanity gate');
+  assert.ok(jsCode.includes('serializedByteLen < 100000') && jsCode.includes('writtenSize < 100000'), 'actions.yml must enforce non-empty file size checks');
+  assert.ok(
+    jsCode.includes("'public/planner.js'") && jsCode.includes("'public/hardcode.js'") && jsCode.includes("'public/map.js'"),
+    'actions.yml pre-write sanity checks must verify public/planner.js, public/hardcode.js, and public/map.js'
+  );
+  assert.ok(yml.includes('git add public/bus_index.min.json public/version.json'), 'actions.yml must stage public/bus_index.min.json and public/version.json');
 
-  // Execute loadHardcodeModule + exitDistKm + mergedMtrExits logic from actions.yml against public/hardcode.js
+  // Execute loadHardcodeModule + exitDistKm + mergedMtrExits + pre-write runtime asset checks against public/
   const loaderStart = jsCode.indexOf('function loadHardcodeModule()');
   const loaderEnd = jsCode.indexOf('// Load single-source-of-truth');
   const exitStart = jsCode.indexOf('// Self-contained haversine distance (km) for MTR exit deduplication');
@@ -542,6 +563,7 @@ test('GitHub Actions workflow /.github/workflows/actions.yml and Cloudflare work
     const path = require('path');
     const vm = require('vm');
     const { createRequire } = require('module');
+    const INDEX_PATH = 'public/bus_index.min.json';
     const isValidHkCoord = (lat, lon) => Number.isFinite(Number(lat)) && Number.isFinite(Number(lon)) && Number(lat) >= 22.1 && Number(lat) <= 22.6 && Number(lon) >= 113.8 && Number(lon) <= 114.5;
     ${jsCode.slice(loaderStart, loaderEnd)}
     const hardcodeMod = loadHardcodeModule();
@@ -560,16 +582,23 @@ test('GitHub Actions workflow /.github/workflows/actions.yml and Cloudflare work
   const lopB2 = runRes.mergedMtrExits.filter((e: any) => e.sta === 'LOP' && e.ref === 'B2');
   assert.equal(lopB2.length, 1, 'exitDistKm must deduplicate nearby Overpass + seed exits for LOP Exit B2');
 
-  // Verify standalone .github/workflows/version.yml auto-stamper workflow
+  // Verify standalone .github/workflows/version.yml auto-stamper workflow syncs both public/version.json and version.json
   const verYml = fs.readFileSync('.github/workflows/version.yml', 'utf8');
   assert.equal(verYml.includes('\t'), false, 'version.yml must not contain tab characters');
   assert.ok(verYml.includes('contents: write'), 'version.yml must request contents: write permission');
   assert.ok(verYml.includes("github.actor != 'github-actions[bot]'"), 'version.yml must guard against bot loops');
-  assert.ok(verYml.includes('index.html') && verYml.includes('version.json'), 'version.yml must stamp index.html and version.json');
+  assert.ok(verYml.includes('index.html') && verYml.includes('public/version.json') && verYml.includes('version.json'), 'version.yml must stamp index.html, public/version.json, and root version.json');
+  assert.ok(verYml.includes("- 'public/version.json'"), 'version.yml paths-ignore must ignore public/version.json');
   assert.equal(verYml.includes('[skip ci]'), false, 'version.yml must not use [skip ci] so Cloudflare Pages deploys the stamped footer');
   const verNodeMatch = verYml.match(/node -e '([\s\S]*?)'/);
   assert.ok(verNodeMatch && verNodeMatch[1], 'version.yml must contain embedded node -e script');
   assert.doesNotThrow(() => new Function(verNodeMatch[1]), 'Embedded JS in version.yml must parse cleanly');
+
+  // Verify .npmrc and package.json test script for clean CI/local builds
+  const npmrc = fs.readFileSync('.npmrc', 'utf8');
+  assert.ok(/^legacy-peer-deps=true$/m.test(npmrc), '.npmrc must set legacy-peer-deps=true');
+  const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+  assert.ok(typeof pkg.scripts?.test === 'string' && pkg.scripts.test.includes('transit.test.ts'), 'package.json must define a test script running transit.test.ts');
 
   // Cloudflare Pages Functions must only export standard HTTP handlers (onRequest*)
   const workerSrc = fs.readFileSync('functions/api/worker.js', 'utf8');
@@ -878,12 +907,12 @@ test('planner.js & bus_index.min.json: MTR Exit-Level Walking Snap selects neare
   ctx.window.MTR_EXITS_DIRECTORY = db.mtrExits;
 
   // Point near Exchange Square (22.2836, 114.1580) relative to Hong Kong Station (22.284667, 114.158224)
-  // Must snap to Exit D (22.28375, 114.15780) rather than station centroid
+  // Must snap to a real Exchange Square exit (Exit B2 from MTR_EXITS_SEED or Exit D from Overpass) rather than station centroid
   const nearEx = findNearestMtrExitForPoint(22.2836, 114.1580, 22.284667, 114.158224);
   assert.ok(nearEx, 'Expected physical MTR exit near Hong Kong Station');
-  assert.equal(nearEx.ref, 'D');
+  assert.ok(['B2', 'D'].includes(nearEx.ref), `Expected Hong Kong Station Exchange Square exit B2 or D, got ${nearEx.ref}`);
 
-  // Transfer from TCL (Hong Kong Station) to CTB 30X (Exchange Square) snaps to Exit D
+  // Transfer from TCL (Hong Kong Station) to CTB 30X (Exchange Square) snaps to nearest physical exit
   const xferSnap = resolveMtrTransferExit(
     { mode: 'MTR', company: 'MTR', routeNo: 'TCL' },
     { lat: 22.284667, lon: 114.158224, stopName_e: 'Hong Kong Station' },
@@ -891,7 +920,7 @@ test('planner.js & bus_index.min.json: MTR Exit-Level Walking Snap selects neare
     { lat: 22.2836, lon: 114.1580, stopName_e: 'Central (Exchange Square)' }
   );
   assert.ok(xferSnap, 'Expected BUS<->MTR transfer to snap to nearest MTR exit');
-  assert.equal(xferSnap.exitObj.ref, 'D');
+  assert.ok(['B2', 'D'].includes(xferSnap.exitObj.ref), `Expected transfer exit B2 or D, got ${xferSnap.exitObj.ref}`);
   assert.equal(xferSnap.side, 'alight');
 
   // Timeline row surfaces exit letter for both access ("(Exit A)") and egress ("via Exit D")

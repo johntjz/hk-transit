@@ -5,14 +5,17 @@ on:
     branches:
       - main
     paths-ignore:
+      - 'public/bus_index.min.json'
+      - 'public/version.json'
       - 'bus_index.min.json'
       - 'version.json'
       - 'index.html'
-      - '_headers'
-      - 'icon.png'
+      - 'public/_headers'
+      - 'public/icon.png'
       - 'functions/**'
-      - 'planner.js'
-      - 'map.js'
+      - 'public/planner.js'
+      - 'public/hardcode.js'
+      - 'public/map.js'
       - '.github/workflows/version.yml'
 
   schedule:
@@ -51,12 +54,15 @@ jobs:
           const { createRequire } = require('module');
           const SCHEMA_VERSION = 9;
           const REMOVED_COMPANIES = new Set(['DB', 'PITCL']);
+          const INDEX_PATH = 'public/bus_index.min.json';
+          const PUBLIC_VERSION_PATH = 'public/version.json';
+          const ROOT_VERSION_PATH = 'version.json';
 
           // Fault-tolerant loader for hardcode.js (supports both CJS and VM fallback with browser globals)
           function loadHardcodeModule() {
             const candidates = [
-              path.join(process.cwd(), 'hardcode.js'),
-              path.join(process.cwd(), 'public', 'hardcode.js')
+              path.join(process.cwd(), 'public', 'hardcode.js'),
+              path.join(process.cwd(), 'hardcode.js')
             ];
             const hardcodePath = candidates.find(p => fs.existsSync(p)) || candidates[0];
             try {
@@ -562,8 +568,14 @@ jobs:
           }
 
           (async () => {
-            if (!fs.existsSync('bus_index.min.json')) process.exit(1);
-            const rawExistingDb = JSON.parse(fs.readFileSync('bus_index.min.json', 'utf8'));
+            const existingIndexPath = fs.existsSync(INDEX_PATH)
+              ? INDEX_PATH
+              : (fs.existsSync('bus_index.min.json') ? 'bus_index.min.json' : '');
+            if (!existingIndexPath) {
+              console.error(`ABORT: Existing index not found at ${INDEX_PATH}.`);
+              process.exit(1);
+            }
+            const rawExistingDb = JSON.parse(fs.readFileSync(existingIndexPath, 'utf8'));
             const prevUpstreamHashes = rawExistingDb.upstreamHashes || {};
             const nextUpstreamHashes = { ...prevUpstreamHashes };
             const dataDriftAlerts = [];
@@ -1760,7 +1772,7 @@ jobs:
               quickFerryLines.length < 10
             ) {
               console.error(
-                `ABORT: Sanity gate failed (bus=${busGroupedRoutes.length}, mtr=${quickMtrLines.length}, lrt=${quickLrtLines.length}, ferry=${quickFerryLines.length}). Refusing to overwrite bus_index.min.json.`
+                `ABORT: Sanity gate failed (bus=${busGroupedRoutes.length}, mtr=${quickMtrLines.length}, lrt=${quickLrtLines.length}, ferry=${quickFerryLines.length}). Refusing to overwrite ${INDEX_PATH}.`
               );
               process.exit(1);
             }
@@ -1848,9 +1860,19 @@ jobs:
               });
             }
 
+            const requiredRuntimeAssets = ['public/planner.js', 'public/hardcode.js', 'public/map.js'];
+            for (const assetPath of requiredRuntimeAssets) {
+              if (!fs.existsSync(assetPath) || fs.statSync(assetPath).size === 0) {
+                console.error(
+                  `ABORT: Required runtime asset missing or empty (${assetPath}). Refusing to overwrite ${INDEX_PATH}.`
+                );
+                process.exit(1);
+              }
+            }
+
             if (mergedMtrExits.length < 50 || stopsDict.length < 1000) {
               console.error(
-                `ABORT: Extended sanity gate failed (mtrExits=${mergedMtrExits.length}, stopsDict=${stopsDict.length}). Refusing to overwrite bus_index.min.json.`
+                `ABORT: Extended sanity gate failed (mtrExits=${mergedMtrExits.length}, stopsDict=${stopsDict.length}). Refusing to overwrite ${INDEX_PATH}.`
               );
               process.exit(1);
             }
@@ -1876,21 +1898,43 @@ jobs:
               multiModalHubs: Array.from(hubMap.values())
             };
 
-            fs.writeFileSync('bus_index.min.json', JSON.stringify(outDb));
+            const serializedOutDb = JSON.stringify(outDb);
+            const serializedByteLen = Buffer.byteLength(serializedOutDb, 'utf8');
+            if (!serializedOutDb || serializedByteLen < 100000) {
+              console.error(
+                `ABORT: Non-empty file size check failed (${serializedByteLen} bytes). Refusing to overwrite ${INDEX_PATH}.`
+              );
+              process.exit(1);
+            }
+
+            fs.mkdirSync(path.dirname(INDEX_PATH), { recursive: true });
+            fs.writeFileSync(INDEX_PATH, serializedOutDb);
+            const writtenSize = fs.statSync(INDEX_PATH).size;
+            if (!writtenSize || writtenSize < 100000) {
+              console.error(`ABORT: Written ${INDEX_PATH} size check failed (${writtenSize} bytes).`);
+              process.exit(1);
+            }
+
             let prevVersionObj = {};
-            try {
-              if (fs.existsSync('version.json')) {
-                prevVersionObj = JSON.parse(fs.readFileSync('version.json', 'utf8')) || {};
-              }
-            } catch (_) {}
-            fs.writeFileSync('version.json', JSON.stringify({
+            for (const vp of [ROOT_VERSION_PATH, PUBLIC_VERSION_PATH]) {
+              try {
+                if (fs.existsSync(vp)) {
+                  Object.assign(prevVersionObj, JSON.parse(fs.readFileSync(vp, 'utf8')) || {});
+                }
+              } catch (_) {}
+            }
+            const nextVersionJson = JSON.stringify({
               ...prevVersionObj,
               schemaVersion: SCHEMA_VERSION,
               lastUpdated: LAST_UPDATED_ISO,
               tdLastUpdated,
               driftCount: dataDriftAlerts.length
-            }, null, 2) + '\n');
-            console.log(`Built bus_index.min.json (schemaVersion=${SCHEMA_VERSION}, routes=${combinedGroupedRoutes.length}, stopsDict=${stopsDict.length}, mtrExits=${mergedMtrExits.length}, driftAlerts=${dataDriftAlerts.length})`);
+            }, null, 2) + '\n';
+            fs.writeFileSync(PUBLIC_VERSION_PATH, nextVersionJson);
+            if (fs.existsSync(ROOT_VERSION_PATH)) {
+              fs.writeFileSync(ROOT_VERSION_PATH, nextVersionJson);
+            }
+            console.log(`Built ${INDEX_PATH} (${writtenSize} bytes, schemaVersion=${SCHEMA_VERSION}, routes=${combinedGroupedRoutes.length}, stopsDict=${stopsDict.length}, mtrExits=${mergedMtrExits.length}, driftAlerts=${dataDriftAlerts.length})`);
           })().catch(err => {
             console.error(err);
             process.exit(1);
@@ -1901,11 +1945,12 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add bus_index.min.json version.json
+          git add public/bus_index.min.json public/version.json
+          if [ -f version.json ]; then git add version.json; fi
           if git diff --staged --quiet; then
             echo "No changes to commit."
           else
-            git commit -m "chore: automated update of bus_index.min.json and version.json (schema v9)"
+            git commit -m "chore: automated update of public/bus_index.min.json and version.json (schema v9)"
             git pull --rebase origin main
             git push
           fi

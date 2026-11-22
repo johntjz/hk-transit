@@ -2,5 +2,7 @@
   "name": "Transit HK",
   "description": "Real-time Hong Kong Bus, MTR, Light Rail & Ferry radar and multi-modal route planner.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }

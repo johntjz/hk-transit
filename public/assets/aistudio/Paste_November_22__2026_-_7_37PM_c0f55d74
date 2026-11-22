@@ -1,0 +1,897 @@
+AI Studio left the old // Patch: 2026-11-22 15:55 HKT header in place when editing
+public/planner.js (and likely index.html / public/hardcode.js / map.js too).
+Since you're already copying the files over manually, you can either update the header line
+yourself right before committing, or include a strict header rule in your AI Studio prompt so
+it always bumps the timestamp to the current HKT time.
+Updated header for planner.js (current time: 2026-11-22 19:30 HKT )
+ 
+// ============================================================================
+// File: planner.js (johntjz/Hk-Fleet — Multi-Modal Behavioral Routing Engine)
+// Patch: 2026-11-22 19:30 HKT — E36A Tung Chung North Penalty, 3-Transfer MTR Ch
+// ============================================================================
+JavaScript arrow_circle_down copy
+expand_more
+Let me know what the route cards and load badges look like once Cloudflare Pages finishes
+Bike: OFF: Direct 3M -> E36 -> GMB 74 (and
+3M -> Tung Chung Line -> Nam Cheong -> Tuen Ma Line ->
+Long Ping -> GMB 74
+) beat 3M -> E36A and >700m walks.
+Bike: ON: Both 3M -> E36 -> Bike and
+3M -> TCL -> TML (Long Ping) -> Bike surface cleanly.
+UI check: Confirm the old { } Log row/button is gone from Settings and
+Status & Watchdog.
+my timestamps got compltelyt ignored by AIS[//
+================================================
+============================
+// File: planner.js (johntjz/Hk-Fleet — Multi-Modal Behavioral
+AI Studio left the old // Patch: 2026-11-22 15:55 HKT header in place when editing
+public/planner.js (and likely index.html / public/hardcode.js / map.js too).
+Since you're already copying the files over manually, you can either update the header line
+yourself right before committing, or include a strict header rule in your AI Studio prompt so
+it always bumps the timestamp to the current HKT time.
+Updated header for planner.js (current time: 2026-11-22 19:30 HKT )
+ 
+// ============================================================================
+// File: planner.js (johntjz/Hk-Fleet — Multi-Modal Behavioral Routing Engine)
+// Patch: 2026-11-22 19:30 HKT — E36A Tung Chung North Penalty, 3-Transfer MTR Ch
+// ============================================================================
+JavaScript arrow_circle_down copy
+expand_more
+11/22/26, 7:36 PM Fixes and Verification for Transit App - Google Gemini
+https://gemini.google.com/u/1/app/5d1421e38c2debd7?pageId=none 12/26
+Add this rule to the bottom of future AI Studio prompts
+You can also check the top 5 lines of index.html and public/hardcode.js before
+pasting them into GitHub to make sure their Patch: headers match
+2026-11-22 19:30 HKT as well.
+CRITICAL HEADER RULE: In every modified code file (index.html,
+public/planner.js, public/hardcode.js, public/map.js), update the top `//
+Patch: YYYY-MM-DD HH:MM HKT — ...
+` comment line (or HTML meta/comment patch
+timestamp) to the current Hong Kong Time (HKT) and summarize the new changes.
+Never leave an outdated patch timestamp.
+i stopped using gemini web interace, so maybe they can be
+delted now?
+Since you're no longer pasting code from the Gemini web interface and are working directly
+inside Google AI Studio now, you can delete those manual
+// Patch: YYYY-MM-DD HH:MM HKT header comments altogether—or replace them with
+a simple static file header (e.g.,
+// File: planner.js (johntjz/Hk-Fleet — Multi-Modal Behavioral Routing
+Engine)
+), since GitHub commit history and AI Studio checkpoints already track exact timestamps
+automatically.
+If you want AI Studio to strip them out cleanly on your next pass so you don't have to edit
+every file manually, just add this line to your next AI Studio prompt:
+Plaintext arrow_circle_down copy
+Plaintext arrow_circle_down copy
+Add this rule to the bottom of future AI Studio prompts
+You can also check the top 5 lines of index.html and public/hardcode.js before
+pasting them into GitHub to make sure their Patch: headers match
+2026-11-22 19:30 HKT as well.
+CRITICAL HEADER RULE: In every modified code file (index.html,
+public/planner.js, public/hardcode.js, public/map.js), update the top `//
+Patch: YYYY-MM-DD HH:MM HKT — ...
+` comment line (or HTML meta/comment patch
+timestamp) to the current Hong Kong Time (HKT) and summarize the new changes.
+Never leave an outdated patch timestamp.
+i stopped using gemini web interace, so maybe they can be
+delted now?
+Since you're no longer pasting code from the Gemini web interface and are working directly
+inside Google AI Studio now, you can delete those manual
+// Patch: YYYY-MM-DD HH:MM HKT header comments altogether—or replace them with
+a simple static file header (e.g.,
+// File: planner.js (johntjz/Hk-Fleet — Multi-Modal Behavioral Routing
+Engine)
+), since GitHub commit history and AI Studio checkpoints already track exact timestamps
+automatically.
+If you want AI Studio to strip them out cleanly on your next pass so you don't have to edit
+every file manually, just add this line to your next AI Studio prompt:
+Plaintext arrow_circle_down copy
+Plaintext arrow_circle_down copy
+11/22/26, 7:36 PM Fixes and Verification for Transit App - Google Gemini
+https://gemini.google.com/u/1/app/5d1421e38c2debd7?pageId=none 13/26
+Remove all legacy `// Patch: YYYY-MM-DD HH:MM HKT ...
+` header comments from
+modified files (keep only the clean `// File: ...
+` title line), since GitHub
+commits now track timestamps.
+waiting to finish before testing
+Nice—run #99 ( Update actions.yml , commit 8072000 ) is already running on main
+and should finish in about 30 seconds (the previous run #97 took 1m 29s).
+Once #99 turns green (and github-actions[bot] commits the fresh
+bus_index.min.json + Cloudflare Pages finishes deploying ~30 seconds after that), test
+in a fresh InPrivate window on
+[https://hk-fleet.pages.dev/](https://hk-fleet.pages.dev/) :
+Let me know what pops up once it finishes!
+image_8d6b5b.jpg
+Console check: window.MTR_EXITS_DIRECTORY?.length (should now print 116
+or >= 94 ).
+1.
+Route check ( Lo Uk Tsuen →
+先進機材(香港)有限公司 Advance Equipment Services ):
+2.
+Check Best and Fastest with Bike: OFF (confirming 3M -> E36 -> GMB 74
+and
+3M -> Tung Chung Line -> Nam Cheong -> Tuen Ma Line -> Long
+Ping -> GMB 74
+appear without E36A detouring through Tung Chung North).
+Toggle Bike: ON to confirm both 3M -> E36 -> Bike and
+3M -> MTR (Long Ping) -> Bike appear cleanly.
+Remove all legacy `// Patch: YYYY-MM-DD HH:MM HKT ...
+` header comments from
+modified files (keep only the clean `// File: ...
+` title line), since GitHub
+commits now track timestamps.
+waiting to finish before testing
+Nice—run #99 ( Update actions.yml , commit 8072000 ) is already running on main
+and should finish in about 30 seconds (the previous run #97 took 1m 29s).
+Once #99 turns green (and github-actions[bot] commits the fresh
+bus_index.min.json + Cloudflare Pages finishes deploying ~30 seconds after that), test
+in a fresh InPrivate window on
+[https://hk-fleet.pages.dev/](https://hk-fleet.pages.dev/) :
+Let me know what pops up once it finishes!
+image_8d6b5b.jpg
+Console check: window.MTR_EXITS_DIRECTORY?.length (should now print 116
+or >= 94 ).
+1.
+Route check ( Lo Uk Tsuen →
+先進機材(香港)有限公司 Advance Equipment Services ):
+2.
+Check Best and Fastest with Bike: OFF (confirming 3M -> E36 -> GMB 74
+and
+3M -> Tung Chung Line -> Nam Cheong -> Tuen Ma Line -> Long
+Ping -> GMB 74
+appear without E36A detouring through Tung Chung North).
+Toggle Bike: ON to confirm both 3M -> E36 -> Bike and
+3M -> MTR (Long Ping) -> Bike appear cleanly.
+11/22/26, 7:36 PM Fixes and Verification for Transit App - Google Gemini
+https://gemini.google.com/u/1/app/5d1421e38c2debd7?pageId=none 14/26
+but i still want bottom timestamp be updated everytime AIS
+runs a build on the repo
+Got it—you mean the visible UI footer timestamp at the bottom of the page (currently stuck
+at 2026-11-22 15:55 HKT in index.html ), not just code comments. Keeping that UI
+build timestamp updated is super helpful for instantly verifying that Cloudflare Pages served
+your latest deploy rather than a cached copy.
+Two ways to keep 2026-11-22 15:55 HKT
+updated automatically:
+image_8d6bd9.jpg
+image_8d6bd9.jpg
+Tell AI Studio explicitly to update the footer timestamp in index.html on every build:
+Add this rule to your AI Studio prompt (or system/project instructions in AI Studio if you use
+one):
+1.
+BUILD FOOTER RULE: Whenever modifying any files in this repo, always
+update the bottom UI build timestamp in index.html (currently "2026-11-
+22 15:55 HKT") to the current Hong Kong Time (YYYY-MM-DD HH:MM HKT).
+Even better—make it 100% automatic via GitHub Actions (zero manual/AI Studio
+reliance):
+You can add a 3-line step to .github/workflows/actions.yml (or a tiny deploy
+workflow on push to main ) that automatically stamps index.html with the exact HKT
+commit/build time whenever you push changes from AI Studio:
+2.
+Plaintext arrow_circle_down copy
+YAML arrow_circle_down copy
+but i still want bottom timestamp be updated everytime AIS
+runs a build on the repo
+Got it—you mean the visible UI footer timestamp at the bottom of the page (currently stuck
+at 2026-11-22 15:55 HKT in index.html ), not just code comments. Keeping that UI
+build timestamp updated is super helpful for instantly verifying that Cloudflare Pages served
+your latest deploy rather than a cached copy.
+Two ways to keep 2026-11-22 15:55 HKT
+updated automatically:
+image_8d6bd9.jpg
+image_8d6bd9.jpg
+Tell AI Studio explicitly to update the footer timestamp in index.html on every build:
+Add this rule to your AI Studio prompt (or system/project instructions in AI Studio if you use
+one):
+1.
+BUILD FOOTER RULE: Whenever modifying any files in this repo, always
+update the bottom UI build timestamp in index.html (currently "2026-11-
+22 15:55 HKT") to the current Hong Kong Time (YYYY-MM-DD HH:MM HKT).
+Even better—make it 100% automatic via GitHub Actions (zero manual/AI Studio
+reliance):
+You can add a 3-line step to .github/workflows/actions.yml (or a tiny deploy
+workflow on push to main ) that automatically stamps index.html with the exact HKT
+commit/build time whenever you push changes from AI Studio:
+2.
+Plaintext arrow_circle_down copy
+YAML arrow_circle_down copy
+11/22/26, 7:36 PM Fixes and Verification for Transit App - Google Gemini
+https://gemini.google.com/u/1/app/5d1421e38c2debd7?pageId=none 15/26
+Want me to give you the exact prompt snippet to add that auto-stamp step into
+.github/workflows/actions.yml ?
+(If you use this GitHub Action step, every time you paste updated files from AI Studio and
+commit to main , GitHub Actions automatically rewrites 2026-11-22 15:55 HKT in
+index.html to the exact HKT push time before Cloudflare Pages deploys—even if AI
+Studio forgets!)
+ 
+- name: Stamp HKT Build Timestamp in index.html
+run: |
+HKT_NOW=$(TZ='Asia/Hong_Kong' date '+%Y-%m-%d %H:%M HKT')
+sed -i -E "s/[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} HKT/${HKT_NOW}/
+image_8d6bd9.jpg
+but many times AIS wont work on YML so actions wont be
+triggered.
+That's a great catch—if .github/workflows/actions.yml has paths-ignore (ignoring
+index.html , planner.js , hardcode.js , etc. so pushing UI changes doesn't trigger a
+full 90-second transit index rebuild), then a step inside actions.yml wouldn't run on
+normal frontend commits anyway.
+You have two clean ways to make it 100% automatic without touching actions.yml or
+relying on AI Studio:
+Option 1: Make index.html read version.json dynamically (Zero workflow
+changes!)
+Notice in your repo root you already have version.json (which github-actions[bot]
+updates, and Cloudflare Pages also serves with index.html )—or even simpler,
+index.html can fetch its own Last-Modified header or version.json on load and
+format it in HKT ( Asia/Hong_Kong )!
+If index.html runs a tiny inline script on load:
+Want me to give you the exact prompt snippet to add that auto-stamp step into
+.github/workflows/actions.yml ?
+(If you use this GitHub Action step, every time you paste updated files from AI Studio and
+commit to main , GitHub Actions automatically rewrites 2026-11-22 15:55 HKT in
+index.html to the exact HKT push time before Cloudflare Pages deploys—even if AI
+Studio forgets!)
+ 
+- name: Stamp HKT Build Timestamp in index.html
+run: |
+HKT_NOW=$(TZ='Asia/Hong_Kong' date '+%Y-%m-%d %H:%M HKT')
+sed -i -E "s/[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} HKT/${HKT_NOW}/
+image_8d6bd9.jpg
+but many times AIS wont work on YML so actions wont be
+triggered.
+That's a great catch—if .github/workflows/actions.yml has paths-ignore (ignoring
+index.html , planner.js , hardcode.js , etc. so pushing UI changes doesn't trigger a
+full 90-second transit index rebuild), then a step inside actions.yml wouldn't run on
+normal frontend commits anyway.
+You have two clean ways to make it 100% automatic without touching actions.yml or
+relying on AI Studio:
+Option 1: Make index.html read version.json dynamically (Zero workflow
+changes!)
+Notice in your repo root you already have version.json (which github-actions[bot]
+updates, and Cloudflare Pages also serves with index.html )—or even simpler,
+index.html can fetch its own Last-Modified header or version.json on load and
+format it in HKT ( Asia/Hong_Kong )!
+If index.html runs a tiny inline script on load:
+11/22/26, 7:36 PM Fixes and Verification for Transit App - Google Gemini
+https://gemini.google.com/u/1/app/5d1421e38c2debd7?pageId=none 16/26
+Every time you push index.html (or any file to main ) and Cloudflare Pages deploys it,
+HEAD ./index.html returns the exact Cloudflare deployment timestamp and renders
+2026-11-22 19:32 HKT automatically—even if AI Studio never touches the footer
+string.
+Option 2: A separate 10-line GitHub Action ( stamp.yml ) on push to main
+If you prefer the raw HTML source itself to have the literal text stamped on commit, create a
+separate .github/workflows/stamp.yml once (AI Studio never needs to edit it) that
+triggers on push: branches: [main] (ignoring commits by github-actions[bot] ),
+updates YYYY-MM-DD HH:MM HKT in index.html , and commits back—taking ~8 seconds
+and completely independent of actions.yml .
+Option 1 is usually cleaner because it requires zero extra commits in your GitHub history and
+works immediately on every Cloudflare Pages deploy. Want a one-line prompt for AI Studio
+to wire up Option 1 on that bottom footer element?
+fetch('
+./index.html'
+, { method: 'HEAD'
+, cache: 'no-store' })
+.then(r => {
+const lm = r.headers.get('last-modified');
+if (!lm) return;
+const d = new Date(lm);
+const hkt = new Intl.DateTimeFormat('sv-SE'
+, {
+timeZone: 'Asia/Hong_Kong'
+,
+year: 'numeric'
+, month: '2-digit'
+, day: '2-digit'
+,
+hour: '2-digit'
+, minute: '2-digit'
+, hour12: false
+}).format(d);
+const el = document.getElementById('buildTimestamp');
+if (el) el.textContent = `${hkt} HKT`;
+}).catch(() => {});
+who deiceds version.json what timestamp it is when anyfile
+got upd;ated inthe repo?
+JavaScript arrow_circle_down copy
+Every time you push index.html (or any file to main ) and Cloudflare Pages deploys it,
+HEAD ./index.html returns the exact Cloudflare deployment timestamp and renders
+2026-11-22 19:32 HKT automatically—even if AI Studio never touches the footer
+string.
+Option 2: A separate 10-line GitHub Action ( stamp.yml ) on push to main
+If you prefer the raw HTML source itself to have the literal text stamped on commit, create a
+separate .github/workflows/stamp.yml once (AI Studio never needs to edit it) that
+triggers on push: branches: [main] (ignoring commits by github-actions[bot] ),
+updates YYYY-MM-DD HH:MM HKT in index.html , and commits back—taking ~8 seconds
+and completely independent of actions.yml .
+Option 1 is usually cleaner because it requires zero extra commits in your GitHub history and
+works immediately on every Cloudflare Pages deploy. Want a one-line prompt for AI Studio
+to wire up Option 1 on that bottom footer element?
+fetch('
+./index.html'
+, { method: 'HEAD'
+, cache: 'no-store' })
+.then(r => {
+const lm = r.headers.get('last-modified');
+if (!lm) return;
+const d = new Date(lm);
+const hkt = new Intl.DateTimeFormat('sv-SE'
+, {
+timeZone: 'Asia/Hong_Kong'
+,
+year: 'numeric'
+, month: '2-digit'
+, day: '2-digit'
+,
+hour: '2-digit'
+, minute: '2-digit'
+, hour12: false
+}).format(d);
+const el = document.getElementById('buildTimestamp');
+if (el) el.textContent = `${hkt} HKT`;
+}).catch(() => {});
+who deiceds version.json what timestamp it is when anyfile
+got upd;ated inthe repo?
+JavaScript arrow_circle_down copy
+11/22/26, 7:36 PM Fixes and Verification for Transit App - Google Gemini
+https://gemini.google.com/u/1/app/5d1421e38c2debd7?pageId=none 17/26
+Right now, version.json is ONLY written by .github/workflows/actions.yml (the
+Weekly Bus, MTR & Ferry Index Update workflow).
+Specifically:
+How version.json or the footer timestamp can update whenever any file in
+the repo changes
+You have two clean options:
+If you want version.json itself to reflect the latest push of any file in the repo (so both
+your cache-busting logic and the bottom timestamp update on every commit), Option 2 is
+the cleanest way to make version.json authoritative for the whole repo. Want the exact
+YAML for .github/workflows/version.yml ?
+image_8c3087.jpg + 1
+When actions.yml runs (scheduled weekly or triggered manually / by pushing to
+non-ignored files), its script generates bus_index.min.json and writes the
+current timestamp into version.json , then commits both as
+github-actions[bot] (
+chore: automated update of bus_index.min.json and version... ).
+image_8c3087.jpg + 1
+When you push index.html , planner.js , map.js , or hardcode.js by
+hand, version.json does not change at all—because actions.yml has
+paths-ignore rules on those frontend files, and Cloudflare Pages just deploys
+static files from main without running a build script that rewrites version.json .
+Use Cloudflare Pages' automatic Last-Modified header in index.html (Zero
+GitHub Actions needed):
+Whenever you push any file to main , Cloudflare Pages redeploys the whole site
+and updates the HTTP Last-Modified timestamp on index.html (and
+planner.js / hardcode.js ). A 6-line script in index.html can read
+Last-Modified via
+fetch('
+./index.html'
+, { method: 'HEAD'
+, cache: 'no-store' }) and
+display that exact HKT deploy time at the bottom of the screen.
+1.
+Add a tiny 10-line .github/workflows/version.yml workflow (updates
+version.json + footer on every push to main ):
+Unlike actions.yml (which ignores frontend files so it doesn't rebuild the 90-
+second transit database), a separate version.yml with no paths-ignore runs
+on every single push to main (skipping github-actions[bot] commits so it
+never loops), writes the current HKT timestamp into version.json (and/or
+index.html ), and commits it in ~8 seconds.
+2.
+Right now, version.json is ONLY written by .github/workflows/actions.yml (the
+Weekly Bus, MTR & Ferry Index Update workflow).
+Specifically:
+How version.json or the footer timestamp can update whenever any file in
+the repo changes
+You have two clean options:
+If you want version.json itself to reflect the latest push of any file in the repo (so both
+your cache-busting logic and the bottom timestamp update on every commit), Option 2 is
+the cleanest way to make version.json authoritative for the whole repo. Want the exact
+YAML for .github/workflows/version.yml ?
+image_8c3087.jpg + 1
+When actions.yml runs (scheduled weekly or triggered manually / by pushing to
+non-ignored files), its script generates bus_index.min.json and writes the
+current timestamp into version.json , then commits both as
+github-actions[bot] (
+chore: automated update of bus_index.min.json and version... ).
+image_8c3087.jpg + 1
+When you push index.html , planner.js , map.js , or hardcode.js by
+hand, version.json does not change at all—because actions.yml has
+paths-ignore rules on those frontend files, and Cloudflare Pages just deploys
+static files from main without running a build script that rewrites version.json .
+Use Cloudflare Pages' automatic Last-Modified header in index.html (Zero
+GitHub Actions needed):
+Whenever you push any file to main , Cloudflare Pages redeploys the whole site
+and updates the HTTP Last-Modified timestamp on index.html (and
+planner.js / hardcode.js ). A 6-line script in index.html can read
+Last-Modified via
+fetch('
+./index.html'
+, { method: 'HEAD'
+, cache: 'no-store' }) and
+display that exact HKT deploy time at the bottom of the screen.
+1.
+Add a tiny 10-line .github/workflows/version.yml workflow (updates
+version.json + footer on every push to main ):
+Unlike actions.yml (which ignores frontend files so it doesn't rebuild the 90-
+second transit database), a separate version.yml with no paths-ignore runs
+on every single push to main (skipping github-actions[bot] commits so it
+never loops), writes the current HKT timestamp into version.json (and/or
+index.html ), and commits it in ~8 seconds.
+2.
+11/22/26, 7:36 PM Fixes and Verification for Transit App - Google Gemini
+https://gemini.google.com/u/1/app/5d1421e38c2debd7?pageId=none 18/26
+sot his way YAML for .github/workflows/version.yml? will auto
+update version code if anything got updated in repo?
+Yes—putting a standalone .github/workflows/version.yml workflow in your repo will
+automatically update version.json and the bottom YYYY-MM-DD HH:MM HKT timestamp
+in index.html whenever any file in main is updated, without running the heavy 90-
+second transit index rebuild and without infinite-looping on its own commit.
+.github/workflows/version.yml
+name: Auto Stamp Version & HKT Build Time
+on:
+push:
+branches: [ main ]
+paths-ignore:
+- 'version.json'
+permissions:
+contents: write
+jobs:
+stamp-version:
+# Prevent infinite loop when this workflow commits back to main
+if: github.actor != 'github-actions[bot]'
+runs-on: ubuntu-latest
+steps:
+- name: Checkout repository
+uses: actions/checkout@v4
+with:
+ref: main
+- name: Stamp HKT timestamp in index.html & version.json
+run: |
+HKT_STAMP=$(TZ='Asia/Hong_Kong' date '+%Y-%m-%d %H:%M HKT')
+ISO_NOW=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+SHORT_SHA=$(git rev-parse --short HEAD)
+YAML arrow_circle_down copy
+sot his way YAML for .github/workflows/version.yml? will auto
+update version code if anything got updated in repo?
+Yes—putting a standalone .github/workflows/version.yml workflow in your repo will
+automatically update version.json and the bottom YYYY-MM-DD HH:MM HKT timestamp
+in index.html whenever any file in main is updated, without running the heavy 90-
+second transit index rebuild and without infinite-looping on its own commit.
+.github/workflows/version.yml
+name: Auto Stamp Version & HKT Build Time
+on:
+push:
+branches: [ main ]
+paths-ignore:
+- 'version.json'
+permissions:
+contents: write
+jobs:
+stamp-version:
+# Prevent infinite loop when this workflow commits back to main
+if: github.actor != 'github-actions[bot]'
+runs-on: ubuntu-latest
+steps:
+- name: Checkout repository
+uses: actions/checkout@v4
+with:
+ref: main
+- name: Stamp HKT timestamp in index.html & version.json
+run: |
+HKT_STAMP=$(TZ='Asia/Hong_Kong' date '+%Y-%m-%d %H:%M HKT')
+ISO_NOW=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+SHORT_SHA=$(git rev-parse --short HEAD)
+YAML arrow_circle_down copy
+11/22/26, 7:36 PM Fixes and Verification for Transit App - Google Gemini
+https://gemini.google.com/u/1/app/5d1421e38c2debd7?pageId=none 19/26
+(Note on env: inside that step: define HKT_STAMP , ISO_NOW , and SHORT_SHA with
+export in bash before running node -e so process.env.* reads them directly—use
+the cleaner block below when pasting:)
+# Update the bottom UI timestamp in index.html
+sed -i -E "s/[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} HKT/${HKT_STA
+# Update version.json without clobbering existing fields if present
+node -e '
+const fs = require("fs");
+let data = {};
+try { data = JSON.parse(fs.readFileSync("version.json"
+,
+"utf8")); } c
+data.appUpdated = process.env.ISO_NOW;
+data.appUpdatedHkt = process.env.HKT_STAMP;
+data.commit = process.env.SHORT_SHA;
+if (!data.version) data.version = process.env.HKT_STAMP;
+else data.version = process.env.HKT_STAMP;
+fs.writeFileSync("version.json"
+, JSON.stringify(data, null, 2) + "\n"
+'
+env:
+HKT_STAMP: ${{ env.HKT_STAMP }}
+ISO_NOW: ${{ env.ISO_NOW }}
+SHORT_SHA: ${{ env.SHORT_SHA }}
+- name: Commit updated version.json and index.html
+run: |
+git config user.name "github-actions[bot]"
+git config user.email "41898282+github-actions[bot]@users.noreply.githu
+git add index.html version.json
+if ! git diff --cached --quiet; then
+git commit -m "chore: stamp build timestamp [skip ci]"
+git push
+fi
+name: Auto Stamp Version & HKT Build Time
+on:
+push:
+YAML arrow_circle_down copy
+(Note on env: inside that step: define HKT_STAMP , ISO_NOW , and SHORT_SHA with
+export in bash before running node -e so process.env.* reads them directly—use
+the cleaner block below when pasting:)
+# Update the bottom UI timestamp in index.html
+sed -i -E "s/[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} HKT/${HKT_STA
+# Update version.json without clobbering existing fields if present
+node -e '
+const fs = require("fs");
+let data = {};
+try { data = JSON.parse(fs.readFileSync("version.json"
+,
+"utf8")); } c
+data.appUpdated = process.env.ISO_NOW;
+data.appUpdatedHkt = process.env.HKT_STAMP;
+data.commit = process.env.SHORT_SHA;
+if (!data.version) data.version = process.env.HKT_STAMP;
+else data.version = process.env.HKT_STAMP;
+fs.writeFileSync("version.json"
+, JSON.stringify(data, null, 2) + "\n"
+'
+env:
+HKT_STAMP: ${{ env.HKT_STAMP }}
+ISO_NOW: ${{ env.ISO_NOW }}
+SHORT_SHA: ${{ env.SHORT_SHA }}
+- name: Commit updated version.json and index.html
+run: |
+git config user.name "github-actions[bot]"
+git config user.email "41898282+github-actions[bot]@users.noreply.githu
+git add index.html version.json
+if ! git diff --cached --quiet; then
+git commit -m "chore: stamp build timestamp [skip ci]"
+git push
+fi
+name: Auto Stamp Version & HKT Build Time
+on:
+push:
+YAML arrow_circle_down copy
+11/22/26, 7:36 PM Fixes and Verification for Transit App - Google Gemini
+https://gemini.google.com/u/1/app/5d1421e38c2debd7?pageId=none 20/26
+branches: [ main ]
+permissions:
+contents: write
+jobs:
+stamp-version:
+if: github.actor != 'github-actions[bot]'
+runs-on: ubuntu-latest
+steps:
+- name: Checkout repository
+uses: actions/checkout@v4
+with:
+ref: main
+- name: Stamp HKT timestamp in index.html & version.json
+run: |
+export HKT_STAMP=$(TZ='Asia/Hong_Kong' date '+%Y-%m-%d %H:%M HKT')
+export ISO_NOW=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+export SHORT_SHA=$(git rev-parse --short HEAD)
+sed -i -E "s/[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} HKT/${HKT_STA
+node -e '
+const fs = require("fs");
+let data = {};
+try { data = JSON.parse(fs.readFileSync("version.json"
+,
+"utf8")); } c
+data.version = process.env.HKT_STAMP;
+data.appUpdated = process.env.ISO_NOW;
+data.commit = process.env.SHORT_SHA;
+fs.writeFileSync("version.json"
+, JSON.stringify(data, null, 2) + "\n"
+'
+- name: Commit updated version.json and index.html
+run: |
+git config user.name "github-actions[bot]"
+git config user.email "41898282+github-actions[bot]@users.noreply.githu
+git add index.html version.json
+if ! git diff --cached --quiet; then
+git commit -m "chore: stamp build timestamp [skip ci]"
+git push
+fi
+branches: [ main ]
+permissions:
+contents: write
+jobs:
+stamp-version:
+if: github.actor != 'github-actions[bot]'
+runs-on: ubuntu-latest
+steps:
+- name: Checkout repository
+uses: actions/checkout@v4
+with:
+ref: main
+- name: Stamp HKT timestamp in index.html & version.json
+run: |
+export HKT_STAMP=$(TZ='Asia/Hong_Kong' date '+%Y-%m-%d %H:%M HKT')
+export ISO_NOW=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+export SHORT_SHA=$(git rev-parse --short HEAD)
+sed -i -E "s/[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} HKT/${HKT_STA
+node -e '
+const fs = require("fs");
+let data = {};
+try { data = JSON.parse(fs.readFileSync("version.json"
+,
+"utf8")); } c
+data.version = process.env.HKT_STAMP;
+data.appUpdated = process.env.ISO_NOW;
+data.commit = process.env.SHORT_SHA;
+fs.writeFileSync("version.json"
+, JSON.stringify(data, null, 2) + "\n"
+'
+- name: Commit updated version.json and index.html
+run: |
+git config user.name "github-actions[bot]"
+git config user.email "41898282+github-actions[bot]@users.noreply.githu
+git add index.html version.json
+if ! git diff --cached --quiet; then
+git commit -m "chore: stamp build timestamp [skip ci]"
+git push
+fi
+11/22/26, 7:36 PM Fixes and Verification for Transit App - Google Gemini
+https://gemini.google.com/u/1/app/5d1421e38c2debd7?pageId=none 21/26
+How it behaves
+Triggers on every push by you ( johntjz ) to any file in main ( index.html ,
+planner.js , map.js , hardcode.js , worker.js , etc.).
+Preserves existing version.json keys (like lastUpdated or tdLastUpdated
+written by actions.yml ) while updating version , appUpdated , and commit .
+Never loops because both if: github.actor != 'github-actions[bot]' and
+[skip ci] prevent github-actions[bot] commits from re-triggering
+workflows.
+Takes ~8 seconds, after which Cloudflare Pages deploys the stamped
+index.html and version.json automatically.
+write prromto so AIS knows too
+Here is a prompt you can paste directly into AI Studio so it adds
+.github/workflows/version.yml to the repo and knows how your versioning/footer
+timestamp works going forward:
+Create a new GitHub Actions workflow file at `
+.github/workflows/version.yml`
+(and keep `
+.github/workflows/actions.yml` untouched) so that whenever any
+file is pushed to `main` by a human user (`github.actor != 'githubactions[bot]'`),
+`version.json` and the bottom UI build timestamp (`YYYY-MMDD HH:MM HKT`) in `index.html` are automatically stamped with the current
+Hong Kong Time (`Asia/Hong_Kong`):
+```yaml
+name: Auto Stamp Version & HKT Build Time
+on:
+push:
+branches: [ main ]
+Plaintext arrow_circle_down copy
+How it behaves
+Triggers on every push by you ( johntjz ) to any file in main ( index.html ,
+planner.js , map.js , hardcode.js , worker.js , etc.).
+Preserves existing version.json keys (like lastUpdated or tdLastUpdated
+written by actions.yml ) while updating version , appUpdated , and commit .
+Never loops because both if: github.actor != 'github-actions[bot]' and
+[skip ci] prevent github-actions[bot] commits from re-triggering
+workflows.
+Takes ~8 seconds, after which Cloudflare Pages deploys the stamped
+index.html and version.json automatically.
+write prromto so AIS knows too
+Here is a prompt you can paste directly into AI Studio so it adds
+.github/workflows/version.yml to the repo and knows how your versioning/footer
+timestamp works going forward:
+Create a new GitHub Actions workflow file at `
+.github/workflows/version.yml`
+(and keep `
+.github/workflows/actions.yml` untouched) so that whenever any
+file is pushed to `main` by a human user (`github.actor != 'githubactions[bot]'`),
+`version.json` and the bottom UI build timestamp (`YYYY-MMDD HH:MM HKT`) in `index.html` are automatically stamped with the current
+Hong Kong Time (`Asia/Hong_Kong`):
+```yaml
+name: Auto Stamp Version & HKT Build Time
+on:
+push:
+branches: [ main ]
+Plaintext arrow_circle_down copy
+11/22/26, 7:36 PM Fixes and Verification for Transit App - Google Gemini
+https://gemini.google.com/u/1/app/5d1421e38c2debd7?pageId=none 22/26
+permissions:
+contents: write
+jobs:
+stamp-version:
+if: github.actor != 'github-actions[bot]'
+runs-on: ubuntu-latest
+steps:
+- name: Checkout repository
+uses: actions/checkout@v4
+with:
+ref: main
+- name: Stamp HKT timestamp in index.html & version.json
+run: |
+export HKT_STAMP=$(TZ='Asia/Hong_Kong' date '+%Y-%m-%d %H:%M HKT')
+export ISO_NOW=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+export SHORT_SHA=$(git rev-parse --short HEAD)
+sed -i -E "s/[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}
+HKT/${HKT_STAMP}/g" index.html
+node -e '
+const fs = require("fs");
+let data = {};
+try { data = JSON.parse(fs.readFileSync("version.json"
+,
+"utf8"));
+} catch (_) {}
+data.version = process.env.HKT_STAMP;
+data.appUpdated = process.env.ISO_NOW;
+data.commit = process.env.SHORT_SHA;
+fs.writeFileSync("version.json"
+, JSON.stringify(data, null, 2) +
+"\n");
+'
+- name: Commit updated version.json and index.html
+run: |
+git config user.name "github-actions[bot]"
+git config user.email "41898282+githubactions[bot]@users.noreply.github.com"
+git add index.html version.json
+if ! git diff --cached --quiet; then
+git commit -m "chore: stamp build timestamp [skip ci]"
+git push
+fi
+permissions:
+contents: write
+jobs:
+stamp-version:
+if: github.actor != 'github-actions[bot]'
+runs-on: ubuntu-latest
+steps:
+- name: Checkout repository
+uses: actions/checkout@v4
+with:
+ref: main
+- name: Stamp HKT timestamp in index.html & version.json
+run: |
+export HKT_STAMP=$(TZ='Asia/Hong_Kong' date '+%Y-%m-%d %H:%M HKT')
+export ISO_NOW=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+export SHORT_SHA=$(git rev-parse --short HEAD)
+sed -i -E "s/[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}
+HKT/${HKT_STAMP}/g" index.html
+node -e '
+const fs = require("fs");
+let data = {};
+try { data = JSON.parse(fs.readFileSync("version.json"
+,
+"utf8"));
+} catch (_) {}
+data.version = process.env.HKT_STAMP;
+data.appUpdated = process.env.ISO_NOW;
+data.commit = process.env.SHORT_SHA;
+fs.writeFileSync("version.json"
+, JSON.stringify(data, null, 2) +
+"\n");
+'
+- name: Commit updated version.json and index.html
+run: |
+git config user.name "github-actions[bot]"
+git config user.email "41898282+githubactions[bot]@users.noreply.github.com"
+git add index.html version.json
+if ! git diff --cached --quiet; then
+git commit -m "chore: stamp build timestamp [skip ci]"
+git push
+fi
+11/22/26, 7:36 PM Fixes and Verification for Transit App - Google Gemini
+https://gemini.google.com/u/1/app/5d1421e38c2debd7?pageId=none 23/26
+Note on repo conventions:
+.github/workflows/version.yml handles version.json ( version ,
+appUpdated , commit ) and the bottom YYYY-MM-DD HH:MM HKT footer
+timestamp in index.html on every push to main (preserving existing fields in
+version.json written by actions.yml ).
+Also remove legacy // Patch: YYYY-MM-DD HH:MM HKT ... header comments
+from modified JS/HTML files if present, keeping clean // File: ... headers
+instead.
+ 
+Once AI Studio creates `
+.github/workflows/version.yml`
+, copy that single file int
+shit it failed
+Run #99 ( Update actions.yml , commit 8072000 ) failed inside the update-index job
+with exit code 1.
+How to see the exact error line right now
+image_8d731b.jpg + 1
+Click update-index (either in the left sidebar or on the diagram box in the middle
+of the screen).
+1.
+image_8d7338.png
+2. Expand the step that has the red × —most likely it's either:
+Note on repo conventions:
+.github/workflows/version.yml handles version.json ( version ,
+appUpdated , commit ) and the bottom YYYY-MM-DD HH:MM HKT footer
+timestamp in index.html on every push to main (preserving existing fields in
+version.json written by actions.yml ).
+Also remove legacy // Patch: YYYY-MM-DD HH:MM HKT ... header comments
+from modified JS/HTML files if present, keeping clean // File: ... headers
+instead.
+ 
+Once AI Studio creates `
+.github/workflows/version.yml`
+, copy that single file int
+shit it failed
+Run #99 ( Update actions.yml , commit 8072000 ) failed inside the update-index job
+with exit code 1.
+How to see the exact error line right now
+image_8d731b.jpg + 1
+Click update-index (either in the left sidebar or on the diagram box in the middle
+of the screen).
+1.
+image_8d7338.png
+2. Expand the step that has the red × —most likely it's either:
+11/22/26, 7:36 PM Fixes and Verification for Transit App - Google Gemini
+https://gemini.google.com/u/1/app/5d1421e38c2debd7?pageId=none 24/26
+Quick fix if it's the hardcode.js import in actions.yml
+If the step failed while trying to load MTR_EXITS_SEED from hardcode.js in Node:
+Click into update-index and paste the red step's name + error lines here (or the
+MTR_EXITS_SEED section of actions.yml ), and I'll pinpoint the exact line.
+Importing MTR_EXITS_SEED from hardcode.js in actions.yml (for
+example, hardcode.js might use browser/window globals or
+CommonJS/ESM exports differently than the workflow's Node script expects,
+or a syntax/import path mismatch).
+A transient external API / Overpass fetch during the index build.
+Instead of relying on import / require if hardcode.js isn't a plain module,
+read hardcode.js as text in the workflow script and extract MTR_EXITS_SEED
+safely (or vm.runInNewContext / regex/JSON parse) with a fallback to an empty
+array [] so a helper import never crashes the whole index build.
+Also check that actions.yml has permissions: contents: write if it failed
+on git push (though exit code 1 during script execution usually happens before
+push).
+write promot to fix
+Here is a prompt you can paste directly into AI Studio to make
+.github/workflows/actions.yml resilient when loading MTR_EXITS_SEED from
+hardcode.js and building the index:
+In `
+.github/workflows/actions.yml`
+, fix the `update-index` failure (exit code
+1) by making `MTR_EXITS_SEED` loading from `hardcode.js` fault-tolerant and
+self-contained:
+Plaintext arrow_circle_down copy
+Quick fix if it's the hardcode.js import in actions.yml
+If the step failed while trying to load MTR_EXITS_SEED from hardcode.js in Node:
+Click into update-index and paste the red step's name + error lines here (or the
+MTR_EXITS_SEED section of actions.yml ), and I'll pinpoint the exact line.
+Importing MTR_EXITS_SEED from hardcode.js in actions.yml (for
+example, hardcode.js might use browser/window globals or
+CommonJS/ESM exports differently than the workflow's Node script expects,
+or a syntax/import path mismatch).
+A transient external API / Overpass fetch during the index build.
+Instead of relying on import / require if hardcode.js isn't a plain module,
+read hardcode.js as text in the workflow script and extract MTR_EXITS_SEED
+safely (or vm.runInNewContext / regex/JSON parse) with a fallback to an empty
+array [] so a helper import never crashes the whole index build.
+Also check that actions.yml has permissions: contents: write if it failed
+on git push (though exit code 1 during script execution usually happens before
+push).
+write promot to fix
+Here is a prompt you can paste directly into AI Studio to make
+.github/workflows/actions.yml resilient when loading MTR_EXITS_SEED from
+hardcode.js and building the index:
+In `
+.github/workflows/actions.yml`
+, fix the `update-index` failure (exit code
+1) by making `MTR_EXITS_SEED` loading from `hardcode.js` fault-tolerant and
+self-contained:
+Plaintext arrow_circle_down copy
+11/22/26, 7:36 PM Fixes and Verification for Transit App - Google Gemini
+https://gemini.google.com/u/1/app/5d1421e38c2debd7?pageId=none 25/26
+If you also open the failed step inside update-index and paste the exact error message
+here, I can tighten the prompt even further to target that specific line.
+1. Safe `MTR_EXITS_SEED` extraction:
+- Do not fail the workflow with a module import/syntax error if
+`hardcode.js` uses browser globals (`window` / `const` / `var`) or non-Node
+syntax.
+- Load `hardcode.js` safely (e.g., via `vm.runInNewContext` with a mock
+`window`/`globalThis` or safe parsing inside a `try/catch`), defaulting
+`MTR_EXITS_SEED` to `[]` if extraction fails, while still merging and
+deduplicating with Overpass / existing exits when available.
+2. Resilient external fetches:
+- Ensure transient Overpass or upstream network timeouts log a warning
+rather than aborting the entire `update-index` build when fallback/seed data
+exists, and keep `permissions: contents: write` intact so commits/pushes
+succeed.
+3. Keep all existing workflow steps, schedules, and `paths-ignore` rules
+intact, and verify the workflow YAML/script runs cleanly without exit code 1.
+image_8d7338.png

@@ -1,0 +1,1815 @@
+name: Weekly Bus, MTR & Ferry Index Update
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'bus_index.min.json'
+      - 'version.json'
+      - 'index.html'
+      - '_headers'
+      - 'icon.png'
+      - 'functions/**'
+      - 'planner.js'
+      - 'map.js'
+
+  schedule:
+    - cron: '0 0 * * 0'
+  workflow_dispatch:
+
+concurrency:
+  group: update-bus-index-main
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  update-index:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Build Domestic HK Multi-Modal Index & Run Upstream Drift Watchdog
+        run: |
+          node << 'EOF'
+          const fs = require('fs');
+          const path = require('path');
+          const crypto = require('crypto');
+          const { createRequire } = require('module');
+          const repoRequire = createRequire(path.join(process.cwd(), 'hardcode.js'));
+          const SCHEMA_VERSION = 9;
+          const REMOVED_COMPANIES = new Set(['DB', 'PITCL']);
+
+          // Load single-source-of-truth directories, colors, schedules & helpers from hardcode.js
+          const {
+            IOS_BUS_RED,
+            IOS_FERRY_BLUE,
+            IOS_LRT_INDIGO,
+            getRouteColorHex,
+            LRT_STATION_DIRECTORY,
+            MTR_STATION_DIRECTORY,
+            FERRY_PIER_DIRECTORY,
+            HARDCODED_LRT_SEQUENCES,
+            INTER_ISLANDS_REVIEW_AFTER,
+            VERIFIED_MAINLINE_FERRIES,
+            normName,
+            resolveMtrStationCode,
+            resolveLrtNumericId,
+            resolveFerryLiveEtaKey,
+            getSectionalFareMeta,
+            mergeOperatingWindows,
+            deriveFerryActiveWindowsFromSched
+          } = repoRequire('./hardcode.js');
+
+          const VERIFIED_MAINLINE_SCHEDULES = VERIFIED_MAINLINE_FERRIES;
+
+          const MAINLINE_FERRY_PAIRS = new Set([
+            'central_muiwo', 'central_cheungchau', 'central_pengchau',
+            'central_yungshuewan', 'central_sokkwuwan', 'central_discoverybay',
+            'central_mawan', 'central_tsimshatsui', 'tsimshatsui_wanchai',
+            'hunghom_northpoint', 'kowlooncity_northpoint', 'kwuntong_northpoint',
+            'central_hunghom', 'cheungchau_pengchau', 'muiwo_pengchau',
+            'cheungchau_muiwo', 'chimawan_pengchau', 'chimawan_muiwo',
+            'cheungchau_chimawan', 'kwuntong_saiwanho', 'saiwanho_samkatsuen',
+            'taio_tuenmun', 'tuenmun_tungchung', 'shalowan_tuenmun',
+            'taio_tungchung', 'shalowan_tungchung', 'shalowan_taio'
+          ]);
+
+          function pushGtfsSpanToWindows(winArray, startMinRaw, endMinRaw, padBefore = 15, padAfter = 25) {
+            if (!Number.isFinite(startMinRaw) || !Number.isFinite(endMinRaw)) return;
+            const sRaw = Math.max(0, startMinRaw - padBefore);
+            const eRaw = Math.max(sRaw, endMinRaw + padAfter);
+            if (sRaw >= 1440) {
+              winArray.push([Math.min(1439, sRaw - 1440), Math.min(1439, eRaw - 1440)]);
+            } else if (eRaw >= 1440) {
+              winArray.push([sRaw, 1439]);
+              winArray.push([0, Math.min(1439, eRaw - 1440)]);
+            } else if (eRaw >= sRaw) {
+              winArray.push([sRaw, eRaw]);
+            } else {
+              winArray.push([sRaw, 1439]);
+              winArray.push([0, Math.min(1439, eRaw)]);
+            }
+          }
+
+          function decodeMtrMatrixLookup(stations, b64) {
+            if (!Array.isArray(stations) || !stations.length || !b64) return () => 0;
+            try {
+              const idxMap = new Map(stations.map((c, i) => [String(c).toUpperCase(), i]));
+              const buf = Buffer.from(b64, 'base64');
+              const arr = new Uint16Array(buf.buffer, buf.byteOffset, Math.floor(buf.byteLength / 2));
+              const N = stations.length;
+              return (a, b) => {
+                const i = idxMap.get(String(a).toUpperCase());
+                const j = idxMap.get(String(b).toUpperCase());
+                if (i === undefined || j === undefined) return 0;
+                const val = arr[i * N + j];
+                return val > 0 ? (val / 10) : 0;
+              };
+            } catch (e) {
+              return () => 0;
+            }
+          }
+
+          function unpackTransitDbIfNeeded(db) {
+            if (!db || typeof db !== 'object') return { groupedRoutes: [], routeStopsCache: {} };
+            const dict = Array.isArray(db.stopsDict) ? db.stopsDict : null;
+            const rawCache = db.routeStopsCache || {};
+            const unpackedCache = {};
+
+            for (const [rId, list] of Object.entries(rawCache)) {
+              if (!Array.isArray(list)) continue;
+              unpackedCache[rId] = list.map((item, idx) => {
+                if (Array.isArray(item) && dict) {
+                  const d = dict[item[0]] || [];
+                  const st = {
+                    stopId: String(d[0] ?? ''),
+                    stopName_e: String(d[1] ?? ''),
+                    name_tc: String(d[2] ?? ''),
+                    latitude: Number(d[3] || 0).toFixed(6),
+                    longitude: Number(d[4] || 0).toFixed(6),
+                    seq: idx + 1,
+                    fare: String(item[1] ?? '0')
+                  };
+                  if (item[2]) st.fareHol = String(item[2]);
+                  if (d[5]) st.mtrCode = d[5];
+                  if (d[6]) st.lrtCode = d[6];
+                  if (d[7]) st.mtrLine = d[7];
+                  if (d[8]) st.lrtLine = d[8];
+                  return st;
+                }
+                return item;
+              });
+            }
+
+            const unpackedRoutes = (Array.isArray(db.groupedRoutes) ? db.groupedRoutes : []).map(g => ({
+              ...g,
+              colorHex: getRouteColorHex(g.mode, g.company, g.routeNo),
+              serviceMode: g.serviceMode || 'DAILY',
+              operatingDays: Array.isArray(g.operatingDays) ? g.operatingDays : [0, 1, 2, 3, 4, 5, 6],
+              includeHolidays: g.includeHolidays !== undefined ? g.includeHolidays : true,
+              excludeHolidays: Boolean(g.excludeHolidays),
+              isHighway: Boolean(g.isHighway),
+              isCircular: Boolean(g.isCircular)
+            }));
+
+            return { ...db, groupedRoutes: unpackedRoutes, routeStopsCache: unpackedCache };
+          }
+
+          async function fetchWithTimeout(url, timeoutMs = 12000, options = {}) {
+            const ctrl = new AbortController();
+            const tid = setTimeout(() => ctrl.abort(), timeoutMs);
+            try {
+              const headers = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Transit-HK/4.0', ...(options.headers || {}) };
+              const res = await fetch(url, { ...options, headers, signal: ctrl.signal });
+              clearTimeout(tid);
+              return res;
+            } catch (e) {
+              clearTimeout(tid);
+              return null;
+            }
+          }
+
+          async function fetchOverpassWithFallback(query, timeoutMs = 14000) {
+            const mirrors = [
+              'https://lz4.overpass-api.de/api/interpreter',
+              'https://overpass-api.de/api/interpreter',
+              'https://overpass.kumi.systems/api/interpreter'
+            ];
+            for (const url of mirrors) {
+              const res = await fetchWithTimeout(url, timeoutMs, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: `data=${encodeURIComponent(query)}`
+              });
+              if (res && res.ok) {
+                const json = await res.json().catch(() => null);
+                if (Array.isArray(json?.elements) && json.elements.length > 0) return json;
+              }
+            }
+            return null;
+          }
+
+          function hk80ToWgs84LocalFallback(north, east) {
+            const n = Number(north), e = Number(east);
+            if (!Number.isFinite(n) || !Number.isFinite(e) || n < 790000 || e < 790000) return null;
+            const lat = 22.3121333 + (n - 819069.80) / 110730.0 - 0.0015278;
+            const lon = 114.1785556 + (e - 836694.05) / 102990.0 + 0.0024444;
+            if (isValidHkCoord(lat, lon)) {
+              return { lat: Number(lat.toFixed(6)), lon: Number(lon.toFixed(6)) };
+            }
+            return null;
+          }
+
+          async function hk80ToWgs84Api(north, east) {
+            try {
+              const r = await fetchWithTimeout(
+                `https://www.geodetic.gov.hk/transform/v2/?inSys=hkgrid&outSys=wgsgeog&n=${encodeURIComponent(north)}&e=${encodeURIComponent(east)}`,
+                3500,
+                { headers: { 'Accept': 'application/json' } }
+              );
+              if (r && r.ok) {
+                const d = await r.json().catch(() => null);
+                const lat = parseFloat(d?.wgsLat), lon = parseFloat(d?.wgsLong);
+                if (isValidHkCoord(lat, lon)) {
+                  return { lat: Number(lat.toFixed(6)), lon: Number(lon.toFixed(6)) };
+                }
+              }
+            } catch (e) {}
+            return hk80ToWgs84LocalFallback(north, east);
+          }
+
+          function isValidHkCoord(lat, lon) {
+            const la = parseFloat(lat), lo = parseFloat(lon);
+            return Number.isFinite(la) && Number.isFinite(lo) && la > 22.15 && la < 22.58 && lo > 113.82 && lo < 114.45;
+          }
+
+          async function resolveGovHkStationCoord(queryText, isRail = true) {
+            if (!queryText) return null;
+            try {
+              const r = await fetchWithTimeout(
+                `https://geodata.gov.hk/gs/api/v1.0.0/locationSearch?q=${encodeURIComponent(queryText)}`,
+                5000,
+                { headers: { 'Accept': 'application/json' } }
+              );
+              if (r && r.ok) {
+                const arr = await r.json();
+                if (Array.isArray(arr) && arr.length > 0) {
+                  const hit = (isRail ? arr.find(it =>
+                    it?.x && it?.y &&
+                    !/bus|terminus|interchange|minibus|gmb|巴士|總站|小巴|交匯處/i.test(`${it.nameEN || ''} ${it.nameZH || ''}`)
+                  ) : null) || arr[0];
+                  if (hit?.x && hit?.y) {
+                    const wgs = await hk80ToWgs84Api(Number(hit.y), Number(hit.x));
+                    if (wgs && isValidHkCoord(wgs.lat, wgs.lon)) {
+                      return { lat: Number(wgs.lat).toFixed(6), lon: Number(wgs.lon).toFixed(6) };
+                    }
+                  }
+                }
+              }
+            } catch (e) {}
+            return null;
+          }
+
+          function splitCsvRow(row) {
+            const out = [];
+            let cur = '', inQuotes = false;
+            for (let i = 0; i < row.length; i++) {
+              const c = row[i];
+              if (c === '"') {
+                if (inQuotes && row[i + 1] === '"') { cur += '"'; i++; }
+                else inQuotes = !inQuotes;
+              } else if (c === ',' && !inQuotes) {
+                out.push(cur.trim()); cur = '';
+              } else cur += c;
+            }
+            out.push(cur.trim());
+            return out;
+          }
+
+          function parseCsv(text) {
+            const lines = String(text || '').replace(/^\uFEFF/, '').split(/\r?\n/).filter(l => l.trim());
+            if (!lines.length) return [];
+            const headers = splitCsvRow(lines[0]);
+            return lines.slice(1).map(l => {
+              const vals = splitCsvRow(l);
+              const obj = {};
+              headers.forEach((h, i) => obj[h] = vals[i] || '');
+              return obj;
+            });
+          }
+
+          function parseXmlRecords(xmlText, rowTag) {
+            const out = [];
+            const rowRegex = new RegExp(`<${rowTag}>([\\s\\S]*?)<\\/${rowTag}>`, 'gi');
+            const tagRegex = /<([A-Z0-9_]+)>([\s\S]*?)<\/\1>/gi;
+            let m;
+            while ((m = rowRegex.exec(String(xmlText || ''))) !== null) {
+              const obj = {};
+              let tm;
+              tagRegex.lastIndex = 0;
+              while ((tm = tagRegex.exec(m[1])) !== null) {
+                obj[tm[1]] = tm[2]
+                  .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
+                  .replace(/&amp;/g, '&')
+                  .replace(/&apos;/g, "'")
+                  .replace(/&quot;/g, '"')
+                  .trim();
+              }
+              out.push(obj);
+            }
+            return out;
+          }
+
+          function cleanFerryEndpointName(raw) {
+            return String(raw || '')
+              .replace(/&amp;/g, '&')
+              .replace(/\s*[\(（][^\)）]*(fare|pre-?paid|boarding|extend|return|single|circular|skip|只限|收費|單程|來回|登船|上落|延展|循環)[^\)）]*[\)）]\s*/gi, ' ')
+              .replace(/\s+/g, ' ')
+              .trim();
+          }
+
+          function shortFerryPierLabelEn(raw) {
+            return cleanFerryEndpointName(raw)
+              .replace(/\s+at\s+.*$/i, '')
+              .split(/[\/,(-]/)[0]
+              .replace(/\b(Ferry Pier|Public Pier|Ferry Terminal|Promenade Landing Steps|Landing Steps|New Development Ferry Pier|Pier\s*No\.?\s*\d+|Pier)\b/gi, '')
+              .replace(/\s+/g, ' ')
+              .trim();
+          }
+
+          function shortFerryPierLabelTc(raw) {
+            return cleanFerryEndpointName(raw)
+              .split(/[\/（,(-]/)[0]
+              .replace(/(新發展碼頭|海濱長廊登岸梯級|渡輪碼頭|公眾碼頭|客運碼頭|登岸梯級|碼頭)/g, '')
+              .trim();
+          }
+
+          function registerScopedCoord(mapObj, ns, code, rawEn, rawZh, rawName, coord, overwrite = false) {
+            if (!coord || !isValidHkCoord(coord.lat, coord.lon)) return;
+            const isFerryNs = (ns === 'FERRY');
+            const put = (k) => {
+              if (!k) return;
+              const scopedKey = `${ns}:${k}`;
+              if (overwrite || !mapObj.has(scopedKey)) mapObj.set(scopedKey, coord);
+            };
+            if (code) {
+              const c = String(code).trim().toUpperCase();
+              put(`CODE_${c}`);
+              if (ns === 'LRT') {
+                const numStr = String(parseInt(c.replace(/\D/g, ''), 10) || '');
+                if (numStr) {
+                  put(`CODE_${numStr}`);
+                  put(`CODE_${numStr.padStart(3, '0')}`);
+                }
+              }
+            }
+            if (rawEn) put(normName(rawEn, isFerryNs));
+            if (rawZh) put(normName(rawZh, isFerryNs));
+            if (rawName) {
+              const asciiPart = String(rawName).replace(/[\u4e00-\u9fa5（）()]/g, ' ').trim();
+              const cjkPart = (String(rawName).match(/[\u4e00-\u9fa5]+/g) || []).join('');
+              if (asciiPart) put(normName(asciiPart, isFerryNs));
+              if (cjkPart) put(normName(cjkPart, isFerryNs));
+            }
+          }
+
+          function lookupScopedCoord(mapObj, ns, code, nameEn, nameTc) {
+            const c = String(code || '').trim().toUpperCase();
+            const isFerryNs = (ns === 'FERRY');
+            if (ns === 'LRT') {
+              const numId = resolveLrtNumericId(c, nameEn, nameTc);
+              const refDir = numId ? LRT_STATION_DIRECTORY[numId] : null;
+              if (refDir) {
+                return { lat: refDir.lat.toFixed(6), lon: refDir.lon.toFixed(6), name_en: refDir.en, name_tc: refDir.tc };
+              }
+            }
+            if (ns === 'MTR' && c && MTR_STATION_DIRECTORY[c]) {
+              const mRef = MTR_STATION_DIRECTORY[c];
+              return { lat: mRef.lat.toFixed(6), lon: mRef.lon.toFixed(6), name_en: mRef.en, name_tc: mRef.tc };
+            }
+            if (ns === 'FERRY' && nameEn) {
+              const pCanon = normName(nameEn, true);
+              if (FERRY_PIER_DIRECTORY[pCanon]) {
+                const pRef = FERRY_PIER_DIRECTORY[pCanon];
+                return { lat: pRef.lat.toFixed(6), lon: pRef.lon.toFixed(6), name_en: pRef.en, name_tc: pRef.tc };
+              }
+            }
+            return (c && mapObj.get(`${ns}:CODE_${c}`)) ||
+                   (nameEn && mapObj.get(`${ns}:${normName(nameEn, isFerryNs)}`)) ||
+                   (nameTc && mapObj.get(`${ns}:${normName(nameTc, isFerryNs)}`)) ||
+                   null;
+          }
+
+          function calcDistKm(lat1, lon1, lat2, lon2) {
+            const R = 6371;
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const a = Math.sin(dLat / 2) ** 2 +
+                      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
+            return R * 2 * Math.atan2(Math.sqrt(Math.max(0, a)), Math.sqrt(Math.max(0, 1 - a)));
+          }
+
+          function detectCircularRoute(routeNo, origE, destE, origTc, destTc, stopsList) {
+            const desc = `${origE || ''} ${destE || ''} ${origTc || ''} ${destTc || ''}`;
+            if (/circular|循環/i.test(desc) || /^(705|706)$/.test(String(routeNo || '').trim())) return true;
+            if (Array.isArray(stopsList) && stopsList.length >= 4) {
+              const first = stopsList[0], last = stopsList[stopsList.length - 1];
+              const dKm = calcDistKm(parseFloat(first.latitude), parseFloat(first.longitude), parseFloat(last.latitude), parseFloat(last.longitude));
+              if (Number.isFinite(dKm) && dKm <= 0.20) return true;
+            }
+            return false;
+          }
+
+          function deriveMetadataFromRouteAttributes(routeNo, company, origE, destE, origTc, destTc, tdMeta, stopsList) {
+            const isCircular = detectCircularRoute(routeNo, origE, destE, origTc, destTc, stopsList);
+            if (tdMeta && Array.isArray(tdMeta.operatingDays) && tdMeta.operatingDays.length > 0) {
+              return { ...tdMeta, isCircular };
+            }
+            const r = String(routeNo || '').trim().toUpperCase();
+            const desc = `${origE || ''} ${destE || ''}`.toLowerCase();
+
+            let totalKm = 0, validPairs = 0;
+            if (Array.isArray(stopsList) && stopsList.length >= 2) {
+              for (let i = 0; i < stopsList.length - 1; i++) {
+                const d = calcDistKm(parseFloat(stopsList[i].latitude), parseFloat(stopsList[i].longitude), parseFloat(stopsList[i + 1].latitude), parseFloat(stopsList[i + 1].longitude));
+                if (Number.isFinite(d) && d < 35) { totalKm += d; validPairs++; }
+              }
+            }
+            const isHighway = validPairs > 0 && (totalKm / validPairs) >= 1.15;
+
+            if (/cemetery|墳場|曾咀|和合石|柴灣華人|將軍澳華人|鑽石山火葬場/.test(desc)) {
+              return { serviceMode: 'FESTIVAL_ONLY', operatingDays: [], includeHolidays: false, excludeHolidays: true, isHighway, isCircular };
+            }
+            if (/^N[A-Z]?\d+|\d+N$/i.test(r) || /overnight|通宵/.test(desc)) {
+              return { serviceMode: 'OVERNIGHT_ONLY', operatingDays: [0, 1, 2, 3, 4, 5, 6], includeHolidays: true, excludeHolidays: false, isHighway, isCircular, activeWindows: [[0, 360], [1410, 1439]] };
+            }
+            if ((/R$/i.test(r) && !/^NR/i.test(r)) || /sunday|holiday|假日/.test(desc)) {
+              return { serviceMode: 'HOLIDAY_ONLY', operatingDays: [0], includeHolidays: true, excludeHolidays: false, isHighway, isCircular, activeWindows: [[330, 1439]] };
+            }
+            if (/[PS]$/i.test(r)) {
+              return { serviceMode: 'PEAK_WEEKDAY_ONLY', operatingDays: [1, 2, 3, 4, 5, 6], includeHolidays: false, excludeHolidays: true, isHighway, isCircular, activeWindows: [[405, 585], [1020, 1215]] };
+            }
+            return { serviceMode: 'DAILY', operatingDays: [0, 1, 2, 3, 4, 5, 6], includeHolidays: true, excludeHolidays: false, isHighway, isCircular, activeWindows: [[315, 1439], [0, 60]] };
+          }
+
+          function inferClassFallbackHeadway(routeNo, company) {
+            const r = String(routeNo || '').trim().toUpperCase();
+            const co = String(company || '').trim().toUpperCase();
+            if (/^NA\d+/.test(r)) return { base: 45, byPeriod: { amPeak: 45, midday: 60, pmPeak: 45, offPeak: 60, overnight: 45 } };
+            if (/^N\d+|\d+N$/.test(r)) return { base: 30, byPeriod: { amPeak: 30, midday: 60, pmPeak: 30, offPeak: 35, overnight: 25 } };
+            if (/^A\d+/.test(r)) return { base: 45, byPeriod: { amPeak: 30, midday: 55, pmPeak: 30, offPeak: 55, overnight: 60 } };
+            if (co === 'NLB') return { base: 30, byPeriod: { amPeak: 20, midday: 30, pmPeak: 22, offPeak: 35, overnight: 60 } };
+            if (co.startsWith('GMB')) return { base: 14, byPeriod: { amPeak: 10, midday: 15, pmPeak: 10, offPeak: 18, overnight: 45 } };
+            if (/^E\d+/.test(r)) return { base: 18, byPeriod: { amPeak: 12, midday: 20, pmPeak: 14, offPeak: 22, overnight: 45 } };
+            return { base: 15, byPeriod: { amPeak: 10, midday: 16, pmPeak: 11, offPeak: 20, overnight: 45 } };
+          }
+
+          function resolve2x2FerryFareMatrix(fBucket, baseRouteFare, corridorKey = '') {
+            const vSpec = VERIFIED_MAINLINE_FERRIES[corridorKey];
+            if (vSpec && vSpec.fareWk > 0) {
+              return {
+                fareWk: vSpec.fareWk,
+                fareHol: vSpec.fareHol || vSpec.fareWk,
+                fareWkOrd: vSpec.fareWkOrd || vSpec.fareWk,
+                fareWkFast: vSpec.fareWkFast || vSpec.fareWk,
+                fareHolOrd: vSpec.fareHolOrd || vSpec.fareHol || vSpec.fareWk,
+                fareHolFast: vSpec.fareHolFast || vSpec.fareHol || vSpec.fareWk
+              };
+            }
+            if (/tuenmun|tungchung|shalowan|taio/.test(corridorKey)) {
+              return { fareWk: 30.0, fareHol: 38.0, fareWkOrd: 25.0, fareWkFast: 30.0, fareHolOrd: 32.5, fareHolFast: 38.0 };
+            }
+            const fb = Number(baseRouteFare) > 0 ? Number(baseRouteFare) : 16.3;
+            return { fareWk: fb, fareHol: fb, fareWkOrd: fb, fareWkFast: fb, fareHolOrd: fb, fareHolFast: fb };
+          }
+
+          function sha1Short(text) {
+            return crypto.createHash('sha1').update(String(text || '')).digest('hex').slice(0, 12);
+          }
+
+          async function notifyGitHubIssueOnDrift(driftAlerts, hktTodayYmd) {
+            const token = process.env.GITHUB_TOKEN;
+            const repo = process.env.GITHUB_REPOSITORY;
+            if (!token || !repo || !Array.isArray(driftAlerts) || !driftAlerts.length) return;
+            const ownerUser = repo.split('/')[0] || 'johntjz';
+            const issueTitle = '🚨 [Schedule & Fare Watchdog] Upstream MTR / Ferry / Bus Data Change Detected';
+            const bodyLines = [
+              `@${ownerUser} Automated weekly check on **${hktTodayYmd}** detected **${driftAlerts.length}** upstream change(s) or expired temporary works windows:`,
+              '',
+              ...driftAlerts.map(a => `- **[${a.category}]** ${a.message}`),
+              '',
+              `> Your live app continues to serve verified data safely. Review the changes above and update \`hardcode.js\` if needed.`
+            ].join('\n');
+
+            try {
+              const listRes = await fetchWithTimeout(`https://api.github.com/repos/${repo}/issues?state=open&per_page=30`, 8000, {
+                headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/vnd.github+json' }
+              });
+              const openIssues = listRes?.ok ? await listRes.json() : [];
+              const existing = Array.isArray(openIssues) ? openIssues.find(iss => iss.title === issueTitle) : null;
+              if (existing) {
+                await fetchWithTimeout(`https://api.github.com/repos/${repo}/issues/${existing.number}/comments`, 8000, {
+                  method: 'POST',
+                  headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ body: bodyLines })
+                });
+              } else {
+                await fetchWithTimeout(`https://api.github.com/repos/${repo}/issues`, 8000, {
+                  method: 'POST',
+                  headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ title: issueTitle, body: bodyLines })
+                });
+              }
+            } catch (e) {}
+          }
+
+          (async () => {
+            if (!fs.existsSync('bus_index.min.json')) process.exit(1);
+            const rawExistingDb = JSON.parse(fs.readFileSync('bus_index.min.json', 'utf8'));
+            const prevUpstreamHashes = rawExistingDb.upstreamHashes || {};
+            const nextUpstreamHashes = { ...prevUpstreamHashes };
+            const dataDriftAlerts = [];
+
+            const existingDb = unpackTransitDbIfNeeded(rawExistingDb);
+            const rawRoutes = (Array.isArray(existingDb.groupedRoutes) ? existingDb.groupedRoutes : []).filter(g => !g.mode || g.mode === 'BUS');
+            const rawStopsCache = {};
+            for (const [rId, list] of Object.entries(existingDb.routeStopsCache || {})) {
+              if (!rId.startsWith('MTR_') && !rId.startsWith('LRT_') && !rId.startsWith('FERRY_')) {
+                rawStopsCache[rId] = list;
+              }
+            }
+
+            const LAST_UPDATED_ISO = new Date().toISOString();
+            const hktTodayYmd = new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10);
+            let tdLastUpdated = hktTodayYmd;
+            try {
+              const tdRes = await fetchWithTimeout('https://static.data.gov.hk/td/routes-fares-geojson/DATA_LAST_UPDATED_DATE.csv', 6000);
+              const rows = tdRes?.ok ? parseCsv(await tdRes.text()) : [];
+              const csvDate = rows[0] ? String(Object.values(rows[0])[0] || '').trim() : '';
+              if (csvDate && csvDate > hktTodayYmd) tdLastUpdated = csvDate;
+            } catch (e) {}
+
+            // Check Temporary Works Expiry Date (Mui Wo Northern Berth 2.5-Month Works)
+            if (hktTodayYmd >= INTER_ISLANDS_REVIEW_AFTER) {
+              dataDriftAlerts.push({
+                category: 'TEMP_WORKS_EXPIRY',
+                date: hktTodayYmd,
+                message: `Mui Wo Northern Berth 2.5-month temporary works window (${INTER_ISLANDS_REVIEW_AFTER}) has elapsed — verify if Sun Ferry Inter-Islands has resumed normal schedule.`
+              });
+            }
+
+            const publicHolidaysSet = new Set(Array.isArray(existingDb.publicHolidays) ? existingDb.publicHolidays : []);
+            try {
+              const [holEnRes, holTcRes] = await Promise.all([
+                fetchWithTimeout('https://www.1823.gov.hk/common/ical/en.json', 8000),
+                fetchWithTimeout('https://www.1823.gov.hk/common/ical/tc.json', 8000)
+              ]);
+              for (const res of [holEnRes, holTcRes]) {
+                if (res && res.ok) {
+                  const hData = JSON.parse((await res.text()).replace(/^\uFEFF/, '').trim());
+                  (hData?.vcalendar?.[0]?.vevent || []).forEach(ev => {
+                    const dt = Array.isArray(ev.dtstart) ? String(ev.dtstart[0] || '') : String(ev.dtstart || '');
+                    if (/^\d{8}$/.test(dt)) publicHolidaysSet.add(`${dt.slice(0, 4)}-${dt.slice(4, 6)}-${dt.slice(6, 8)}`);
+                  });
+                }
+              }
+            } catch (e) {}
+
+            const osmStationCoords = new Map();
+            const fallbackStationCoords = new Map();
+            const mtrExits = [];
+
+            // Seed survey-grade MTR, Ferry Pier, and Light Rail coordinates from hardcode.js
+            for (const [code, info] of Object.entries(MTR_STATION_DIRECTORY)) {
+              const cObj = { lat: info.lat.toFixed(6), lon: info.lon.toFixed(6), name_en: info.en, name_tc: info.tc };
+              registerScopedCoord(osmStationCoords, 'MTR', code, info.en, info.tc, '', cObj, true);
+              registerScopedCoord(fallbackStationCoords, 'MTR', code, info.en, info.tc, '', cObj, true);
+            }
+            for (const [pKey, info] of Object.entries(FERRY_PIER_DIRECTORY)) {
+              const cObj = { lat: info.lat.toFixed(6), lon: info.lon.toFixed(6), name_en: info.en, name_tc: info.tc };
+              registerScopedCoord(osmStationCoords, 'FERRY', pKey, info.en, info.tc, '', cObj, true);
+              registerScopedCoord(fallbackStationCoords, 'FERRY', pKey, info.en, info.tc, '', cObj, true);
+            }
+            for (const [numId, info] of Object.entries(LRT_STATION_DIRECTORY)) {
+              const cObj = { lat: info.lat.toFixed(6), lon: info.lon.toFixed(6), name_en: info.en, name_tc: info.tc };
+              registerScopedCoord(osmStationCoords, 'LRT', numId, info.en, info.tc, '', cObj, true);
+              registerScopedCoord(fallbackStationCoords, 'LRT', numId, info.en, info.tc, '', cObj, true);
+              if (info.altEn || info.altTc) {
+                registerScopedCoord(osmStationCoords, 'LRT', numId, info.altEn || info.en, info.altTc || info.tc, '', cObj, true);
+                registerScopedCoord(fallbackStationCoords, 'LRT', numId, info.altEn || info.en, info.altTc || info.tc, '', cObj, true);
+              }
+            }
+
+            for (const [rId, stops] of Object.entries(existingDb.routeStopsCache || {})) {
+              const ns = rId.startsWith('MTR_') ? 'MTR' : (rId.startsWith('FERRY_') ? 'FERRY' : null);
+              if (!ns) continue;
+              (stops || []).forEach(s => {
+                const la = parseFloat(s.latitude), lo = parseFloat(s.longitude);
+                if (isValidHkCoord(la, lo)) {
+                  const c = { lat: la.toFixed(6), lon: lo.toFixed(6), name_en: s.stopName_e, name_tc: s.name_tc };
+                  const code = s.mtrCode || s.lrtCode || s.stopId || '';
+                  registerScopedCoord(fallbackStationCoords, ns, code, s.stopName_e, s.name_tc, '', c, false);
+                }
+              });
+            }
+
+            const grid = new Map();
+            const addGridNode = (lat, lon, rawNameE, rawNameZ, isPreNormalized = false) => {
+              if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+              const ck = `${Math.floor(lat * 100)}_${Math.floor(lon * 100)}`;
+              if (!grid.has(ck)) grid.set(ck, []);
+              grid.get(ck).push({
+                lat,
+                lon,
+                ke: isPreNormalized ? rawNameE : normName(rawNameE, false),
+                kt: isPreNormalized ? rawNameZ : normName(rawNameZ, false)
+              });
+            };
+
+            const csdiUrls = [
+              'https://api.csdi.gov.hk/apim/dataquery/api/?id=td_rcd_1638874897797_40260&layer=mtr_station&srsName=EPSG:4326&limit=2000&offset=0',
+              'https://api.csdi.gov.hk/apim/dataquery/api/?id=td_rcd_1671692797539_19916&layer=stop_ferry&srsName=EPSG:4326&limit=5000&offset=0',
+              'https://api.csdi.gov.hk/apim/dataquery/api/?id=td_rcd_1638874475129_49745&layer=bus_stop&srsName=EPSG:4326&limit=10000&offset=0',
+              'https://api.csdi.gov.hk/apim/dataquery/api/?id=td_rcd_1638874728005_80512&layer=gmb_terminus&srsName=EPSG:4326&limit=5000&offset=0'
+            ];
+            for (const u of csdiUrls) {
+              try {
+                const res = await fetchWithTimeout(u, 10000);
+                if (res && res.ok) {
+                  const gj = await res.json();
+                  const isBusLayer = u.includes('bus_stop') || u.includes('gmb_terminus');
+                  const ns = u.includes('mtr_station') ? 'MTR' : 'FERRY';
+                  for (const f of (gj?.features || [])) {
+                    const coords = f.geometry?.coordinates;
+                    const p = f.properties || {};
+                    if (!Array.isArray(coords) || coords.length < 2) continue;
+                    const la = Number(coords[1]), lo = Number(coords[0]);
+                    if (!isValidHkCoord(la, lo)) continue;
+                    const nE = p.STOP_NAME_E || p.NAME_EN || p.STOP_NAMEE || p.STATION_NAME_EN || '';
+                    const nZ = p.STOP_NAME_C || p.NAME_TC || p.STOP_NAMEC || p.STATION_NAME_TC || '';
+                    const code = String(p.STATION_CODE || p.STOP_CODE || p.STOP_ID || '').trim().toUpperCase();
+                    if (isBusLayer) {
+                      addGridNode(la, lo, nE, nZ, false);
+                    } else {
+                      const c = { lat: la.toFixed(6), lon: lo.toFixed(6), name_en: nE, name_tc: nZ };
+                      registerScopedCoord(osmStationCoords, ns, code, nE, nZ, '', c, false);
+                    }
+                  }
+                }
+              } catch (e) {}
+            }
+
+            const ovRailFerryJson = await fetchOverpassWithFallback(
+              `[out:json][timeout:18];(nwr["railway"~"^(station|halt)$"](22.15,113.82,22.58,114.45);node["railway"="subway_entrance"](22.15,113.82,22.58,114.45);nwr["amenity"="ferry_terminal"](22.15,113.82,22.58,114.45););out center tags;`,
+              18000
+            );
+            (ovRailFerryJson?.elements || []).forEach(el => {
+              const eLat = el.lat || el.center?.lat;
+              const eLon = el.lon || el.center?.lon;
+              if (!isValidHkCoord(eLat, eLon) || !el.tags) return;
+              const tags = el.tags;
+              if (tags.railway === 'subway_entrance' || tags.railway === 'train_station_entrance') {
+                const exitRef = String(tags.ref || '').trim().toUpperCase();
+                if (exitRef && exitRef.length <= 4) {
+                  mtrExits.push({
+                    ref: exitRef,
+                    lat: Number(Number(eLat).toFixed(6)),
+                    lon: Number(Number(eLon).toFixed(6)),
+                    name_en: tags['name:en'] || tags.name || `Exit ${exitRef}`,
+                    name_tc: tags['name:zh-Hant'] || tags['name:zh'] || tags.name || `${exitRef}出口`
+                  });
+                }
+                return;
+              }
+              if (tags.highway === 'bus_station' || tags.amenity === 'bus_station' || (tags.bus === 'yes' && !tags.railway)) return;
+
+              let ns = null;
+              if (tags.amenity === 'ferry_terminal' || tags.ferry === 'yes') ns = 'FERRY';
+              else if (tags.railway === 'station' || tags.railway === 'halt') ns = 'MTR';
+              if (!ns) return;
+
+              const nEn = tags['name:en'] || '';
+              const nZh = tags['name:zh-Hant'] || tags['name:zh'] || '';
+              const nRaw = tags.name || '';
+              const rawRef = ns === 'MTR'
+                ? (tags['ref:mtr'] || (/^[A-Z]{3}$/.test(String(tags.ref || '').trim()) ? tags.ref : ''))
+                : '';
+              const coord = { lat: Number(eLat).toFixed(6), lon: Number(eLon).toFixed(6), name_en: nEn || nRaw, name_tc: nZh || nRaw };
+
+              if (rawRef) {
+                String(rawRef).split(/[;,/]/).forEach(code => {
+                  const cleanCode = code.trim().toUpperCase();
+                  if (cleanCode) registerScopedCoord(osmStationCoords, ns, cleanCode, nEn, nZh, nRaw, coord, false);
+                });
+              } else {
+                registerScopedCoord(osmStationCoords, ns, '', nEn, nZh, nRaw, coord, false);
+              }
+            });
+
+            const ovBusJson = await fetchOverpassWithFallback(
+              `[out:json][timeout:20];node["highway"="bus_stop"](22.18,113.82,22.56,114.35);out;`,
+              20000
+            );
+            (ovBusJson?.elements || []).forEach(el => {
+              if (!el.lat || !el.lon || !el.tags) return;
+              const nEn = el.tags['name:en'] || el.tags.name || '';
+              const nZh = el.tags['name:zh-Hant'] || el.tags['name:zh'] || el.tags.name || '';
+              addGridNode(Number(el.lat), Number(el.lon), nEn, nZh, false);
+            });
+
+            const tdRouteCalendarMap = new Map();
+            try {
+              const nlbRouteRes = await fetchWithTimeout('https://rt.data.gov.hk/v2/transport/nlb/route.php?action=list', 6000);
+              if (nlbRouteRes && nlbRouteRes.ok) {
+                const nlbJson = await nlbRouteRes.json();
+                const nlbRoutesList = Array.isArray(nlbJson?.routes) ? nlbJson.routes : [];
+                const nonSpecialNlb = [];
+                for (const rt of nlbRoutesList) {
+                  const rNo = String(rt.routeNo || '').trim().toUpperCase();
+                  const nameE = String(rt.routeName_e || '').toLowerCase();
+                  if (/sunday|holiday/i.test(nameE) || /R$/i.test(rNo)) {
+                    tdRouteCalendarMap.set(`NLB_${rNo}`, { serviceMode: 'HOLIDAY_ONLY', operatingDays: [0], includeHolidays: true, excludeHolidays: false, activeWindows: [[330, 1439]] });
+                  } else if (/^N/i.test(rNo) || /overnight/i.test(nameE) || String(rt.overnightRoute) === '1') {
+                    tdRouteCalendarMap.set(`NLB_${rNo}`, { serviceMode: 'OVERNIGHT_ONLY', operatingDays: [0, 1, 2, 3, 4, 5, 6], includeHolidays: true, excludeHolidays: false, activeWindows: [[0, 360], [1410, 1439]] });
+                  }
+                  if (String(rt.specialRoute) !== '1') nonSpecialNlb.push(rt);
+                }
+                for (let i = 0; i < nonSpecialNlb.length; i += 6) {
+                  await Promise.all(nonSpecialNlb.slice(i, i + 6).map(async (rt) => {
+                    const rNo = String(rt.routeNo || '').trim().toUpperCase();
+                    const rIdKey = `NLB_${rt.routeId}`;
+                    const stRes = await fetchWithTimeout(`https://rt.data.gov.hk/v2/transport/nlb/stop.php?action=list&routeId=${rt.routeId}`, 5000);
+                    const stData = stRes?.ok ? await stRes.json().catch(() => null) : null;
+                    if (Array.isArray(stData?.stops) && stData.stops.length > 0) {
+                      rawStopsCache[rIdKey] = stData.stops.map((st, idx) => ({
+                        stopId: String(st.stopId),
+                        stopName_e: st.stopName_e || '',
+                        name_tc: st.stopName_c || '',
+                        latitude: Number(st.latitude || 0).toFixed(6),
+                        longitude: Number(st.longitude || 0).toFixed(6),
+                        seq: idx + 1,
+                        fare: st.fare || '0',
+                        fareHol: st.fareHoliday || st.fare || '0'
+                      }));
+                      const [origE = '', destE = ''] = String(rt.routeName_e || '').split(/\s*>\s*/);
+                      const [origTc = '', destTc = ''] = String(rt.routeName_c || '').split(/\s*>\s*/);
+                      if (!rawRoutes.some(g => (g.routeIds || []).includes(rIdKey))) {
+                        rawRoutes.push({
+                          key: rIdKey, mode: 'BUS', routeNo: rNo,
+                          company: 'NLB', company_tc: '嶼巴',
+                          orig_e: origE, dest_e: destE, orig_tc: origTc, dest_tc: destTc,
+                          routeIds: [rIdKey]
+                        });
+                      }
+                    }
+                  }));
+                }
+              }
+            } catch (e) {}
+
+            try {
+              const kmbStopRes = await fetchWithTimeout('https://data.etabus.gov.hk/v1/transport/kmb/stop', 10000);
+              if (kmbStopRes && kmbStopRes.ok) {
+                const kmbStopJson = await kmbStopRes.json();
+                const kmbStopMap = new Map();
+                (kmbStopJson?.data || []).forEach(st => {
+                  if (st.stop && st.lat && st.long) kmbStopMap.set(st.stop, { lat: Number(st.lat).toFixed(6), lon: Number(st.long).toFixed(6) });
+                });
+                for (const [rId, stops] of Object.entries(rawStopsCache)) {
+                  if (rId.startsWith('KMB_') || rId.startsWith('LWB_')) {
+                    (stops || []).forEach(s => {
+                      const orig = kmbStopMap.get(s.stopId);
+                      if (orig) { s.latitude = orig.lat; s.longitude = orig.lon; }
+                    });
+                  }
+                }
+              }
+            } catch (e) {}
+
+            const tdFareByRouteCo = new Map();
+            const tdSectionFaresByRouteCo = new Map();
+            const tdHeadwayBucketsByKey = new Map();
+
+            try {
+              const [
+                tdRouteBusXmlRes, tdFareBusXmlRes, tdRstopBusXmlRes, tdGmbXmlRes,
+                gtfsAgencyRes, gtfsRoutesRes, gtfsTripsRes, gtfsFreqRes
+              ] = await Promise.all([
+                fetchWithTimeout('https://static.data.gov.hk/td/routes-fares-xml/ROUTE_BUS.xml', 15000),
+                fetchWithTimeout('https://static.data.gov.hk/td/routes-fares-xml/FARE_BUS.xml', 22000),
+                fetchWithTimeout('https://static.data.gov.hk/td/routes-fares-xml/RSTOP_BUS.xml', 22000),
+                fetchWithTimeout('https://static.data.gov.hk/td/routes-fares-xml/ROUTE_GMB.xml', 12000),
+                fetchWithTimeout('https://static.data.gov.hk/td/pt-headway-en/agency.txt', 10000),
+                fetchWithTimeout('https://static.data.gov.hk/td/pt-headway-en/routes.txt', 12000),
+                fetchWithTimeout('https://static.data.gov.hk/td/pt-headway-en/trips.txt', 15000),
+                fetchWithTimeout('https://static.data.gov.hk/td/pt-headway-en/frequencies.txt', 15000)
+              ]);
+
+              const tdRouteInfoById = new Map();
+              if (tdRouteBusXmlRes?.ok) {
+                parseXmlRecords(await tdRouteBusXmlRes.text(), 'ROUTE').forEach(row => {
+                  const rId = String(row.ROUTE_ID || '').trim();
+                  const rNo = String(row.ROUTE_NAMEE || '').trim().toUpperCase();
+                  const coRaw = String(row.COMPANY_CODE || '').trim().toUpperCase();
+                  const fare = parseFloat(row.FULL_FARE || '0');
+                  const origNorm = normName(row.LOC_START_NAMEE || '', false);
+                  const destNorm = normName(row.LOC_END_NAMEE || '', false);
+                  if (rId && rNo) {
+                    tdRouteInfoById.set(rId, { rNo, coRaw, fare, origNorm, destNorm });
+                  }
+                  if (rNo && fare > 0) {
+                    ['KMB', 'LWB', 'CTB', 'NLB', 'GMB', 'MTRB'].forEach(c => {
+                      if (coRaw.includes(c)) tdFareByRouteCo.set(`${c}_${rNo}`, fare);
+                    });
+                  }
+                });
+              }
+
+              // Parse per-stop boarding section fares (<ON_SEQ> -> max <PRICE> to terminus) from FARE_BUS.xml + RSTOP_BUS.xml
+              if (tdFareBusXmlRes?.ok) {
+                const fareBusXmlText = await tdFareBusXmlRes.text();
+                const fareBusHash = sha1Short(fareBusXmlText);
+                if (prevUpstreamHashes.td_fare_bus_xml && prevUpstreamHashes.td_fare_bus_xml !== fareBusHash) {
+                  dataDriftAlerts.push({
+                    category: 'TD_BUS_FARE_DRIFT',
+                    date: hktTodayYmd,
+                    message: `TD FARE_BUS.xml hash changed (${prevUpstreamHashes.td_fare_bus_xml} -> ${fareBusHash}). Per-stop bus section fares were automatically rebuilt.`
+                  });
+                }
+                nextUpstreamHashes.td_fare_bus_xml = fareBusHash;
+
+                const onSeqMaxPriceByRIdSeq = new Map();
+                const fareTagRe = /<FARE>([\s\S]*?)<\/FARE>/gi;
+                let fm;
+                while ((fm = fareTagRe.exec(fareBusXmlText)) !== null) {
+                  const blk = fm[1];
+                  const rId = (blk.match(/<ROUTE_ID>([^<]+)<\/ROUTE_ID>/) || [])[1]?.trim();
+                  if (!rId || !tdRouteInfoById.has(rId)) continue;
+                  const rSeq = (blk.match(/<ROUTE_SEQ>([^<]+)<\/ROUTE_SEQ>/) || [])[1]?.trim() || '1';
+                  const onSeq = parseInt((blk.match(/<ON_SEQ>([^<]+)<\/ON_SEQ>/) || [])[1] || '0', 10);
+                  const price = parseFloat((blk.match(/<PRICE>([^<]+)<\/PRICE>/) || [])[1] || '0');
+                  if (onSeq > 0 && price > 0) {
+                    const key = `${rId}_${rSeq}`;
+                    if (!onSeqMaxPriceByRIdSeq.has(key)) onSeqMaxPriceByRIdSeq.set(key, new Map());
+                    const m = onSeqMaxPriceByRIdSeq.get(key);
+                    if (!m.has(onSeq) || price > m.get(onSeq)) m.set(onSeq, price);
+                  }
+                }
+
+                const rstopNamesByRIdSeq = new Map();
+                if (tdRstopBusXmlRes?.ok) {
+                  const rstopText = await tdRstopBusXmlRes.text();
+                  const rstopRe = /<RSTOP>([\s\S]*?)<\/RSTOP>/gi;
+                  let rm;
+                  while ((rm = rstopRe.exec(rstopText)) !== null) {
+                    const blk = rm[1];
+                    const rId = (blk.match(/<ROUTE_ID>([^<]+)<\/ROUTE_ID>/) || [])[1]?.trim();
+                    if (!rId || !tdRouteInfoById.has(rId)) continue;
+                    const rSeq = (blk.match(/<ROUTE_SEQ>([^<]+)<\/ROUTE_SEQ>/) || [])[1]?.trim() || '1';
+                    const stSeq = parseInt((blk.match(/<STOP_SEQ>([^<]+)<\/STOP_SEQ>/) || [])[1] || '0', 10);
+                    const nE = (blk.match(/<STOP_NAMEE>([\s\S]*?)<\/STOP_NAMEE>/) || [])[1] || '';
+                    if (stSeq > 0 && nE) {
+                      const key = `${rId}_${rSeq}`;
+                      if (!rstopNamesByRIdSeq.has(key)) rstopNamesByRIdSeq.set(key, new Map());
+                      rstopNamesByRIdSeq.get(key).set(stSeq, normName(nE, false));
+                    }
+                  }
+                }
+
+                for (const [rIdSeq, seqPriceMap] of onSeqMaxPriceByRIdSeq.entries()) {
+                  const [rId, rSeq] = rIdSeq.split('_');
+                  const rMeta = tdRouteInfoById.get(rId);
+                  if (!rMeta) continue;
+                  const stNameMap = rstopNamesByRIdSeq.get(rIdSeq) || new Map();
+                  const namePriceMap = new Map();
+                  for (const [sq, pr] of seqPriceMap.entries()) {
+                    const nm = stNameMap.get(sq);
+                    if (nm && !namePriceMap.has(nm)) namePriceMap.set(nm, pr);
+                  }
+                  const entry = {
+                    rSeq,
+                    origNorm: rSeq === '1' ? rMeta.origNorm : rMeta.destNorm,
+                    destNorm: rSeq === '1' ? rMeta.destNorm : rMeta.origNorm,
+                    seqPriceMap,
+                    namePriceMap
+                  };
+                  ['KMB', 'LWB', 'CTB', 'NLB', 'GMB', 'MTRB'].forEach(c => {
+                    if (rMeta.coRaw.includes(c)) {
+                      const k = `${c}_${rMeta.rNo}`;
+                      if (!tdSectionFaresByRouteCo.has(k)) tdSectionFaresByRouteCo.set(k, []);
+                      tdSectionFaresByRouteCo.get(k).push(entry);
+                    }
+                  });
+                }
+              }
+
+              if (tdGmbXmlRes?.ok) {
+                parseXmlRecords(await tdGmbXmlRes.text(), 'ROUTE').forEach(row => {
+                  const rNo = String(row.ROUTE_NAMEE || '').trim().toUpperCase();
+                  const fare = parseFloat(row.FULL_FARE || '0');
+                  if (rNo && fare > 0) tdFareByRouteCo.set(`GMB_${rNo}`, fare);
+                });
+              }
+
+              const agencyPrefixMap = new Map();
+              if (gtfsAgencyRes?.ok) {
+                parseCsv(await gtfsAgencyRes.text()).forEach(a => {
+                  const id = String(a.agency_id || '').trim();
+                  const nm = `${id} ${a.agency_name || ''}`.toUpperCase();
+                  if (/LONG WIN|\bLWB\b/.test(nm)) agencyPrefixMap.set(id, 'LWB');
+                  else if (/KOWLOON MOTOR|\bKMB\b/.test(nm)) agencyPrefixMap.set(id, 'KMB');
+                  else if (/CITYBUS|\bCTB\b/.test(nm)) agencyPrefixMap.set(id, 'CTB');
+                  else if (/NEW LANTAO|\bNLB\b/.test(nm)) agencyPrefixMap.set(id, 'NLB');
+                  else if (/MINIBUS|\bGMB\b/.test(nm)) agencyPrefixMap.set(id, 'GMB');
+                });
+              }
+
+              const gtfsRoutesRows = gtfsRoutesRes?.ok ? parseCsv(await gtfsRoutesRes.text()) : [];
+              const gtfsTripsRows = gtfsTripsRes?.ok ? parseCsv(await gtfsTripsRes.text()) : [];
+              const gtfsFreqRows = gtfsFreqRes?.ok ? parseCsv(await gtfsFreqRes.text()) : [];
+
+              if (gtfsRoutesRows.length && gtfsTripsRows.length && gtfsFreqRows.length) {
+                const gtfsRouteMeta = new Map();
+                gtfsRoutesRows.forEach(r => {
+                  const rId = String(r.route_id || '').trim();
+                  const rNo = String(r.route_short_name || '').trim().toUpperCase();
+                  const co = agencyPrefixMap.get(String(r.agency_id || '').trim()) || 'ANY';
+                  if (rId && rNo) gtfsRouteMeta.set(rId, { rNo, co });
+                });
+                const tripToRouteId = new Map();
+                gtfsTripsRows.forEach(tr => {
+                  const tId = String(tr.trip_id || '').trim();
+                  const rId = String(tr.route_id || '').trim();
+                  if (tId && rId && gtfsRouteMeta.has(rId)) tripToRouteId.set(tId, rId);
+                });
+                const periodAcc = new Map();
+                const pushSample = (key, period, hwMins, startHour, startMinRaw, endMinRaw) => {
+                  if (!periodAcc.has(key)) {
+                    periodAcc.set(key, { amPeak: [], midday: [], pmPeak: [], offPeak: [], overnight: [], all: [], minHour: 24, maxHour: -1, windows: [] });
+                  }
+                  const b = periodAcc.get(key);
+                  b[period].push(hwMins);
+                  b.all.push(hwMins);
+                  if (startHour < b.minHour) b.minHour = startHour;
+                  if (startHour > b.maxHour) b.maxHour = startHour;
+                  pushGtfsSpanToWindows(b.windows, startMinRaw, endMinRaw, 15, 25);
+                };
+                gtfsFreqRows.forEach(fq => {
+                  const rId = tripToRouteId.get(String(fq.trip_id || '').trim());
+                  if (!rId) return;
+                  const meta = gtfsRouteMeta.get(rId);
+                  const hwSecs = parseFloat(fq.headway_secs || '0');
+                  if (!(hwSecs >= 60 && hwSecs <= 10800)) return;
+                  const hwMins = Math.round(hwSecs / 60);
+                  const startParts = String(fq.start_time || '12:00:00').split(':').map(Number);
+                  const endParts = String(fq.end_time || fq.start_time || '12:00:00').split(':').map(Number);
+                  const startHourRaw = startParts[0] || 0;
+                  const endHourRaw = endParts[0] || 0;
+                  const startHour = startHourRaw % 24;
+                  const startMinRaw = startHourRaw * 60 + (startParts[1] || 0);
+                  const endMinRaw = endHourRaw * 60 + (endParts[1] || 0);
+                  let period = 'midday';
+                  if (startHour >= 7 && startHour < 10) period = 'amPeak';
+                  else if (startHour >= 10 && startHour < 17) period = 'midday';
+                  else if (startHour >= 17 && startHour < 20) period = 'pmPeak';
+                  else if (startHour >= 20) period = 'offPeak';
+                  else period = 'overnight';
+                  pushSample(`${meta.co}_${meta.rNo}`, period, hwMins, startHour, startMinRaw, endMinRaw);
+                  pushSample(`ANY_${meta.rNo}`, period, hwMins, startHour, startMinRaw, endMinRaw);
+                });
+                const median = (arr) => {
+                  if (!arr || !arr.length) return null;
+                  const s = [...arr].sort((a, b) => a - b);
+                  return s[Math.floor(s.length / 2)];
+                };
+                for (const [k, b] of periodAcc.entries()) {
+                  const base = median(b.midday) || median(b.all);
+                  if (!base) continue;
+                  const hasNonPeakService = b.midday.length > 0 || b.offPeak.length > 0 || b.overnight.length > 0;
+                  const isPeakWindowBounds = b.minHour >= 7 && b.maxHour <= 19 && !hasNonPeakService && (b.amPeak.length > 0 || b.pmPeak.length > 0);
+                  const mergedWins = mergeOperatingWindows(b.windows);
+                  tdHeadwayBucketsByKey.set(k, {
+                    base,
+                    isPeakOnly: isPeakWindowBounds,
+                    activeWindows: mergedWins,
+                    byPeriod: {
+                      amPeak: median(b.amPeak) || base,
+                      midday: median(b.midday) || base,
+                      pmPeak: median(b.pmPeak) || base,
+                      offPeak: median(b.offPeak) || base,
+                      overnight: median(b.overnight) || Math.max(base, 30)
+                    }
+                  });
+                }
+              }
+            } catch (e) {}
+
+            // Fixed Sun Ferry & HKKF open-data timetable watchdog feeds
+            const FERRY_WATCHDOG_FEEDS = {
+              sf_central_cc: 'https://www.sunferry.com.hk/eta/timetable/SunFerry_central_cheungchau_timetable_eng.csv',
+              sf_central_mw: 'https://www.sunferry.com.hk/eta/timetable/SunFerry_central_muiwo_timetable_eng.csv',
+              sf_inter_islands: 'https://www.sunferry.com.hk/eta/timetable/SunFerry_inter_islands_timetable_eng.csv',
+              sf_np_hh: 'https://www.sunferry.com.hk/eta/timetable/SunFerry_northpoint_hunghom_timetable_eng.csv',
+              sf_np_kc: 'https://www.sunferry.com.hk/eta/timetable/SunFerry_northpoint_kowlooncity_timetable_eng.csv',
+              hkkf_timetable: 'https://www.hkkfeta.com/opendata/HKKF_time_table.csv'
+            };
+            await Promise.all(Object.entries(FERRY_WATCHDOG_FEEDS).map(async ([feedKey, url]) => {
+              try {
+                const res = await fetchWithTimeout(url, 8000);
+                if (res && res.ok) {
+                  const txt = (await res.text()).trim();
+                  if (txt.length > 40) {
+                    const hash = sha1Short(txt);
+                    if (prevUpstreamHashes[feedKey] && prevUpstreamHashes[feedKey] !== hash) {
+                      dataDriftAlerts.push({
+                        category: 'FERRY_CSV_DRIFT',
+                        date: hktTodayYmd,
+                        message: `Upstream Ferry CSV changed for "${feedKey}" (${prevUpstreamHashes[feedKey]} -> ${hash}). Check operator website/flyer for new sailing times.`
+                      });
+                    }
+                    nextUpstreamHashes[feedKey] = hash;
+                  }
+                }
+              } catch (e) {}
+            }));
+
+            const csvSchedulesObj = {};
+            for (const [pairKey, spec] of Object.entries(VERIFIED_MAINLINE_SCHEDULES)) {
+              csvSchedulesObj[pairKey] = {
+                wk: spec.wk,
+                sat: spec.sat,
+                hol: spec.hol,
+                updated: spec.updated,
+                ...(spec.tempNoticeEn ? { tempNoticeEn: spec.tempNoticeEn, tempNoticeTc: spec.tempNoticeTc, reviewAfter: spec.reviewAfter } : {})
+              };
+            }
+
+            const busGroupedRoutes = [];
+            for (const g of rawRoutes) {
+              const co = String(g.company || '').trim().toUpperCase();
+              if (REMOVED_COMPANIES.has(co)) continue;
+              const rNo = String(g.routeNo || '').trim().toUpperCase();
+              const rId0 = g.routeIds?.[0] || '';
+              const stopsList = rawStopsCache[rId0] || [];
+
+              // Match directional TD section-fare table for this route
+              const secCandidates = tdSectionFaresByRouteCo.get(`${co}_${rNo}`) ||
+                                    (co === 'LWB' ? tdSectionFaresByRouteCo.get(`KMB_${rNo}`) : null) || [];
+              let bestSecTable = null;
+              if (secCandidates.length > 0) {
+                const gDestNorm = normName(g.dest_e || '', false);
+                const gOrigNorm = normName(g.orig_e || '', false);
+                const isInbound = rId0.includes('_I') || g.key?.endsWith('_I');
+                bestSecTable =
+                  secCandidates.find(c => gDestNorm && c.destNorm && (gDestNorm.includes(c.destNorm) || c.destNorm.includes(gDestNorm))) ||
+                  secCandidates.find(c => gOrigNorm && c.origNorm && (gOrigNorm.includes(c.origNorm) || c.origNorm.includes(gOrigNorm))) ||
+                  secCandidates.find(c => c.rSeq === (isInbound ? '2' : '1')) ||
+                  secCandidates[0];
+              }
+
+              let maxRouteFare = tdFareByRouteCo.get(`${co}_${rNo}`) || tdFareByRouteCo.get(`GMB_${rNo}`) || 0;
+              const fareStages = [];
+              let prevStageFare = -1;
+
+              stopsList.forEach((s, idx) => {
+                const la = parseFloat(s.latitude), lo = parseFloat(s.longitude);
+                if (!isValidHkCoord(la, lo)) {
+                  const ke = normName(s.stopName_e, false), kt = normName(s.name_tc, false);
+                  for (const bucket of grid.values()) {
+                    const hit = bucket.find(n => (ke && n.ke === ke) || (kt && n.kt === kt));
+                    if (hit && isValidHkCoord(hit.lat, hit.lon)) {
+                      s.latitude = Number(hit.lat).toFixed(6);
+                      s.longitude = Number(hit.lon).toFixed(6);
+                      break;
+                    }
+                  }
+                }
+                const stopSeq = s.seq || (idx + 1);
+                const stopNormE = normName(s.stopName_e, false);
+                const secFare = bestSecTable
+                  ? (bestSecTable.namePriceMap.get(stopNormE) || bestSecTable.seqPriceMap.get(stopSeq))
+                  : null;
+                const tdFullFare = tdFareByRouteCo.get(`${co}_${rNo}`) || tdFareByRouteCo.get(`GMB_${rNo}`);
+                if (co !== 'NLB' && secFare > 0) {
+                  s.fare = String(secFare);
+                } else if ((!s.fare || s.fare === '0') && tdFullFare > 0) {
+                  s.fare = String(tdFullFare);
+                }
+
+                const effFareNum = parseFloat(s.fare || '0');
+                if (Number.isFinite(effFareNum) && effFareNum > 0) {
+                  if (effFareNum > maxRouteFare) maxRouteFare = effFareNum;
+                  if (Math.abs(effFareNum - prevStageFare) > 0.05) {
+                    fareStages.push([stopSeq, Number(effFareNum.toFixed(1))]);
+                    prevStageFare = effFareNum;
+                  }
+                }
+              });
+
+              const hwBucket = tdHeadwayBucketsByKey.get(`${co}_${rNo}`) || tdHeadwayBucketsByKey.get(`ANY_${rNo}`);
+              const fbHw = inferClassFallbackHeadway(rNo, co);
+              const tdCal = tdRouteCalendarMap.get(`${co}_${rNo}`);
+              const derivedMeta = deriveMetadataFromRouteAttributes(rNo, co, g.orig_e, g.dest_e, g.orig_tc, g.dest_tc, tdCal, stopsList);
+              const secMeta = getSectionalFareMeta(co, rNo);
+
+              busGroupedRoutes.push({
+                ...g,
+                mode: 'BUS',
+                colorHex: IOS_BUS_RED,
+                ...(maxRouteFare > 0 ? { maxFare: Number(maxRouteFare.toFixed(1)) } : {}),
+                ...(fareStages.length >= 2 ? { fareStages } : {}),
+                ...(secMeta?.rebateType ? { rebateType: secMeta.rebateType, hasSectionalFare: Boolean(secMeta.hasSectionalFare) } : {}),
+                headwayMins: hwBucket?.base || g.headwayMins || fbHw.base,
+                serviceMode: hwBucket?.isPeakOnly ? 'PEAK_WEEKDAY_ONLY' : derivedMeta.serviceMode,
+                operatingDays: hwBucket?.isPeakOnly ? [1, 2, 3, 4, 5, 6] : derivedMeta.operatingDays,
+                includeHolidays: hwBucket?.isPeakOnly ? false : derivedMeta.includeHolidays,
+                excludeHolidays: hwBucket?.isPeakOnly ? true : derivedMeta.excludeHolidays,
+                isHighway: derivedMeta.isHighway,
+                isCircular: derivedMeta.isCircular,
+                activeWindows: (hwBucket?.activeWindows?.length ? hwBucket.activeWindows : (g.activeWindows?.length ? g.activeWindows : derivedMeta.activeWindows))
+              });
+            }
+
+            const [
+              mtrRes, mtrFaresRes, lrtRes,
+              tdRouteFerryXmlRes, tdRstopFerryXmlRes, tdStopFerryXmlRes
+            ] = await Promise.all([
+              fetchWithTimeout('https://opendata.mtr.com.hk/data/mtr_lines_and_stations.csv', 15000),
+              fetchWithTimeout('https://opendata.mtr.com.hk/data/mtr_lines_fares.csv', 15000),
+              fetchWithTimeout('https://opendata.mtr.com.hk/data/light_rail_routes_and_stops.csv', 15000),
+              fetchWithTimeout('https://static.data.gov.hk/td/routes-fares-xml/ROUTE_FERRY.xml', 15000),
+              fetchWithTimeout('https://static.data.gov.hk/td/routes-fares-xml/RSTOP_FERRY.xml', 15000),
+              fetchWithTimeout('https://static.data.gov.hk/td/routes-fares-xml/STOP_FERRY.xml', 15000)
+            ]);
+
+            // 1. Parse mtr_lines_and_stations.csv FIRST to build numeric Station ID -> 3-letter Station Code bridge
+            const mtrRows = (mtrRes && mtrRes.ok) ? parseCsv(await mtrRes.text()) : [];
+            const mtrStationIdToCode = new Map();
+            mtrRows.forEach(r => {
+              const sId = String(r['Station ID'] || r['STATION_ID'] || '').trim();
+              const sCode = String(r['Station Code'] || r['STATION_CODE'] || '').trim().toUpperCase();
+              const sEn = String(r['English Name'] || '').trim();
+              const resolved = MTR_STATION_DIRECTORY[sCode] ? sCode : resolveMtrStationCode(sEn);
+              if (sId && resolved) {
+                mtrStationIdToCode.set(sId, resolved);
+                mtrStationIdToCode.set(String(parseInt(sId, 10)), resolved);
+              }
+            });
+
+            // 2. Parse mtr_lines_fares.csv using the Station ID -> 3-letter Code bridge (fixes $0 MTR fares)
+            const mtrAvgFareByStation = new Map();
+            let minOctopusRailFare = '5.2';
+            let mtrFareStations = existingDb.mtrFareStations || [];
+            let mtrFareMatrixB64 = existingDb.mtrFareMatrixB64 || '';
+            let builtFreshMtrMatrix = false;
+
+            if (mtrFaresRes && mtrFaresRes.ok) {
+              const mtrFaresCsvText = await mtrFaresRes.text();
+              const mtrFaresHash = sha1Short(mtrFaresCsvText);
+              const prevMtrLookup = decodeMtrMatrixLookup(existingDb.mtrFareStations, existingDb.mtrFareMatrixB64);
+
+              const fAcc = new Map();
+              const pairFares = [];
+              const staSet = new Set();
+              let minAdultOct = Infinity;
+
+              parseCsv(mtrFaresCsvText).forEach(r => {
+                const rawSrcId = String(r['SRC_STATION_ID'] || '').trim();
+                const rawDstId = String(r['DEST_STATION_ID'] || '').trim();
+                const src = mtrStationIdToCode.get(rawSrcId)
+                  || mtrStationIdToCode.get(String(parseInt(rawSrcId, 10)))
+                  || resolveMtrStationCode(r['SRC_STATION_CODE'] || r['SRC_STATION_NAME'] || rawSrcId);
+                const dst = mtrStationIdToCode.get(rawDstId)
+                  || mtrStationIdToCode.get(String(parseInt(rawDstId, 10)))
+                  || resolveMtrStationCode(r['DEST_STATION_CODE'] || r['DEST_STATION_NAME'] || rawDstId);
+                const oct = parseFloat(r['OCT_ADT_FARE'] || '0');
+
+                if (src && oct > 0) {
+                  if (src !== dst && oct < minAdultOct) minAdultOct = oct;
+                  if (!fAcc.has(src)) fAcc.set(src, []);
+                  fAcc.get(src).push(oct);
+                  if (dst) {
+                    staSet.add(src);
+                    staSet.add(dst);
+                    pairFares.push([src, dst, Math.round(oct * 10)]);
+                  }
+                }
+              });
+
+              if (Number.isFinite(minAdultOct)) minOctopusRailFare = minAdultOct.toFixed(1);
+              for (const [stCode, arr] of fAcc.entries()) {
+                arr.sort((a, b) => a - b);
+                mtrAvgFareByStation.set(stCode, arr[Math.floor(arr.length * 0.35)].toFixed(1));
+              }
+
+              if (staSet.size >= 85 && pairFares.length >= 6000) {
+                mtrFareStations = Array.from(staSet).sort();
+                const idxMap = new Map(mtrFareStations.map((c, i) => [c, i]));
+                const N = mtrFareStations.length;
+                const mat = new Uint16Array(N * N);
+                pairFares.forEach(([s, d, val]) => {
+                  const i = idxMap.get(s), j = idxMap.get(d);
+                  if (i !== undefined && j !== undefined) mat[i * N + j] = val;
+                });
+                mtrFareMatrixB64 = Buffer.from(mat.buffer).toString('base64');
+                builtFreshMtrMatrix = true;
+
+                // MTR Fare Canary Watchdog (emails @johntjz via GitHub Issue if annual fare hike occurs)
+                const nextMtrLookup = decodeMtrMatrixLookup(mtrFareStations, mtrFareMatrixB64);
+                const CANARY_PAIRS = [
+                  ['MOK', 'CAB'], ['MOK', 'ADM'], ['TST', 'ADM'],
+                  ['TUC', 'CEN'], ['TUC', 'LOP'], ['ADM', 'LOW']
+                ];
+                const canaryDiffs = [];
+                for (const [sA, sB] of CANARY_PAIRS) {
+                  const oldF = prevMtrLookup(sA, sB);
+                  const newF = nextMtrLookup(sA, sB);
+                  if (oldF > 0 && newF > 0 && Math.abs(oldF - newF) >= 0.1) {
+                    canaryDiffs.push(`${sA}->${sB}: $${oldF.toFixed(1)} -> $${newF.toFixed(1)}`);
+                  }
+                }
+                if (canaryDiffs.length > 0) {
+                  dataDriftAlerts.push({
+                    category: 'MTR_FARE_DRIFT',
+                    date: hktTodayYmd,
+                    message: `MTR Adult Octopus fare change detected (${canaryDiffs.join(', ')}). Matrix rebuilt automatically; review hardcoded AEL/First Class fares if needed.`
+                  });
+                } else if (prevUpstreamHashes.mtr_fares_csv && prevUpstreamHashes.mtr_fares_csv !== mtrFaresHash) {
+                  dataDriftAlerts.push({
+                    category: 'MTR_CSV_DRIFT',
+                    date: hktTodayYmd,
+                    message: `Official mtr_lines_fares.csv hash changed (${prevUpstreamHashes.mtr_fares_csv} -> ${mtrFaresHash}).`
+                  });
+                }
+                nextUpstreamHashes.mtr_fares_csv = mtrFaresHash;
+              }
+            }
+
+            // Sanity verify MTR matrix uses 3-letter codes and non-zero fares on core corridors
+            const verifyMtrLookup = decodeMtrMatrixLookup(mtrFareStations, mtrFareMatrixB64);
+            const tucLopFare = verifyMtrLookup('TUC', 'LOP');
+            const mokAdmFare = verifyMtrLookup('MOK', 'ADM');
+            const admLowFare = verifyMtrLookup('ADM', 'LOW');
+            console.log(`MTR Matrix Check (fresh=${builtFreshMtrMatrix}, stations=${mtrFareStations.length}): TUC->LOP=$${tucLopFare}, MOK->ADM=$${mokAdmFare}, ADM->LOW=$${admLowFare}`);
+            if (builtFreshMtrMatrix && (tucLopFare <= 0 || mokAdmFare <= 0 || admLowFare <= 0)) {
+              console.error(`ABORT: MTR fare matrix sanity check failed (TUC->LOP=${tucLopFare}, MOK->ADM=${mokAdmFare}, ADM->LOW=${admLowFare}).`);
+              process.exit(1);
+            }
+
+            const tdFerryStopById = new Map();
+            if (tdStopFerryXmlRes && tdStopFerryXmlRes.ok) {
+              const stopRows = parseXmlRecords(await tdStopFerryXmlRes.text(), 'STOP');
+              for (const st of stopRows) {
+                const sId = String(st.STOP_ID || '').trim();
+                const nEn = st.STOP_NAMEE || '', nTc = st.STOP_NAMEC || '';
+                const existing = lookupScopedCoord(osmStationCoords, 'FERRY', sId, nEn, nTc) ||
+                                 lookupScopedCoord(fallbackStationCoords, 'FERRY', sId, nEn, nTc);
+                if (existing && isValidHkCoord(existing.lat, existing.lon)) {
+                  if (sId) tdFerryStopById.set(sId, existing);
+                  continue;
+                }
+                const x = Number(st.X || 0), y = Number(st.Y || 0);
+                if (x > 800000 && y > 800000) {
+                  const wgs = await hk80ToWgs84Api(y, x);
+                  if (wgs && isValidHkCoord(wgs.lat, wgs.lon)) {
+                    const c = { lat: Number(wgs.lat).toFixed(6), lon: Number(wgs.lon).toFixed(6), name_en: nEn, name_tc: nTc };
+                    if (sId) tdFerryStopById.set(sId, c);
+                    registerScopedCoord(osmStationCoords, 'FERRY', sId, nEn, nTc, '', c, false);
+                  }
+                }
+              }
+            }
+
+            let railFerryGroupedRoutes = [];
+            const railFerryStopsCache = {};
+            const quickMtrLines = [];
+            const quickLrtLines = [];
+            const quickFerryLines = [];
+            const hubMap = new Map();
+
+            if (mtrRows.length > 0) {
+              const byLineDir = new Map();
+              mtrRows.forEach(r => {
+                const lCode = String(r['Line Code'] || '').trim().toUpperCase();
+                const dCode = String(r['Direction'] || '').trim().toUpperCase();
+                const sCode = String(r['Station Code'] || '').trim().toUpperCase();
+                if (!lCode || !sCode) return;
+                if (lCode === 'EAL' && sCode === 'RAC') return;
+                const en = r['English Name'] || sCode, tc = r['Chinese Name'] || sCode;
+                const dir = (dCode.includes('UT') || dCode === 'O' || dCode === '1') ? 'O' : 'I';
+                const k = `${lCode}_${dir}`;
+                if (!byLineDir.has(k)) byLineDir.set(k, []);
+                byLineDir.get(k).push({ code: sCode, en, tc, seq: parseFloat(r['Sequence'] || '0') });
+              });
+
+              for (const [k, rawStList] of byLineDir.entries()) {
+                const [lCode, dir] = k.split('_');
+                const dedupMap = new Map();
+                rawStList.forEach(st => { if (!dedupMap.has(st.code)) dedupMap.set(st.code, st); });
+                let stList = Array.from(dedupMap.values()).sort((a, b) => a.seq - b.seq);
+
+                if (lCode === 'EAL' && dedupMap.has('LOW') && dedupMap.has('LMC')) {
+                  const others = stList.filter(s => s.code !== 'LOW' && s.code !== 'LMC');
+                  const lowSt = dedupMap.get('LOW'), lmcSt = dedupMap.get('LMC');
+                  const shsIdx = others.findIndex(s => s.code === 'SHS');
+                  if (shsIdx >= others.length / 2) stList = [...others, lowSt, lmcSt];
+                  else stList = [lowSt, lmcSt, ...others];
+                } else if (lCode === 'TKL' && dedupMap.has('POA') && dedupMap.has('LHP')) {
+                  const others = stList.filter(s => s.code !== 'POA' && s.code !== 'LHP');
+                  const poaSt = dedupMap.get('POA'), lhpSt = dedupMap.get('LHP');
+                  const tkoIdx = others.findIndex(s => s.code === 'TKO');
+                  if (tkoIdx >= others.length / 2) stList = [...others, poaSt, lhpSt];
+                  else stList = [poaSt, lhpSt, ...others];
+                }
+
+                const rId = `MTR_${lCode}_${dir}`;
+                const builtStops = [];
+                for (const st of stList) {
+                  let c = lookupScopedCoord(osmStationCoords, 'MTR', st.code, st.en, st.tc) ||
+                          lookupScopedCoord(fallbackStationCoords, 'MTR', st.code, st.en, st.tc);
+                  if (!c || !isValidHkCoord(c.lat, c.lon)) {
+                    c = (await resolveGovHkStationCoord(`港鐵${st.tc}站`, true)) ||
+                        (await resolveGovHkStationCoord(`${st.en} MTR Station`, true));
+                  }
+                  if (!c || !isValidHkCoord(c.lat, c.lon)) continue;
+                  builtStops.push({
+                    stopId: st.code,
+                    seq: builtStops.length + 1,
+                    stopName_e: `${st.en} MTR Station`,
+                    name_tc: `${st.tc}港鐵站`,
+                    latitude: Number(c.lat).toFixed(6),
+                    longitude: Number(c.lon).toFixed(6),
+                    mtrCode: st.code,
+                    mtrLine: lCode,
+                    fare: mtrAvgFareByStation.get(st.code) || minOctopusRailFare
+                  });
+                }
+                if (builtStops.length < 2) continue;
+
+                const firstRes = stList.find(s => s.code === builtStops[0].stopId) || stList[0];
+                const lastRes  = stList.find(s => s.code === builtStops[builtStops.length - 1].stopId) || stList[stList.length - 1];
+                railFerryStopsCache[rId] = builtStops;
+
+                let origEn = firstRes.en, origTc = firstRes.tc;
+                let destEn = lastRes.en,  destTc = lastRes.tc;
+                if (lCode === 'EAL') {
+                  if (lastRes.code === 'LOW' || lastRes.code === 'LMC') {
+                    destEn = 'Lo Wu / Lok Ma Chau'; destTc = '羅湖 / 落馬洲';
+                  } else if (firstRes.code === 'LOW' || firstRes.code === 'LMC') {
+                    origEn = 'Lo Wu / Lok Ma Chau'; origTc = '羅湖 / 落馬洲';
+                  }
+                } else if (lCode === 'TKL') {
+                  if (lastRes.code === 'POA' || lastRes.code === 'LHP') {
+                    destEn = 'Po Lam / LOHAS Park'; destTc = '寶琳 / 康城';
+                  } else if (firstRes.code === 'POA' || firstRes.code === 'LHP') {
+                    origEn = 'Po Lam / LOHAS Park'; origTc = '寶琳 / 康城';
+                  }
+                }
+
+                const lineCol = getRouteColorHex('MTR', 'MTR', lCode);
+                const mtrActiveWindows = lCode === 'DRL'
+                  ? [[375, 1439], [0, 25]]
+                  : (lCode === 'AEL' ? [[350, 1439], [0, 50]] : [[330, 1439], [0, 60]]);
+                railFerryGroupedRoutes.push({
+                  key: rId,
+                  mode: 'MTR',
+                  routeNo: lCode,
+                  company: 'MTR',
+                  company_tc: '港鐵',
+                  colorHex: lineCol,
+                  orig_e: origEn,
+                  orig_tc: origTc,
+                  dest_e: destEn,
+                  dest_tc: destTc,
+                  headwayMins: (lCode === 'AEL' || lCode === 'DRL') ? 10 : 4,
+                  serviceMode: 'DAILY',
+                  operatingDays: [0, 1, 2, 3, 4, 5, 6],
+                  includeHolidays: true,
+                  activeWindows: mtrActiveWindows,
+                  routeIds: [rId]
+                });
+
+                builtStops.forEach(s => {
+                  const hId = `MTR_${s.stopId}`;
+                  if (hubMap.has(hId)) {
+                    const ex = hubMap.get(hId);
+                    if (!ex.lines.includes(lCode)) ex.lines.push(lCode);
+                    ex.badge = `MTR ${ex.lines.join('/')}`;
+                  } else {
+                    hubMap.set(hId, {
+                      id: hId,
+                      mode: 'MTR',
+                      line: lCode,
+                      lines: [lCode],
+                      sta: s.stopId,
+                      badge: `MTR ${lCode}`,
+                      name_en: s.stopName_e,
+                      name_tc: s.name_tc,
+                      lat: parseFloat(s.latitude),
+                      lon: parseFloat(s.longitude),
+                      groupKey: rId
+                    });
+                  }
+                });
+
+                const qObj = {
+                  key: lCode,
+                  badge: lCode,
+                  name_en: `${origEn} ⟷ ${destEn}`,
+                  name_tc: `${origTc} ⟷ ${destTc}`,
+                  color: lineCol,
+                  stops: builtStops.map(s => s.stopId)
+                };
+                const qIdx = quickMtrLines.findIndex(q => q.key === lCode);
+                if (qIdx === -1) quickMtrLines.push(qObj);
+                else if (dir === 'O') quickMtrLines[qIdx] = qObj;
+              }
+            }
+
+            if (lrtRes && lrtRes.ok) {
+              const lrtCsvText = await lrtRes.text();
+              const lrtHash = sha1Short(lrtCsvText);
+              if (prevUpstreamHashes.mtr_lrt_csv && prevUpstreamHashes.mtr_lrt_csv !== lrtHash) {
+                dataDriftAlerts.push({
+                  category: 'LRT_CSV_DRIFT',
+                  date: hktTodayYmd,
+                  message: `Official MTR Light Rail CSV hash changed (${prevUpstreamHashes.mtr_lrt_csv} -> ${lrtHash}). Verify if any stops or routes were modified.`
+                });
+              }
+              nextUpstreamHashes.mtr_lrt_csv = lrtHash;
+            }
+
+            const seenLrt = new Set();
+            for (const [rNo, dirsObj] of Object.entries(HARDCODED_LRT_SEQUENCES)) {
+              for (const [dir, stopCodeArr] of Object.entries(dirsObj)) {
+                const rId = `LRT_${rNo}_${dir}`;
+                const builtStops = [];
+                stopCodeArr.forEach((padCode, idx) => {
+                  const numId = String(parseInt(padCode, 10));
+                  const stInfo = LRT_STATION_DIRECTORY[numId];
+                  if (!stInfo) return;
+                  builtStops.push({
+                    stopId: padCode,
+                    seq: idx + 1,
+                    stopName_e: `${stInfo.en} Light Rail Stop`,
+                    name_tc: `${stInfo.tc}輕鐵站`,
+                    latitude: stInfo.lat.toFixed(6),
+                    longitude: stInfo.lon.toFixed(6),
+                    lrtCode: padCode,
+                    lrtLine: rNo,
+                    fare: minOctopusRailFare
+                  });
+                });
+                if (builtStops.length < 2) continue;
+                railFerryStopsCache[rId] = builtStops;
+
+                const firstInfo = LRT_STATION_DIRECTORY[String(parseInt(stopCodeArr[0], 10))];
+                const lastInfo  = LRT_STATION_DIRECTORY[String(parseInt(stopCodeArr[stopCodeArr.length - 1], 10))];
+                const isLoop = (rNo === '705' || rNo === '706');
+                const isAmOnlyPeak = (rNo === '507P' || rNo === '610P');
+                const isPeakShuttle = (rNo === '751P' || isAmOnlyPeak);
+                const destEn = isLoop ? `${firstInfo.en} (Circular)` : lastInfo.en;
+                const destTc = isLoop ? `${firstInfo.tc} (循環線)` : lastInfo.tc;
+
+                railFerryGroupedRoutes.push({
+                  key: rId,
+                  mode: 'MTR',
+                  routeNo: rNo,
+                  company: 'LRT',
+                  company_tc: '輕鐵',
+                  colorHex: IOS_LRT_INDIGO,
+                  orig_e: firstInfo.en,
+                  orig_tc: firstInfo.tc,
+                  dest_e: destEn,
+                  dest_tc: destTc,
+                  isCircular: isLoop,
+                  headwayMins: 7,
+                  serviceMode: isPeakShuttle ? 'PEAK_WEEKDAY_ONLY' : 'DAILY',
+                  operatingDays: isPeakShuttle ? [1, 2, 3, 4, 5] : [0, 1, 2, 3, 4, 5, 6],
+                  includeHolidays: !isPeakShuttle,
+                  excludeHolidays: isPeakShuttle,
+                  activeWindows: isAmOnlyPeak ? [[430, 510]] : (isPeakShuttle ? [[435, 510], [1020, 1140]] : [[320, 1439], [0, 60]]),
+                  routeIds: [rId]
+                });
+
+                if (!seenLrt.has(rNo)) {
+                  seenLrt.add(rNo);
+                  const sepArrow = isAmOnlyPeak ? '➔' : '⟷';
+                  quickLrtLines.push({
+                    key: rNo,
+                    badge: rNo,
+                    name_en: `${firstInfo.en} ${sepArrow} ${destEn}`,
+                    name_tc: `${firstInfo.tc} ${sepArrow} ${destTc}`,
+                    color: IOS_LRT_INDIGO,
+                    stops: builtStops.map(s => s.stopId)
+                  });
+                }
+              }
+            }
+            quickLrtLines.sort((a, b) => a.key.localeCompare(b.key, undefined, { numeric: true }));
+
+            const rstopByRoute = new Map();
+            if (tdRstopFerryXmlRes && tdRstopFerryXmlRes.ok) {
+              parseXmlRecords(await tdRstopFerryXmlRes.text(), 'RSTOP').forEach(rs => {
+                const k = String(rs.ROUTE_ID || ''), sq = String(rs.ROUTE_SEQ || '1');
+                if (!rstopByRoute.has(k)) rstopByRoute.set(k, new Map());
+                if (!rstopByRoute.get(k).has(sq)) rstopByRoute.get(k).set(sq, []);
+                rstopByRoute.get(k).get(sq).push({
+                  stopId: String(rs.STOP_ID || ''),
+                  seq: parseInt(rs.STOP_SEQ || '1', 10),
+                  en: cleanFerryEndpointName(rs.STOP_NAMEE || ''),
+                  tc: cleanFerryEndpointName(rs.STOP_NAMEC || '')
+                });
+              });
+            }
+
+            const seenFerrySigs = new Set();
+            if (tdRouteFerryXmlRes && tdRouteFerryXmlRes.ok) {
+              const ferryXmlText = await tdRouteFerryXmlRes.text();
+              const ferryXmlHash = sha1Short(ferryXmlText);
+              if (prevUpstreamHashes.td_route_ferry_xml && prevUpstreamHashes.td_route_ferry_xml !== ferryXmlHash) {
+                dataDriftAlerts.push({
+                  category: 'TD_FERRY_XML_DRIFT',
+                  date: hktTodayYmd,
+                  message: `TD ROUTE_FERRY.xml hash changed (${prevUpstreamHashes.td_route_ferry_xml} -> ${ferryXmlHash}). Check if any mainline ferry fares or journey times were updated.`
+                });
+              }
+              nextUpstreamHashes.td_route_ferry_xml = ferryXmlHash;
+
+              const fRows = parseXmlRecords(ferryXmlText, 'ROUTE');
+
+              for (let idx = 0; idx < fRows.length; idx++) {
+                const r = fRows[idx];
+                const rIdNum = String(r.ROUTE_ID || idx);
+                const seqMap = rstopByRoute.get(rIdNum);
+                const rStops = seqMap ? [...seqMap.values()].sort((a, b) => b.length - a.length)[0].slice().sort((a, b) => a.seq - b.seq) : [];
+                const firstSt = rStops[0], lastSt = rStops[rStops.length - 1];
+                const origE = cleanFerryEndpointName(r.LOC_START_NAMEE || firstSt?.en || '');
+                const destE = cleanFerryEndpointName(r.LOC_END_NAMEE || lastSt?.en || '');
+                const origC = cleanFerryEndpointName(r.LOC_START_NAMEC || firstSt?.tc || origE);
+                const destC = cleanFerryEndpointName(r.LOC_END_NAMEC || lastSt?.tc || destE);
+
+                if (!origE || !destE || /macau|macao|zhuhai|shekou|nansha|澳門|珠海|蛇口|南沙/i.test(`${origE} ${destE} ${origC} ${destC}`)) continue;
+
+                const pairCanon = [normName(origE, true), normName(destE, true)].sort().join('_');
+                if (!MAINLINE_FERRY_PAIRS.has(pairCanon)) continue;
+
+                const sourcePierList = rStops.length >= 2
+                  ? rStops
+                  : [{ stopId: '1', seq: 1, en: origE, tc: origC }, { stopId: '2', seq: 2, en: destE, tc: destC }];
+
+                const resolvedPierStops = [];
+                for (const pst of sourcePierList) {
+                  const coord = lookupScopedCoord(osmStationCoords, 'FERRY', pst.stopId, pst.en, pst.tc) ||
+                                (pst.stopId && tdFerryStopById.get(pst.stopId)) ||
+                                lookupScopedCoord(fallbackStationCoords, 'FERRY', pst.stopId, pst.en, pst.tc);
+                  if (coord && isValidHkCoord(coord.lat, coord.lon)) {
+                    const pEn = pst.en && !/^central$/i.test(pst.en) ? pst.en : `${pst.en || origE} Ferry Pier`;
+                    const pTc = pst.tc || `${origC}渡輪碼頭`;
+                    resolvedPierStops.push({
+                      lat: Number(coord.lat),
+                      lon: Number(coord.lon),
+                      stopE: pEn,
+                      stopZ: pTc,
+                      rawEn: pst.en || origE,
+                      rawTc: pst.tc || origC
+                    });
+                  }
+                }
+                if (resolvedPierStops.length < 2) continue;
+
+                const sig = resolvedPierStops.map(p => normName(p.rawEn, true)).join('_');
+                const revSig = [...resolvedPierStops].reverse().map(p => normName(p.rawEn, true)).join('_');
+                const canonSig = `${[sig, revSig].sort()[0]}_${String(r.COMPANY_CODE || '').trim().toUpperCase()}`;
+                if (!canonSig || seenFerrySigs.has(canonSig)) continue;
+                seenFerrySigs.add(canonSig);
+
+                const baseRouteFare = parseFloat(r.FULL_FARE || '0') || 0;
+                const dirKeyO = `${normName(origE, true)}_${normName(destE, true)}`;
+                const fareMat = resolve2x2FerryFareMatrix(null, baseRouteFare, dirKeyO);
+                const vSpec = VERIFIED_MAINLINE_SCHEDULES[dirKeyO] || VERIFIED_MAINLINE_SCHEDULES[pairCanon];
+                const durFast = vSpec?.durFast || parseInt(r.JOURNEY_TIME || '0', 10) || 30;
+                const durOrd  = vSpec?.durOrd  || durFast;
+                const dur     = vSpec?.dur     || durFast;
+
+                const fKey = `FERRY_TD_${rIdNum}`;
+                const badge = `${shortFerryPierLabelEn(origE)} ⟷ ${shortFerryPierLabelEn(destE)}`;
+                const badgeTc = `${shortFerryPierLabelTc(origC)} ⟷ ${shortFerryPierLabelTc(destC)}`;
+
+                ['O', 'I'].forEach(dir => {
+                  const orderedPiers = dir === 'O' ? resolvedPierStops : [...resolvedPierStops].reverse();
+                  const sFirst = orderedPiers[0], sLast = orderedPiers[orderedPiers.length - 1];
+                  const rId = `${fKey}_${dir}`;
+                  railFerryStopsCache[rId] = orderedPiers.map((p, pIdx) => ({
+                    stopId: `${rId}_${pIdx + 1}`,
+                    seq: pIdx + 1,
+                    stopName_e: p.stopE,
+                    name_tc: p.stopZ,
+                    latitude: Number(p.lat).toFixed(6),
+                    longitude: Number(p.lon).toFixed(6),
+                    fare: String(fareMat.fareWk),
+                    fareHol: String(fareMat.fareHol)
+                  }));
+
+                  const dirOrigE = dir === 'O' ? origE : destE;
+                  const dirDestE = dir === 'O' ? destE : origE;
+                  const dirOrigC = dir === 'O' ? origC : destC;
+                  const dirDestC = dir === 'O' ? destC : origC;
+                  const headerPairKey = `${normName(dirOrigE, true)}_${normName(dirDestE, true)}`;
+                  const stopPairKey = `${normName(sFirst.rawEn, true)}_${normName(sLast.rawEn, true)}`;
+                  const sched = csvSchedulesObj?.[headerPairKey] || csvSchedulesObj?.[stopPairKey] || null;
+                  const liveEtaKey = resolveFerryLiveEtaKey(dirOrigE, dirDestE) || resolveFerryLiveEtaKey(sFirst.rawEn, sLast.rawEn);
+                  const ferryActiveWindows = deriveFerryActiveWindowsFromSched(sched);
+
+                  railFerryGroupedRoutes.push({
+                    key: rId,
+                    mode: 'FERRY',
+                    routeNo: badge,
+                    routeNo_tc: badgeTc,
+                    company: r.COMPANY_CODE || 'Ferry',
+                    company_tc: '渡輪',
+                    colorHex: IOS_FERRY_BLUE,
+                    ...(liveEtaKey ? { liveEtaKey } : {}),
+                    orig_e: dirOrigE,
+                    orig_tc: dirOrigC,
+                    dest_e: dirDestE,
+                    dest_tc: dirDestC,
+                    headwayMins: 30,
+                    ferryMeta: {
+                      dur,
+                      durFast,
+                      durOrd,
+                      fareWk: fareMat.fareWk,
+                      fareHol: fareMat.fareHol,
+                      fareWkOrd: fareMat.fareWkOrd,
+                      fareWkFast: fareMat.fareWkFast,
+                      fareHolOrd: fareMat.fareHolOrd,
+                      fareHolFast: fareMat.fareHolFast,
+                      ...(sched ? { sched } : {})
+                    },
+                    serviceMode: 'DAILY',
+                    operatingDays: [0, 1, 2, 3, 4, 5, 6],
+                    includeHolidays: true,
+                    activeWindows: ferryActiveWindows,
+                    routeIds: [rId]
+                  });
+
+                  orderedPiers.forEach(p => {
+                    const hId = `FERRY_${normName(p.stopE, true)}`;
+                    if (!hubMap.has(hId)) {
+                      hubMap.set(hId, {
+                        id: hId,
+                        mode: 'FERRY',
+                        line: badge,
+                        lines: [badge],
+                        sta: p.stopE,
+                        badge,
+                        name_en: p.stopE,
+                        name_tc: p.stopZ,
+                        lat: p.lat,
+                        lon: p.lon,
+                        groupKey: rId
+                      });
+                    }
+                  });
+                });
+
+                quickFerryLines.push({
+                  key: fKey,
+                  badge,
+                  badge_tc: badgeTc,
+                  title_en: `${shortFerryPierLabelEn(origE)} ⟷ ${shortFerryPierLabelEn(destE)}`,
+                  title_zh: `${shortFerryPierLabelTc(origC)} ⟷ ${shortFerryPierLabelTc(destC)}`,
+                  color: IOS_FERRY_BLUE
+                });
+              }
+            }
+
+            // Upstream timeout fallback: preserve last-known-good MTR / Ferry routes before sanity gate
+            if (quickMtrLines.length < 10 && Array.isArray(existingDb.quickMtrLines) && existingDb.quickMtrLines.length >= 10) {
+              console.warn(`Upstream MTR CSV incomplete (${quickMtrLines.length} lines) — falling back to cached MTR routes.`);
+              quickMtrLines.length = 0;
+              quickMtrLines.push(...existingDb.quickMtrLines);
+              railFerryGroupedRoutes = railFerryGroupedRoutes.filter(g => !(g.mode === 'MTR' && g.company === 'MTR'));
+              railFerryGroupedRoutes.push(...(existingDb.groupedRoutes || []).filter(g => g.mode === 'MTR' && g.company === 'MTR'));
+              for (const [k, v] of Object.entries(existingDb.routeStopsCache || {})) {
+                if (k.startsWith('MTR_')) railFerryStopsCache[k] = v;
+              }
+              (existingDb.multiModalHubs || []).forEach(h => {
+                if (h.mode === 'MTR' && !hubMap.has(h.id)) hubMap.set(h.id, h);
+              });
+            }
+
+            if (quickFerryLines.length < 10 && Array.isArray(existingDb.quickFerryLines) && existingDb.quickFerryLines.length >= 10) {
+              console.warn(`Upstream TD Ferry XML incomplete (${quickFerryLines.length} routes) — falling back to cached Ferry routes.`);
+              quickFerryLines.length = 0;
+              quickFerryLines.push(...existingDb.quickFerryLines);
+              railFerryGroupedRoutes = railFerryGroupedRoutes.filter(g => g.mode !== 'FERRY');
+              railFerryGroupedRoutes.push(...(existingDb.groupedRoutes || []).filter(g => g.mode === 'FERRY'));
+              for (const [k, v] of Object.entries(existingDb.routeStopsCache || {})) {
+                if (k.startsWith('FERRY_')) railFerryStopsCache[k] = v;
+              }
+              (existingDb.multiModalHubs || []).forEach(h => {
+                if (h.mode === 'FERRY' && !hubMap.has(h.id)) hubMap.set(h.id, h);
+              });
+            }
+
+            // Pre-commit sanity gate: never overwrite good production index with degraded data
+            if (
+              busGroupedRoutes.length < 500 ||
+              quickMtrLines.length < 10 ||
+              quickLrtLines.length < 12 ||
+              quickFerryLines.length < 10
+            ) {
+              console.error(
+                `ABORT: Sanity gate failed (bus=${busGroupedRoutes.length}, mtr=${quickMtrLines.length}, lrt=${quickLrtLines.length}, ferry=${quickFerryLines.length}). Refusing to overwrite bus_index.min.json.`
+              );
+              process.exit(1);
+            }
+
+            const stopsDict = [];
+            const stopDictKeyToIdx = new Map();
+            const packedRouteStopsCache = {};
+
+            const allUnpackedCaches = { ...rawStopsCache, ...railFerryStopsCache };
+            for (const [rId, list] of Object.entries(allUnpackedCaches)) {
+              if (!Array.isArray(list) || !list.length) continue;
+              packedRouteStopsCache[rId] = list.map(st => {
+                const latNum = Number(parseFloat(st.latitude || 0).toFixed(6));
+                const lonNum = Number(parseFloat(st.longitude || 0).toFixed(6));
+                const dictRow = [
+                  String(st.stopId ?? ''),
+                  String(st.stopName_e ?? ''),
+                  String(st.name_tc ?? ''),
+                  latNum,
+                  lonNum
+                ];
+                if (st.mtrCode || st.lrtCode || st.mtrLine || st.lrtLine) {
+                  dictRow.push(
+                    st.mtrCode || '',
+                    st.lrtCode || '',
+                    st.mtrLine || '',
+                    st.lrtLine || ''
+                  );
+                }
+                const dictSign = JSON.stringify(dictRow);
+                let dIdx = stopDictKeyToIdx.get(dictSign);
+                if (dIdx === undefined) {
+                  dIdx = stopsDict.length;
+                  stopDictKeyToIdx.set(dictSign, dIdx);
+                  stopsDict.push(dictRow);
+                }
+                const refItem = [dIdx, String(st.fare ?? '0')];
+                if (st.fareHol !== undefined && st.fareHol !== null && st.fareHol !== '' && st.fareHol !== st.fare) {
+                  refItem.push(String(st.fareHol));
+                }
+                return refItem;
+              });
+            }
+
+            const combinedGroupedRoutes = [...busGroupedRoutes, ...railFerryGroupedRoutes];
+            const sortedHolidays = [...publicHolidaysSet].sort();
+
+            if (dataDriftAlerts.length > 0) {
+              await notifyGitHubIssueOnDrift(dataDriftAlerts, hktTodayYmd);
+            }
+
+            const outDb = {
+              schemaVersion: SCHEMA_VERSION,
+              lastUpdated: LAST_UPDATED_ISO,
+              tdLastUpdated,
+              upstreamHashes: nextUpstreamHashes,
+              dataDriftAlerts,
+              stopsDict,
+              groupedRoutes: combinedGroupedRoutes,
+              routeStopsCache: packedRouteStopsCache,
+              mtrExits: mtrExits.length ? mtrExits : (existingDb.mtrExits || []),
+              quickMtrLines,
+              quickLrtLines,
+              quickFerryLines,
+              mtrFareStations,
+              mtrFareMatrixB64,
+              publicHolidays: sortedHolidays,
+              hkPublicHolidays: sortedHolidays,
+              csvSchedules: csvSchedulesObj,
+              multiModalHubs: Array.from(hubMap.values())
+            };
+
+            fs.writeFileSync('bus_index.min.json', JSON.stringify(outDb));
+            fs.writeFileSync('version.json', JSON.stringify({
+              schemaVersion: SCHEMA_VERSION,
+              lastUpdated: LAST_UPDATED_ISO,
+              tdLastUpdated,
+              driftCount: dataDriftAlerts.length
+            }));
+            console.log(`Built bus_index.min.json (schemaVersion=${SCHEMA_VERSION}, routes=${combinedGroupedRoutes.length}, stopsDict=${stopsDict.length}, driftAlerts=${dataDriftAlerts.length})`);
+          })().catch(err => {
+            console.error(err);
+            process.exit(1);
+          });
+          EOF
+
+      - name: Commit and Push Updated Index
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add bus_index.min.json version.json
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "chore: automated update of bus_index.min.json and version.json (schema v9)"
+            git pull --rebase origin main
+            git push
+          fi

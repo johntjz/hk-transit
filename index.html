@@ -1096,6 +1096,7 @@
     .planner-step-main { font-size: 0.82rem; font-weight: 600; color: var(--text-main); line-height: 1.3; }
     .planner-step-walk .planner-step-main { font-size: 0.78rem; font-weight: 500; color: var(--text-sub); }
     .planner-step-sub { font-size: 0.74rem; color: var(--text-sub); line-height: 1.35; }
+    .planner-step-sigs { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 6px; font-size: 0.72rem; line-height: 1.3; margin-top: 1px; }
     .planner-sig-live { color: var(--ios-green); font-weight: 700; }
     .planner-sig-sched { color: var(--ios-orange); font-weight: 600; }
     .planner-sig-est { color: var(--text-sub); font-weight: 500; }
@@ -1231,11 +1232,33 @@
       letter-spacing: -0.02em; line-height: 1.25; text-wrap: balance;
     }
     .onboard-step-cue {
-      font-size: 0.84rem; font-weight: 600; color: var(--text-sub);
+      font-size: 0.82rem; font-weight: 600; color: var(--text-sub);
       line-height: 1.35;
     }
+    .onboard-steps-list {
+      width: 100%; display: flex; flex-direction: column; gap: 5px;
+      margin-top: 6px; text-align: left;
+    }
+    .onboard-step-row {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 10px; border-radius: 11px;
+      background: var(--bg-surface); font-size: 0.77rem; font-weight: 600;
+      color: var(--text-main); line-height: 1.3;
+    }
+    .onboard-step-num {
+      width: 19px; height: 19px; border-radius: 999px; flex-shrink: 0;
+      background: var(--ios-blue); color: #FFFFFF;
+      font-size: 0.68rem; font-weight: 800;
+      display: inline-flex; align-items: center; justify-content: center;
+    }
+    .onboard-rank-pill {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 2px 8px; border-radius: 999px;
+      background: rgba(0, 122, 255, 0.12); color: var(--ios-blue);
+      font-size: 0.68rem; font-weight: 700; letter-spacing: 0.01em;
+    }
     .onboard-quick-action-row {
-      display: flex; justify-content: center; gap: 8px; min-height: 0; margin-top: 2px;
+      display: flex; justify-content: center; gap: 8px; min-height: 0; margin-top: 4px;
     }
     .onboard-dots {
       display: flex; align-items: center; justify-content: center; gap: 7px; padding: 2px 0;
@@ -1538,13 +1561,17 @@
 <div id="tutorialModal" style="display:none; position:fixed; inset:0; z-index:5100; background:rgba(0,0,0,0.58); backdrop-filter:blur(6px); align-items:center; justify-content:center; padding:16px;" onclick="if(event.target===this)closeTutorialModal()">
   <div class="onboard-card" id="tutorialModalCard" role="dialog" aria-modal="true" aria-labelledby="tutorialSlideTitle">
     <div class="onboard-head">
-      <div class="onboard-step-counter" id="tutorialStepCounter">1 / 5</div>
+      <div style="display:flex; align-items:center; gap:7px;">
+        <div class="onboard-step-counter" id="tutorialStepCounter">1 / 7</div>
+        <span class="onboard-rank-pill" id="tutorialRankPill"></span>
+      </div>
       <button type="button" class="onboard-skip-btn" id="tutorialCloseBtn" onclick="closeTutorialModal()">Skip</button>
     </div>
     <div id="tutorialVisualStage" class="onboard-stage"></div>
     <div class="onboard-caption">
       <div class="onboard-step-heading" id="tutorialSlideTitle"></div>
       <div class="onboard-step-cue" id="tutorialSlideCue"></div>
+      <div class="onboard-steps-list" id="tutorialStepsList"></div>
       <div class="onboard-quick-action-row" id="tutorialQuickActionRow"></div>
     </div>
     <div class="onboard-dots" id="tutorialDots" role="tablist" aria-label="Guide slides"></div>
@@ -2552,6 +2579,12 @@ function computeSegmentStepSeconds(mode, company, dKm, isTerminalHop = false, mi
   // Short spacing (<500m) = urban/estate loop (~18 km/h = 5.0 m/s) + 38s stop/light friction
   // Long spacing (>2300m) = expressway/tunnel (~65 km/h = 18.0 m/s) + 10s minimal friction
   const highwayRatio = Math.min(1, Math.max(0, (distM - 500) / 1800));
+  const isSouthLantauRural = (company === 'NLB') && Number.isFinite(midLat) && Number.isFinite(midLon) && midLat < 22.275 && midLon < 114.03;
+  if (isSouthLantauRural) {
+    const ruralSpeedMps = Math.max(8.2, 5.0 + highwayRatio * 13.0);
+    const ruralDwellSec = isTerminalHop ? 8 : 14;
+    return Math.max(20, Math.round((distM * 1.08) / ruralSpeedMps) + ruralDwellSec);
+  }
   let speedMps = 5.0 + highwayRatio * 13.0;
   const liveCor = getCorridorLiveStatusAt(midLat, midLon);
   if (highwayRatio > 0.35 && liveCor.speedKmh < 58) {
@@ -5376,275 +5409,387 @@ function cycleTextSize() {
 
 let activeTutorialStep = 0;
 let tutorialOpenedFromSettings = false;
-const ONBOARDING_SEEN_KEY = 'transit_onboarding_seen_v1';
-const TUTORIAL_SLIDE_COUNT = 5;
+const ONBOARDING_SEEN_KEY = 'transit_onboarding_seen_v2';
+const TUTORIAL_SLIDE_COUNT = 7;
 
 function buildTutorialSlideSvg(stepIdx, isZh) {
   const font = "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'PingFang HK', sans-serif";
+  const badgeCallout = (cx, cy, num, color = '#007AFF') => `
+    <circle cx="${cx}" cy="${cy}" r="11" fill="${color}" stroke="#FFFFFF" stroke-width="2"/>
+    <text x="${cx}" y="${cy + 3.5}" text-anchor="middle" font-family="${font}" font-size="9.5" font-weight="800" fill="#FFFFFF">${num}</text>`;
+
   if (stepIdx === 0) {
-    // Slide 1: Bookmark / Add App to Home Screen
-    const addLbl = isZh ? '加入主畫面' : 'Add to Home Screen';
-    const shareLbl = isZh ? '分享' : 'Share';
-    const appLbl = isZh ? '香港交通' : 'Transit HK';
-    return `<svg viewBox="0 0 340 244" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${addLbl}">
+    // Slide 1 (Priority #1): Nearby Live ETAs — Bus / Rail / Ferry + GPS / Search
+    const busT = isZh ? '巴士' : 'Bus';
+    const railT = isZh ? '港鐵' : 'Rail';
+    const ferryT = isZh ? '渡輪' : 'Ferry';
+    const planT = isZh ? '規劃' : 'Plan';
+    const locT = isZh ? '旺角 (亞皆老街) · 85m' : 'Mong Kok · 85m';
+    const searchPh = isZh ? '搜尋站名或路線 (如 112 / 旺角)' : 'Search stop or route (e.g. 112)';
+    const dest1 = isZh ? '往 尖沙咀碼頭' : 'To Tsim Sha Tsui';
+    const dest2 = isZh ? '往 銅鑼灣 (崇光)' : 'To Causeway Bay';
+    const dest3 = isZh ? '往 金鐘 (東鐵綫)' : 'To Admiralty (EAL)';
+    const seatsLbl = isZh ? '有位' : 'Seats';
+    const liveLbl = isZh ? '實時GPS' : 'Live GPS';
+    return `<svg viewBox="0 0 340 244" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${locT}">
       <defs>
         <linearGradient id="obBg0" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stop-color="#007AFF" stop-opacity="0.11"/>
-          <stop offset="100%" stop-color="#34C759" stop-opacity="0.06"/>
+          <stop offset="0%" stop-color="#FF3B30" stop-opacity="0.10"/>
+          <stop offset="100%" stop-color="#007AFF" stop-opacity="0.08"/>
         </linearGradient>
       </defs>
       <rect width="340" height="244" fill="url(#obBg0)"/>
-      <!-- Step 1: Browser bottom bar with Share icon -->
-      <rect x="20" y="16" width="300" height="58" rx="14" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
-      <rect x="34" y="24" width="272" height="18" rx="9" fill="var(--bg-surface)"/>
-      <text x="170" y="36.5" text-anchor="middle" font-family="${font}" font-size="9.5" font-weight="600" fill="var(--text-sub)">hk-fleet.pages.dev</text>
-      <!-- Browser toolbar icons -->
-      <path d="M58 59 l-6 -4 l6 -4" fill="none" stroke="var(--text-sub)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>
-      <path d="M98 51 l6 4 l-6 4" fill="none" stroke="var(--text-sub)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>
-      <!-- Highlighted Share button -->
-      <circle cx="170" cy="57" r="17" fill="#007AFF" opacity="0.18" class="ob-pulse-ring"/>
-      <circle cx="170" cy="57" r="12" fill="#007AFF"/>
-      <path d="M170 50 v10 M166 54 l4 -4 l4 4 M165 57 v4 h10 v-4" fill="none" stroke="#FFFFFF" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
-      <text x="191" y="61" font-family="${font}" font-size="9.5" font-weight="700" fill="#007AFF">${shareLbl}</text>
-      <!-- Pointer arrow down -->
-      <path d="M170 76 v16 M165 87 l5 5 l5 -5" fill="none" stroke="#007AFF" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
-      <!-- Step 2: Action Sheet row -->
-      <rect x="36" y="96" width="268" height="46" rx="14" fill="var(--bg-white)" stroke="#007AFF" stroke-width="1.8"/>
-      <rect x="49" y="108" width="22" height="22" rx="6" fill="rgba(0,122,255,0.14)"/>
-      <path d="M60 113 v12 M54 119 h12" stroke="#007AFF" stroke-width="2.1" stroke-linecap="round"/>
-      <text x="82" y="123" font-family="${font}" font-size="13" font-weight="700" fill="var(--text-main)">${addLbl}</text>
-      <circle cx="282" cy="119" r="12" fill="#007AFF" opacity="0.16" class="ob-pulse-ring"/>
-      <circle cx="282" cy="119" r="5" fill="#007AFF"/>
-      <!-- Pointer arrow to Home Screen App Icon -->
-      <path d="M170 146 v15 M165 156 l5 5 l5 -5" fill="none" stroke="#007AFF" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
-      <!-- Step 3: Home Screen dock preview -->
-      <rect x="64" y="166" width="212" height="64" rx="16" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
-      <rect x="86" y="177" width="34" height="34" rx="9" fill="var(--bg-surface)" opacity="0.85"/>
-      <!-- Transit HK App Icon -->
-      <rect x="150" y="174" width="40" height="40" rx="11" fill="#E53935"/>
-      <rect x="159" y="182" width="22" height="17" rx="4" fill="#FFFFFF"/>
-      <rect x="162" y="185" width="16" height="8" rx="1.5" fill="#E53935"/>
-      <circle cx="164" cy="196" r="1.6" fill="#E53935"/>
-      <circle cx="176" cy="196" r="1.6" fill="#E53935"/>
-      <circle cx="187" cy="177" r="7" fill="#34C759"/>
-      <path d="M184 177 l2 2 l4 -4" fill="none" stroke="#FFFFFF" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
-      <text x="170" y="224" text-anchor="middle" font-family="${font}" font-size="9.5" font-weight="700" fill="var(--text-main)">${appLbl}</text>
-      <rect x="220" y="177" width="34" height="34" rx="9" fill="var(--bg-surface)" opacity="0.85"/>
+      <rect x="16" y="10" width="308" height="224" rx="18" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
+      <!-- Top Mode Bar -->
+      <rect x="26" y="20" width="54" height="23" rx="11.5" fill="#FF3B30"/>
+      <text x="53" y="35" text-anchor="middle" font-family="${font}" font-size="10" font-weight="800" fill="#FFFFFF">${busT}</text>
+      <rect x="85" y="20" width="52" height="23" rx="11.5" fill="var(--bg-surface)"/>
+      <text x="111" y="35" text-anchor="middle" font-family="${font}" font-size="10" font-weight="700" fill="var(--text-sub)">${railT}</text>
+      <rect x="142" y="20" width="52" height="23" rx="11.5" fill="var(--bg-surface)"/>
+      <text x="168" y="35" text-anchor="middle" font-family="${font}" font-size="10" font-weight="700" fill="var(--text-sub)">${ferryT}</text>
+      <rect x="199" y="20" width="46" height="23" rx="11.5" fill="rgba(0,122,255,0.12)"/>
+      <text x="222" y="35" text-anchor="middle" font-family="${font}" font-size="10" font-weight="700" fill="#007AFF">${planT}</text>
+      ${badgeCallout(26, 20, '1', '#FF3B30')}
+      <!-- Location & Search Row -->
+      <text x="28" y="61" font-family="${font}" font-size="12.5" font-weight="800" fill="var(--text-main)">${locT}</text>
+      <rect x="26" y="69" width="222" height="26" rx="9" fill="var(--bg-surface)"/>
+      <text x="36" y="85.5" font-family="${font}" font-size="9.5" font-weight="500" fill="var(--text-sub)">${searchPh}</text>
+      <circle cx="283" cy="82" r="18" fill="#007AFF" opacity="0.18" class="ob-pulse-ring"/>
+      <rect x="256" y="69" width="54" height="26" rx="13" fill="#007AFF"/>
+      <text x="283" y="85.5" text-anchor="middle" font-family="${font}" font-size="10" font-weight="800" fill="#FFFFFF">🎯 GPS</text>
+      ${badgeCallout(309, 68, '2', '#007AFF')}
+      <!-- Live ETA Card 1 -->
+      <rect x="26" y="104" width="288" height="38" rx="11" fill="var(--bg-surface)" stroke="#34C759" stroke-width="1.3"/>
+      <rect x="34" y="113" width="38" height="20" rx="6" fill="#E53935"/>
+      <text x="53" y="126.5" text-anchor="middle" font-family="${font}" font-size="10.5" font-weight="800" fill="#FFFFFF">1A</text>
+      <text x="80" y="121" font-family="${font}" font-size="11" font-weight="700" fill="var(--text-main)">${dest1}</text>
+      <rect x="80" y="125" width="36" height="12" rx="6" fill="rgba(52,199,89,0.16)"/>
+      <text x="98" y="134" text-anchor="middle" font-family="${font}" font-size="8" font-weight="700" fill="#248A3D">${seatsLbl}</text>
+      <circle cx="222" cy="120" r="3" fill="#34C759"/>
+      <text x="228" y="123" font-family="${font}" font-size="8.5" font-weight="700" fill="#248A3D">${liveLbl}</text>
+      <text x="304" y="128" text-anchor="end" font-family="${font}" font-size="14" font-weight="800" fill="var(--text-main)">3m</text>
+      ${badgeCallout(311, 105, '3', '#34C759')}
+      <!-- Live ETA Card 2 -->
+      <rect x="26" y="147" width="288" height="36" rx="11" fill="var(--bg-surface)"/>
+      <rect x="34" y="155" width="38" height="20" rx="6" fill="#E53935"/>
+      <text x="53" y="168.5" text-anchor="middle" font-family="${font}" font-size="10.5" font-weight="800" fill="#FFFFFF">112</text>
+      <text x="80" y="169" font-family="${font}" font-size="11" font-weight="700" fill="var(--text-main)">${dest2}</text>
+      <text x="304" y="169" text-anchor="end" font-family="${font}" font-size="13.5" font-weight="800" fill="var(--text-main)">6m</text>
+      <!-- Live ETA Card 3 (EAL light blue contrast) -->
+      <rect x="26" y="188" width="288" height="36" rx="11" fill="var(--bg-surface)"/>
+      <rect x="34" y="196" width="38" height="20" rx="6" fill="#5EB6E4"/>
+      <text x="53" y="209.5" text-anchor="middle" font-family="${font}" font-size="10" font-weight="800" fill="#FFFFFF">EAL</text>
+      <text x="80" y="210" font-family="${font}" font-size="11" font-weight="700" fill="var(--text-main)">${dest3}</text>
+      <text x="304" y="210" text-anchor="end" font-family="${font}" font-size="13.5" font-weight="800" fill="#007AFF">2m</text>
     </svg>`;
   }
 
   if (stepIdx === 1) {
-    // Slide 2: Bookmark / Star Stops
-    const hdr = isZh ? '往 梅窩碼頭' : 'To Mui Wo Pier';
-    const s1 = isZh ? '東涌站巴士總站' : 'Tung Chung Station';
-    const s2 = isZh ? '羅屋村' : 'Lo Uk Tsuen';
-    const s3 = isZh ? '貝澳油站' : 'Pui O Petrol Stn';
-    const savedBadge = isZh ? '★ 已收藏車站' : '★ Stop Saved';
-    return `<svg viewBox="0 0 340 244" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${savedBadge}">
+    // Slide 2 (Priority #2): Route Detail Map, Next 3 ETAs, Live GPS vs Scheduled & Load
+    const hdr = isZh ? '112 往 銅鑼灣 (崇光)' : '112 To Causeway Bay';
+    const stopA = isZh ? '紅磡海底隧道' : 'Cross-Harbour Tunnel';
+    const stopB = isZh ? '崇光百貨 (銅鑼灣)' : 'SOGO Causeway Bay';
+    const liveTag = isZh ? '● 實時GPS' : '● Live GPS';
+    const schedTag = isZh ? '預計班次' : 'Scheduled';
+    const seatsTag = isZh ? '有位' : 'Seats';
+    const standTag = isZh ? '企位' : 'Standing';
+    return `<svg viewBox="0 0 340 244" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${hdr}">
       <defs>
         <linearGradient id="obBg1" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stop-color="#FF9500" stop-opacity="0.12"/>
-          <stop offset="100%" stop-color="#E53935" stop-opacity="0.06"/>
+          <stop offset="0%" stop-color="#34C759" stop-opacity="0.11"/>
+          <stop offset="100%" stop-color="#007AFF" stop-opacity="0.08"/>
         </linearGradient>
       </defs>
       <rect width="340" height="244" fill="url(#obBg1)"/>
-      <rect x="20" y="14" width="300" height="216" rx="18" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
-      <!-- Mini route bar -->
-      <rect x="34" y="26" width="38" height="22" rx="7" fill="#E53935"/>
-      <text x="53" y="41" text-anchor="middle" font-family="${font}" font-size="11.5" font-weight="800" fill="#FFFFFF">3M</text>
-      <text x="80" y="41" font-family="${font}" font-size="12" font-weight="700" fill="var(--text-main)">${hdr}</text>
-      <line x1="34" y1="58" x2="306" y2="58" stroke="var(--border-color)" stroke-width="1"/>
-      <!-- Route vertical line -->
-      <line x1="48" y1="76" x2="48" y2="176" stroke="#E53935" stroke-width="3" stroke-linecap="round" opacity="0.35"/>
-      <!-- Stop 1 -->
-      <circle cx="48" cy="78" r="5" fill="var(--bg-white)" stroke="#E53935" stroke-width="2.2"/>
-      <text x="64" y="82" font-family="${font}" font-size="11.5" font-weight="600" fill="var(--text-sub)">${s1}</text>
-      <text x="284" y="83" text-anchor="middle" font-family="${font}" font-size="15" fill="var(--text-sub)" opacity="0.45">☆</text>
-      <!-- Highlighted Stop 2 -->
-      <rect x="30" y="101" width="280" height="52" rx="13" fill="rgba(255,149,0,0.11)" stroke="#FF9500" stroke-width="1.5"/>
-      <circle cx="48" cy="127" r="6" fill="#FF9500"/>
-      <text x="64" y="123" font-family="${font}" font-size="12.5" font-weight="800" fill="var(--text-main)">${s2}</text>
-      <text x="64" y="140" font-family="${font}" font-size="10.5" font-weight="700" fill="#34C759">4m · 18m</text>
-      <!-- Orange Star Button with Tap Ripple -->
-      <circle cx="284" cy="127" r="20" fill="#FF9500" opacity="0.22" class="ob-pulse-ring"/>
-      <circle cx="284" cy="127" r="14" fill="#FF9500"/>
-      <text x="284" y="132" text-anchor="middle" font-family="${font}" font-size="15" font-weight="700" fill="#FFFFFF">★</text>
-      <!-- Stop 3 -->
-      <circle cx="48" cy="176" r="5" fill="var(--bg-white)" stroke="#E53935" stroke-width="2.2"/>
-      <text x="64" y="180" font-family="${font}" font-size="11.5" font-weight="600" fill="var(--text-sub)">${s3}</text>
-      <text x="284" y="181" text-anchor="middle" font-family="${font}" font-size="15" fill="var(--text-sub)" opacity="0.45">☆</text>
-      <!-- Saved toast pill -->
-      <rect x="112" y="198" width="116" height="24" rx="12" fill="#FF9500"/>
-      <text x="170" y="213.5" text-anchor="middle" font-family="${font}" font-size="10.5" font-weight="700" fill="#FFFFFF">${savedBadge}</text>
+      <rect x="16" y="10" width="308" height="224" rx="18" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
+      <!-- Header bar -->
+      <rect x="28" y="19" width="42" height="21" rx="7" fill="#E53935"/>
+      <text x="49" y="33" text-anchor="middle" font-family="${font}" font-size="10.5" font-weight="800" fill="#FFFFFF">112</text>
+      <text x="78" y="33" font-family="${font}" font-size="11.5" font-weight="800" fill="var(--text-main)">${hdr}</text>
+      <!-- Mini Route Map -->
+      <rect x="26" y="46" width="288" height="58" rx="12" fill="#EAF2F8" stroke="var(--border-color)" stroke-width="1"/>
+      <path d="M26 75 H314 M155 46 V104" stroke="#FFFFFF" stroke-width="4" opacity="0.8"/>
+      <path d="M56 82 Q145 58 205 74 T284 68" fill="none" stroke="#E53935" stroke-width="4" stroke-linecap="round"/>
+      <circle cx="88" cy="73" r="5" fill="#FFFFFF" stroke="#E53935" stroke-width="2.5"/>
+      <circle cx="205" cy="74" r="7" fill="#007AFF" stroke="#FFFFFF" stroke-width="2.5"/>
+      <circle cx="284" cy="68" r="5" fill="#FFFFFF" stroke="#E53935" stroke-width="2.5"/>
+      <rect x="148" y="51" width="114" height="16" rx="8" fill="#1C1C1E"/>
+      <text x="205" y="62" text-anchor="middle" font-family="${font}" font-size="8.5" font-weight="700" fill="#FFFFFF">${stopB}</text>
+      ${badgeCallout(304, 52, '1', '#E53935')}
+      <!-- Stop Row Header -->
+      <text x="28" y="121" font-family="${font}" font-size="10.5" font-weight="700" fill="var(--text-sub)">12. ${stopA}</text>
+      <rect x="24" y="128" width="292" height="98" rx="13" fill="var(--bg-surface)" stroke="#007AFF" stroke-width="1.3"/>
+      <text x="36" y="144" font-family="${font}" font-size="11.5" font-weight="800" fill="var(--text-main)">13. ${stopB}</text>
+      <!-- Next 3 Departures -->
+      <rect x="34" y="151" width="272" height="21" rx="7" fill="var(--bg-white)"/>
+      <text x="44" y="165" font-family="${font}" font-size="11.5" font-weight="800" fill="var(--text-main)">● 3m</text>
+      <text x="86" y="165" font-family="${font}" font-size="10.5" font-weight="700" fill="#007AFF">18:42</text>
+      <rect x="128" y="154" width="66" height="15" rx="7.5" fill="rgba(52,199,89,0.16)"/>
+      <text x="161" y="164.5" text-anchor="middle" font-family="${font}" font-size="8.5" font-weight="700" fill="#248A3D">${liveTag}</text>
+      ${badgeCallout(198, 161, '2', '#34C759')}
+      <rect x="218" y="154" width="52" height="15" rx="7.5" fill="rgba(52,199,89,0.16)"/>
+      <text x="244" y="164.5" text-anchor="middle" font-family="${font}" font-size="8.5" font-weight="700" fill="#248A3D">${seatsTag}</text>
+      <rect x="34" y="175" width="272" height="21" rx="7" fill="var(--bg-white)"/>
+      <text x="44" y="189" font-family="${font}" font-size="11" font-weight="700" fill="var(--text-main)">11m</text>
+      <text x="86" y="189" font-family="${font}" font-size="10.5" font-weight="600" fill="var(--text-sub)">18:50</text>
+      <rect x="128" y="178" width="66" height="15" rx="7.5" fill="rgba(52,199,89,0.16)"/>
+      <text x="161" y="188.5" text-anchor="middle" font-family="${font}" font-size="8.5" font-weight="700" fill="#248A3D">${liveTag}</text>
+      <rect x="218" y="178" width="56" height="15" rx="7.5" fill="rgba(255,149,0,0.18)"/>
+      <text x="246" y="188.5" text-anchor="middle" font-family="${font}" font-size="8.5" font-weight="700" fill="#B25000">${standTag}</text>
+      ${badgeCallout(294, 172, '3', '#FF9500')}
+      <rect x="34" y="199" width="272" height="21" rx="7" fill="var(--bg-white)"/>
+      <text x="44" y="213" font-family="${font}" font-size="11" font-weight="700" fill="var(--text-sub)">22m</text>
+      <text x="86" y="213" font-family="${font}" font-size="10.5" font-weight="600" fill="var(--text-sub)">19:01</text>
+      <rect x="128" y="202" width="76" height="15" rx="7.5" fill="rgba(255,149,0,0.16)"/>
+      <text x="166" y="212.5" text-anchor="middle" font-family="${font}" font-size="8.5" font-weight="700" fill="#B25000">${schedTag}</text>
     </svg>`;
   }
 
   if (stepIdx === 2) {
-    // Slide 3: Find Saved Stops in Favorites Tab
-    const busT = isZh ? '巴士' : 'Bus';
-    const railT = isZh ? '港鐵' : 'Rail';
+    // Slide 3 (Priority #3): Multi-Modal Route Planner + Exact MTR Exits + Stops & ETA button
     const planT = isZh ? '規劃' : 'Plan';
-    const favHdr = isZh ? '已收藏車站' : 'Saved Stops';
-    const st1 = isZh ? '羅屋村' : 'Lo Uk Tsuen';
-    const st2 = isZh ? '東涌站' : 'Tung Chung Stn';
-    const st3 = isZh ? '中環6號碼頭' : 'Central Pier 6';
-    return `<svg viewBox="0 0 340 244" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${favHdr}">
-      <defs>
-        <linearGradient id="obBg2" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stop-color="#007AFF" stop-opacity="0.11"/>
-          <stop offset="100%" stop-color="#FF9500" stop-opacity="0.08"/>
-        </linearGradient>
-      </defs>
-      <rect width="340" height="244" fill="url(#obBg2)"/>
-      <rect x="18" y="14" width="304" height="216" rx="18" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
-      <!-- Mini Top Nav Bar mirroring real app -->
-      <rect x="28" y="26" width="46" height="24" rx="12" fill="var(--bg-surface)"/>
-      <text x="51" y="41.5" text-anchor="middle" font-family="${font}" font-size="10" font-weight="700" fill="var(--text-sub)">${busT}</text>
-      <rect x="80" y="26" width="46" height="24" rx="12" fill="var(--bg-surface)"/>
-      <text x="103" y="41.5" text-anchor="middle" font-family="${font}" font-size="10" font-weight="700" fill="var(--text-sub)">${railT}</text>
-      <rect x="132" y="26" width="52" height="24" rx="12" fill="rgba(0,122,255,0.12)"/>
-      <text x="158" y="41.5" text-anchor="middle" font-family="${font}" font-size="10" font-weight="700" fill="#007AFF">${planT}</text>
-      <!-- Map icon muted -->
-      <rect x="206" y="26" width="24" height="24" rx="12" fill="var(--bg-surface)"/>
-      <path d="M213 33 l3 -1.5 l4 1.5 l3 -1.5 v9 l-3 1.5 l-4 -1.5 l-3 1.5 z" fill="none" stroke="var(--text-sub)" stroke-width="1.3" opacity="0.7"/>
-      <!-- SPOTLIGHTED BOOKMARK / SAVED ICON -->
-      <circle cx="256" cy="38" r="20" fill="#007AFF" opacity="0.22" class="ob-pulse-ring"/>
-      <circle cx="256" cy="38" r="14" fill="#007AFF"/>
-      <path d="M261 44 l-5 -3.5 l-5 3.5 v-12 a1.5 1.5 0 0 1 1.5 -1.5 h7 a1.5 1.5 0 0 1 1.5 1.5 z" fill="#FFFFFF"/>
-      <!-- Gear icon muted -->
-      <circle cx="292" cy="38" r="12" fill="var(--bg-surface)"/>
-      <circle cx="292" cy="38" r="3.5" fill="none" stroke="var(--text-sub)" stroke-width="1.5" opacity="0.7"/>
-      <line x1="28" y1="60" x2="312" y2="60" stroke="var(--border-color)" stroke-width="1"/>
-      <!-- Downward connector arrow from Bookmark icon -->
-      <path d="M256 54 v14 M251.5 64 l4.5 4.5 l4.5 -4.5" fill="none" stroke="#007AFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-      <text x="34" y="77" font-family="${font}" font-size="10.5" font-weight="700" fill="#007AFF">${favHdr}</text>
-      <!-- Saved Card 1 -->
-      <rect x="30" y="86" width="280" height="40" rx="12" fill="var(--bg-surface)"/>
-      <text x="44" y="110" font-family="${font}" font-size="13" fill="#FF9500">★</text>
-      <rect x="60" y="96" width="34" height="20" rx="6" fill="#E53935"/>
-      <text x="77" y="109.5" text-anchor="middle" font-family="${font}" font-size="10" font-weight="800" fill="#FFFFFF">3M</text>
-      <text x="103" y="110" font-family="${font}" font-size="12" font-weight="700" fill="var(--text-main)">${st1}</text>
-      <text x="296" y="110" text-anchor="end" font-family="${font}" font-size="12" font-weight="800" fill="#34C759">4m</text>
-      <!-- Saved Card 2 -->
-      <rect x="30" y="133" width="280" height="40" rx="12" fill="var(--bg-surface)"/>
-      <text x="44" y="157" font-family="${font}" font-size="13" fill="#FF9500">★</text>
-      <rect x="60" y="143" width="34" height="20" rx="6" fill="#F39800"/>
-      <text x="77" y="156.5" text-anchor="middle" font-family="${font}" font-size="9.5" font-weight="800" fill="#FFFFFF">TCL</text>
-      <text x="103" y="157" font-family="${font}" font-size="12" font-weight="700" fill="var(--text-main)">${st2}</text>
-      <text x="296" y="157" text-anchor="end" font-family="${font}" font-size="12" font-weight="800" fill="#34C759">2m</text>
-      <!-- Saved Card 3 -->
-      <rect x="30" y="180" width="280" height="40" rx="12" fill="var(--bg-surface)"/>
-      <text x="44" y="204" font-family="${font}" font-size="13" fill="#FF9500">★</text>
-      <rect x="60" y="190" width="34" height="20" rx="6" fill="#0288D1"/>
-      <text x="77" y="203.5" text-anchor="middle" font-family="${font}" font-size="8.5" font-weight="800" fill="#FFFFFF">FERRY</text>
-      <text x="103" y="204" font-family="${font}" font-size="12" font-weight="700" fill="var(--text-main)">${st3}</text>
-      <text x="296" y="204" text-anchor="end" font-family="${font}" font-size="12" font-weight="800" fill="#34C759">11m</text>
+    const fromT = isZh ? '旺角' : 'Mong Kok';
+    const toT = isZh ? '中環 (IFC)' : 'Central (IFC)';
+    const bestT = isZh ? '最佳路線' : 'Best';
+    const walkTag = isZh ? '步行 2分 · 金鐘 B出口' : 'Walk 2m · Exit B';
+    const btnLbl = isZh ? '站點班次 ›' : 'Stops & ETA ›';
+    const liveLbl = isZh ? '● 實時到站' : '● Live ETA';
+    return `<svg viewBox="0 0 340 244" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${walkTag}">
+      <rect width="340" height="244" fill="var(--bg-surface)"/>
+      <rect x="16" y="10" width="308" height="224" rx="18" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
+      <!-- Top Bar + From/To -->
+      <rect x="28" y="19" width="52" height="21" rx="10.5" fill="#007AFF"/>
+      <text x="54" y="33" text-anchor="middle" font-family="${font}" font-size="10" font-weight="800" fill="#FFFFFF">${planT}</text>
+      ${badgeCallout(24, 20, '1', '#007AFF')}
+      <rect x="88" y="17" width="222" height="25" rx="8" fill="var(--bg-surface)"/>
+      <circle cx="99" cy="29.5" r="3.5" fill="#FFFFFF" stroke="#007AFF" stroke-width="2"/>
+      <text x="108" y="33" font-family="${font}" font-size="10" font-weight="700" fill="var(--text-main)">${fromT} → ${toT}</text>
+      <!-- Mini Map Frame -->
+      <rect x="26" y="48" width="288" height="94" rx="13" fill="#EAF2F8" stroke="var(--border-color)" stroke-width="1"/>
+      <path d="M26 95 H314 M130 48 V142 M235 48 V142" stroke="#FFFFFF" stroke-width="4" opacity="0.85"/>
+      <path d="M62 118 Q112 114 152 94" fill="none" stroke="#007AFF" stroke-width="3.5" stroke-dasharray="5 4" stroke-linecap="round"/>
+      <path d="M152 94 C192 94, 215 74, 272 74" fill="none" stroke="#E2231A" stroke-width="4.5" stroke-linecap="round"/>
+      <circle cx="62" cy="118" r="6" fill="#007AFF" stroke="#FFFFFF" stroke-width="2"/>
+      <circle cx="152" cy="94" r="6.5" fill="#1C1C1E" stroke="#FFFFFF" stroke-width="2"/>
+      <rect x="95" y="61" width="114" height="20" rx="8" fill="#1C1C1E"/>
+      <text x="152" y="74.5" text-anchor="middle" font-family="${font}" font-size="9" font-weight="700" fill="#FFFFFF">${walkTag}</text>
+      <circle cx="272" cy="74" r="7" fill="#FF3B30" stroke="#FFFFFF" stroke-width="2"/>
+      ${badgeCallout(216, 61, '2', '#1C1C1E')}
+      <!-- Result Card -->
+      <rect x="26" y="148" width="288" height="78" rx="12" fill="var(--bg-surface)" stroke="#007AFF" stroke-width="1.5"/>
+      <rect x="35" y="155" width="46" height="15" rx="7.5" fill="rgba(0,122,255,0.14)"/>
+      <text x="58" y="165.5" text-anchor="middle" font-family="${font}" font-size="8.5" font-weight="800" fill="#007AFF">${bestT}</text>
+      <rect x="86" y="155" width="32" height="16" rx="5" fill="#E2231A"/>
+      <text x="102" y="166.5" text-anchor="middle" font-family="${font}" font-size="8.5" font-weight="800" fill="#FFFFFF">TWL</text>
+      <text x="122" y="166.5" font-family="${font}" font-size="9.5" fill="var(--text-sub)">→</text>
+      <rect x="132" y="155" width="28" height="16" rx="5" fill="#0075C9"/>
+      <text x="146" y="166.5" text-anchor="middle" font-family="${font}" font-size="8.5" font-weight="800" fill="#FFFFFF">ISL</text>
+      <text x="304" y="168" text-anchor="end" font-family="${font}" font-size="13" font-weight="800" fill="var(--text-main)">14m · $12.5</text>
+      <!-- Leg row with Stops & ETA button highlighted -->
+      <rect x="35" y="177" width="270" height="41" rx="9" fill="var(--bg-white)"/>
+      <text x="44" y="193" font-family="${font}" font-size="10.5" font-weight="700" fill="var(--text-main)">18:40 ${fromT}</text>
+      <text x="44" y="209" font-family="${font}" font-size="9.5" font-weight="700" fill="#248A3D">${liveLbl}</text>
+      <circle cx="261" cy="197" r="20" fill="#007AFF" opacity="0.16" class="ob-pulse-ring"/>
+      <rect x="220" y="185" width="79" height="24" rx="7" fill="var(--bg-surface)" stroke="#007AFF" stroke-width="1.2"/>
+      <text x="259.5" y="200.5" text-anchor="middle" font-family="${font}" font-size="9.5" font-weight="800" fill="#007AFF">${btnLbl}</text>
+      ${badgeCallout(303, 184, '3', '#007AFF')}
     </svg>`;
   }
 
   if (stepIdx === 3) {
-    // Slide 4: Where to Walk To (Route Planner + Walk Path + MTR Exit)
-    const planT = isZh ? '規劃' : 'Plan';
-    const youT = isZh ? '你' : 'You';
-    const walkTag = isZh ? '步行 3分 · 180m' : 'Walk 3m · 180m';
-    const exitTag = isZh ? '東涌站 B出口' : 'Exit B · MTR';
-    const destTag = isZh ? '目的地' : 'Dest';
-    const walkShort = isZh ? '步3m' : '3m';
-    return `<svg viewBox="0 0 340 244" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${walkTag}">
-      <rect width="340" height="244" fill="var(--bg-surface)"/>
-      <rect x="18" y="14" width="304" height="216" rx="18" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
-      <!-- Top Bar with Plan active -->
-      <rect x="116" y="24" width="76" height="25" rx="12.5" fill="#007AFF" opacity="0.18" class="ob-pulse-ring"/>
-      <rect x="122" y="26" width="64" height="21" rx="10.5" fill="#007AFF"/>
-      <text x="154" y="40" text-anchor="middle" font-family="${font}" font-size="10.5" font-weight="800" fill="#FFFFFF">${planT}</text>
-      <!-- Mini Map Frame -->
-      <rect x="28" y="56" width="284" height="122" rx="14" fill="#EAF2F8" stroke="var(--border-color)" stroke-width="1"/>
-      <!-- Subtle map blocks & park -->
-      <rect x="38" y="66" width="64" height="36" rx="6" fill="#D5E8D4" opacity="0.85"/>
-      <rect x="114" y="66" width="76" height="28" rx="5" fill="#FFFFFF" opacity="0.72"/>
-      <rect x="202" y="128" width="98" height="38" rx="6" fill="#FFFFFF" opacity="0.72"/>
-      <path d="M28 118 H312 M138 56 V178 M236 56 V178" stroke="#FFFFFF" stroke-width="4.5" opacity="0.85"/>
-      <!-- Transit polyline from Exit B to Destination -->
-      <path d="M186 106 C216 106, 232 90, 274 90" fill="none" stroke="#F39800" stroke-width="5" stroke-linecap="round"/>
-      <!-- Dashed Walking Path from User GPS to Exit B -->
-      <path d="M64 148 Q112 146 138 124 T182 108" fill="none" stroke="#007AFF" stroke-width="4" stroke-dasharray="6 5" stroke-linecap="round"/>
-      <!-- User GPS Dot -->
-      <circle cx="64" cy="148" r="15" fill="#007AFF" opacity="0.22" class="ob-pulse-ring"/>
-      <circle cx="64" cy="148" r="7" fill="#007AFF" stroke="#FFFFFF" stroke-width="2.5"/>
-      <rect x="44" y="159" width="40" height="15" rx="7.5" fill="#1C1C1E"/>
-      <text x="64" y="169.5" text-anchor="middle" font-family="${font}" font-size="8.5" font-weight="700" fill="#FFFFFF">${youT}</text>
-      <!-- Walk duration floating tag (crisp vector dot + text) -->
-      <rect x="52" y="95" width="102" height="21" rx="10.5" fill="#007AFF"/>
-      <circle cx="64" cy="105.5" r="2.5" fill="#FFFFFF"/>
-      <text x="107" y="109" text-anchor="middle" font-family="${font}" font-size="9.5" font-weight="700" fill="#FFFFFF">${walkTag}</text>
-      <!-- Exact MTR Exit Pin -->
-      <circle cx="186" cy="106" r="7.5" fill="#1C1C1E" stroke="#FFFFFF" stroke-width="2.5"/>
-      <rect x="148" y="69" width="78" height="22" rx="8" fill="#1C1C1E"/>
-      <text x="187" y="83.5" text-anchor="middle" font-family="${font}" font-size="9.5" font-weight="700" fill="#FFFFFF">${exitTag}</text>
-      <!-- Destination Pin -->
-      <circle cx="276" cy="90" r="8" fill="#FF3B30" stroke="#FFFFFF" stroke-width="2.5"/>
-      <rect x="252" y="103" width="48" height="17" rx="8.5" fill="#FF3B30"/>
-      <text x="276" y="114.5" text-anchor="middle" font-family="${font}" font-size="8.5" font-weight="700" fill="#FFFFFF">${destTag}</text>
-      <!-- Bottom compact itinerary strip -->
-      <rect x="28" y="186" width="284" height="34" rx="11" fill="var(--bg-surface)"/>
-      <rect x="38" y="194" width="38" height="18" rx="9" fill="rgba(0,122,255,0.14)"/>
-      <text x="57" y="206.5" text-anchor="middle" font-family="${font}" font-size="9.5" font-weight="800" fill="#007AFF">${walkShort}</text>
-      <text x="83" y="207" font-family="${font}" font-size="10" fill="var(--text-sub)">→</text>
-      <rect x="96" y="194" width="32" height="18" rx="5" fill="#F39800"/>
-      <text x="112" y="206.5" text-anchor="middle" font-family="${font}" font-size="9.5" font-weight="800" fill="#FFFFFF">TCL</text>
-      <text x="135" y="207" font-family="${font}" font-size="10" fill="var(--text-sub)">→</text>
-      <rect x="148" y="194" width="30" height="18" rx="5" fill="#E53935"/>
-      <text x="163" y="206.5" text-anchor="middle" font-family="${font}" font-size="9.5" font-weight="800" fill="#FFFFFF">8X</text>
-      <text x="298" y="207" text-anchor="end" font-family="${font}" font-size="11.5" font-weight="800" fill="var(--text-main)">28m · $18.5</text>
+    // Slide 4 (Priority #4): Star Daily Stops & View in Saved Bookmarks
+    const stopLbl = isZh ? '崇光百貨 (銅鑼灣)' : 'SOGO Causeway Bay';
+    const savedPill = isZh ? '★ 已收藏' : '★ Saved';
+    const favHdr = isZh ? '已收藏車站' : 'Saved Stops';
+    const s1 = isZh ? '銅鑼灣 (崇光)' : 'Causeway Bay';
+    const s2 = isZh ? '旺角站' : 'Mong Kok Stn';
+    const s3 = isZh ? '中環6號碼頭' : 'Central Pier 6';
+    return `<svg viewBox="0 0 340 244" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${favHdr}">
+      <defs>
+        <linearGradient id="obBg3" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#FF9500" stop-opacity="0.12"/>
+          <stop offset="100%" stop-color="#007AFF" stop-opacity="0.08"/>
+        </linearGradient>
+      </defs>
+      <rect width="340" height="244" fill="url(#obBg3)"/>
+      <rect x="16" y="10" width="308" height="224" rx="18" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
+      <!-- Step 1: Star stop row -->
+      <rect x="26" y="20" width="288" height="44" rx="12" fill="rgba(255,149,0,0.11)" stroke="#FF9500" stroke-width="1.5"/>
+      <rect x="35" y="31" width="34" height="20" rx="6" fill="#E53935"/>
+      <text x="52" y="44.5" text-anchor="middle" font-family="${font}" font-size="9.5" font-weight="800" fill="#FFFFFF">112</text>
+      <text x="77" y="39" font-family="${font}" font-size="11.5" font-weight="800" fill="var(--text-main)">${stopLbl}</text>
+      <text x="77" y="54" font-family="${font}" font-size="9.5" font-weight="700" fill="#248A3D">3m · 11m</text>
+      <circle cx="288" cy="42" r="18" fill="#FF9500" opacity="0.22" class="ob-pulse-ring"/>
+      <circle cx="288" cy="42" r="13" fill="#FF9500"/>
+      <text x="288" y="47" text-anchor="middle" font-family="${font}" font-size="14" font-weight="700" fill="#FFFFFF">★</text>
+      ${badgeCallout(26, 20, '1', '#FF9500')}
+      <!-- Arrow + Step 2 Bookmark Icon -->
+      <path d="M170 67 v14 M165 76 l5 5 l5 -5" fill="none" stroke="#007AFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      <rect x="26" y="86" width="288" height="32" rx="10" fill="var(--bg-surface)"/>
+      <text x="38" y="106" font-family="${font}" font-size="10.5" font-weight="800" fill="#007AFF">${favHdr}</text>
+      <rect x="180" y="93" width="60" height="18" rx="9" fill="#FF9500"/>
+      <text x="210" y="105" text-anchor="middle" font-family="${font}" font-size="9" font-weight="700" fill="#FFFFFF">${savedPill}</text>
+      <circle cx="288" cy="102" r="13" fill="#007AFF"/>
+      <path d="M292 108 l-4 -3 l-4 3 v-10 a1 1 0 0 1 1 -1 h6 a1 1 0 0 1 1 1 z" fill="#FFFFFF"/>
+      ${badgeCallout(309, 88, '2', '#007AFF')}
+      <!-- Saved List Rows with Step 3 Reorder control -->
+      <rect x="26" y="124" width="288" height="32" rx="10" fill="var(--bg-surface)"/>
+      <text x="38" y="144" font-family="${font}" font-size="12" fill="#FF9500">★</text>
+      <rect x="54" y="131" width="34" height="18" rx="5" fill="#E53935"/>
+      <text x="71" y="143.5" text-anchor="middle" font-family="${font}" font-size="9" font-weight="800" fill="#FFFFFF">112</text>
+      <text x="96" y="144" font-family="${font}" font-size="11" font-weight="700" fill="var(--text-main)">${s1}</text>
+      <text x="268" y="144" text-anchor="end" font-family="${font}" font-size="11.5" font-weight="800" fill="#248A3D">3m</text>
+      <rect x="278" y="130" width="22" height="20" rx="6" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
+      <text x="289" y="144" text-anchor="middle" font-family="${font}" font-size="11" font-weight="800" fill="#007AFF">⇅</text>
+      ${badgeCallout(309, 130, '3', '#5856D6')}
+      <rect x="26" y="160" width="288" height="32" rx="10" fill="var(--bg-surface)"/>
+      <text x="38" y="180" font-family="${font}" font-size="12" fill="#FF9500">★</text>
+      <rect x="54" y="167" width="34" height="18" rx="5" fill="#E2231A"/>
+      <text x="71" y="179.5" text-anchor="middle" font-family="${font}" font-size="9" font-weight="800" fill="#FFFFFF">TWL</text>
+      <text x="96" y="180" font-family="${font}" font-size="11" font-weight="700" fill="var(--text-main)">${s2}</text>
+      <text x="298" y="180" text-anchor="end" font-family="${font}" font-size="11.5" font-weight="800" fill="#248A3D">2m</text>
+      <rect x="26" y="196" width="288" height="32" rx="10" fill="var(--bg-surface)"/>
+      <text x="38" y="216" font-family="${font}" font-size="12" fill="#FF9500">★</text>
+      <rect x="54" y="203" width="34" height="18" rx="5" fill="#0090D9"/>
+      <text x="71" y="215.5" text-anchor="middle" font-family="${font}" font-size="8" font-weight="800" fill="#FFFFFF">FERRY</text>
+      <text x="96" y="216" font-family="${font}" font-size="11" font-weight="700" fill="var(--text-main)">${s3}</text>
+      <text x="298" y="216" text-anchor="end" font-family="${font}" font-size="11.5" font-weight="800" fill="#248A3D">8m</text>
     </svg>`;
   }
 
-  // Slide 5: Change Language (Settings -> Language)
-  const settingsT = isZh ? '設定' : 'Settings';
-  const homeRow = isZh ? '屋企車站' : 'Home Stop';
-  const langRow = isZh ? '語言 (Language)' : 'Language';
-  const autoPill = isZh ? '自動' : 'Auto';
-  return `<svg viewBox="0 0 340 244" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${langRow}">
+  if (stepIdx === 4) {
+    // Slide 5 (Priority #5): Map Stop Browser & Long-Press Pin From/To
+    const mapTitle = isZh ? '地圖搵站 · 尖沙咀' : 'Map · Tsim Sha Tsui';
+    const pinCardTitle = isZh ? '尖沙咀天星碼頭' : 'TST Star Ferry Pier';
+    const setFrom = isZh ? '設為起點' : 'Set Origin';
+    const setTo = isZh ? '設為終點' : 'Set Dest';
+    const holdHint = isZh ? '長按地圖任何位置' : 'Hold map anywhere';
+    return `<svg viewBox="0 0 340 244" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${mapTitle}">
+      <rect width="340" height="244" fill="var(--bg-surface)"/>
+      <rect x="16" y="10" width="308" height="224" rx="18" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
+      <!-- Top bar with Map icon highlighted -->
+      <text x="30" y="33" font-family="${font}" font-size="11" font-weight="800" fill="var(--text-main)">${mapTitle}</text>
+      <circle cx="292" cy="29" r="16" fill="#007AFF" opacity="0.2" class="ob-pulse-ring"/>
+      <circle cx="292" cy="29" r="12" fill="#007AFF"/>
+      <path d="M287 25 l3 -1.2 l4 1.2 l3 -1.2 v8 l-3 1.2 l-4 -1.2 l-3 1.2 z" fill="none" stroke="#FFFFFF" stroke-width="1.4"/>
+      ${badgeCallout(269, 29, '1', '#007AFF')}
+      <!-- Map canvas -->
+      <rect x="26" y="46" width="288" height="178" rx="14" fill="#E8F1F8" stroke="var(--border-color)" stroke-width="1"/>
+      <!-- Victoria Harbour water strip -->
+      <path d="M26 176 Q150 164 314 180 V224 H26 Z" fill="#C4E1F5"/>
+      <path d="M26 96 H314 M110 46 V176 M226 46 V176" stroke="#FFFFFF" stroke-width="5" opacity="0.9"/>
+      <!-- Colored stop pins -->
+      <circle cx="72" cy="96" r="7" fill="#FF3B30" stroke="#FFFFFF" stroke-width="2"/>
+      <circle cx="155" cy="80" r="8" fill="#5856D6" stroke="#FFFFFF" stroke-width="2"/>
+      <text x="155" y="83" text-anchor="middle" font-family="${font}" font-size="7.5" font-weight="800" fill="#FFFFFF">M</text>
+      <circle cx="110" cy="146" r="8" fill="#0090D9" stroke="#FFFFFF" stroke-width="2.5"/>
+      <!-- Stop Popup Card -->
+      <rect x="128" y="102" width="174" height="66" rx="11" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
+      <text x="139" y="120" font-family="${font}" font-size="10.5" font-weight="800" fill="var(--text-main)">${pinCardTitle}</text>
+      <text x="139" y="135" font-family="${font}" font-size="9" font-weight="700" fill="#248A3D">FERRY 5m · 1A 3m</text>
+      <rect x="139" y="142" width="70" height="18" rx="6" fill="rgba(0,122,255,0.13)"/>
+      <text x="174" y="154" text-anchor="middle" font-family="${font}" font-size="8.5" font-weight="700" fill="#007AFF">${setFrom}</text>
+      <rect x="215" y="142" width="70" height="18" rx="6" fill="rgba(255,59,48,0.13)"/>
+      <text x="250" y="154" text-anchor="middle" font-family="${font}" font-size="8.5" font-weight="700" fill="#FF3B30">${setTo}</text>
+      ${badgeCallout(118, 128, '2', '#5856D6')}
+      <!-- Hold to Pin spot -->
+      <circle cx="242" cy="194" r="15" fill="#FF9500" opacity="0.25" class="ob-pulse-ring"/>
+      <circle cx="242" cy="194" r="7" fill="#FF9500" stroke="#FFFFFF" stroke-width="2"/>
+      <rect x="116" y="185" width="110" height="18" rx="9" fill="#1C1C1E"/>
+      <text x="171" y="197" text-anchor="middle" font-family="${font}" font-size="8.5" font-weight="700" fill="#FFFFFF">${holdHint}</text>
+      ${badgeCallout(262, 194, '3', '#FF9500')}
+    </svg>`;
+  }
+
+  if (stepIdx === 5) {
+    // Slide 6 (Priority #6): Home/Work Shortcuts, Language & Dark/Light Mode in Settings
+    const settingsT = isZh ? '設定' : 'Settings';
+    const homeRow = isZh ? '🏠 屋企車站' : '🏠 Home Stop';
+    const homeVal = isZh ? '旺角' : 'Mong Kok';
+    const workRow = isZh ? '💼 公司車站' : '💼 Work Stop';
+    const workVal = isZh ? '中環' : 'Central';
+    const langRow = isZh ? '🌐 語言 (Language)' : '🌐 Language';
+    const themeRow = isZh ? '🌓 外觀主題' : '🌓 Theme';
+    const themeVal = isZh ? '淺色 / 深色' : 'Light / Dark';
+    return `<svg viewBox="0 0 340 244" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${langRow}">
+      <defs>
+        <linearGradient id="obBg5" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#5856D6" stop-opacity="0.11"/>
+          <stop offset="100%" stop-color="#007AFF" stop-opacity="0.08"/>
+        </linearGradient>
+      </defs>
+      <rect width="340" height="244" fill="url(#obBg5)"/>
+      <rect x="16" y="10" width="308" height="224" rx="18" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
+      <text x="30" y="32" font-family="${font}" font-size="12" font-weight="800" fill="var(--text-main)">${settingsT}</text>
+      <circle cx="294" cy="28" r="12" fill="#007AFF"/>
+      <circle cx="294" cy="28" r="3.2" fill="none" stroke="#FFFFFF" stroke-width="1.8"/>
+      <path d="M294 20 v2.2 M294 33.8 v2.2 M286 28 h2.2 M299.8 28 h2.2" stroke="#FFFFFF" stroke-width="1.7" stroke-linecap="round"/>
+      ${badgeCallout(270, 28, '1', '#007AFF')}
+      <!-- Home & Work rows -->
+      <rect x="26" y="45" width="288" height="36" rx="10" fill="var(--bg-surface)"/>
+      <text x="38" y="67" font-family="${font}" font-size="11" font-weight="700" fill="var(--text-main)">${homeRow}</text>
+      <rect x="228" y="52" width="76" height="22" rx="11" fill="var(--bg-white)"/>
+      <text x="266" y="66.5" text-anchor="middle" font-family="${font}" font-size="10" font-weight="700" fill="#007AFF">${homeVal}</text>
+      <rect x="26" y="86" width="288" height="36" rx="10" fill="var(--bg-surface)"/>
+      <text x="38" y="108" font-family="${font}" font-size="11" font-weight="700" fill="var(--text-main)">${workRow}</text>
+      <rect x="228" y="93" width="76" height="22" rx="11" fill="var(--bg-white)"/>
+      <text x="266" y="107.5" text-anchor="middle" font-family="${font}" font-size="10" font-weight="700" fill="#007AFF">${workVal}</text>
+      ${badgeCallout(26, 46, '2', '#5856D6')}
+      <!-- Language row -->
+      <rect x="26" y="128" width="288" height="44" rx="11" fill="var(--bg-surface)" stroke="#007AFF" stroke-width="1.5"/>
+      <text x="38" y="154" font-family="${font}" font-size="11.5" font-weight="800" fill="var(--text-main)">${langRow}</text>
+      <rect x="190" y="138" width="54" height="24" rx="12" fill="${userLangPref === 'zh' ? '#007AFF' : 'var(--bg-white)'}"/>
+      <text x="217" y="153.5" text-anchor="middle" font-family="${font}" font-size="9.5" font-weight="700" fill="${userLangPref === 'zh' ? '#FFFFFF' : 'var(--text-main)'}">繁體中文</text>
+      <rect x="250" y="138" width="54" height="24" rx="12" fill="${userLangPref === 'en' ? '#007AFF' : 'var(--bg-white)'}"/>
+      <text x="277" y="153.5" text-anchor="middle" font-family="${font}" font-size="9.5" font-weight="700" fill="${userLangPref === 'en' ? '#FFFFFF' : 'var(--text-main)'}">English</text>
+      ${badgeCallout(26, 129, '3', '#007AFF')}
+      <!-- Theme row -->
+      <rect x="26" y="178" width="288" height="38" rx="10" fill="var(--bg-surface)"/>
+      <text x="38" y="201" font-family="${font}" font-size="11" font-weight="700" fill="var(--text-main)">${themeRow}</text>
+      <rect x="214" y="186" width="90" height="22" rx="11" fill="var(--bg-white)"/>
+      <text x="259" y="200.5" text-anchor="middle" font-family="${font}" font-size="9.5" font-weight="700" fill="#007AFF">${themeVal}</text>
+    </svg>`;
+  }
+
+  // Slide 7 (Priority #7): Add to Home Screen (Install as App)
+  const addLbl = isZh ? '加入主畫面' : 'Add to Home Screen';
+  const shareLbl = isZh ? '分享' : 'Share';
+  const appLbl = isZh ? '香港交通通' : 'Transit HK';
+  return `<svg viewBox="0 0 340 244" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${addLbl}">
     <defs>
-      <linearGradient id="obBg4" x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0%" stop-color="#5856D6" stop-opacity="0.11"/>
-        <stop offset="100%" stop-color="#007AFF" stop-opacity="0.08"/>
+      <linearGradient id="obBg6" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="#007AFF" stop-opacity="0.11"/>
+        <stop offset="100%" stop-color="#34C759" stop-opacity="0.06"/>
       </linearGradient>
     </defs>
-    <rect width="340" height="244" fill="url(#obBg4)"/>
-    <rect x="18" y="14" width="304" height="216" rx="18" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
-    <!-- Mini Top Bar with Gear spotlighted -->
-    <rect x="30" y="27" width="44" height="22" rx="11" fill="var(--bg-surface)"/>
-    <rect x="80" y="27" width="44" height="22" rx="11" fill="var(--bg-surface)"/>
-    <rect x="130" y="27" width="44" height="22" rx="11" fill="var(--bg-surface)"/>
-    <circle cx="290" cy="38" r="20" fill="#007AFF" opacity="0.22" class="ob-pulse-ring"/>
-    <circle cx="290" cy="38" r="14" fill="#007AFF"/>
-    <!-- Crisp gear SVG inside blue circle -->
-    <circle cx="290" cy="38" r="3.2" fill="none" stroke="#FFFFFF" stroke-width="1.8"/>
-    <path d="M290 30 v2.2 M290 43.8 v2.2 M282 38 h2.2 M295.8 38 h2.2 M284.3 32.3 l1.6 1.6 M294.1 42.1 l1.6 1.6 M295.7 32.3 l-1.6 1.6 M285.9 42.1 l-1.6 1.6" stroke="#FFFFFF" stroke-width="1.7" stroke-linecap="round"/>
-    <!-- Curved arrow from Gear to Settings sheet -->
-    <path d="M290 54 v15 M285.5 65 l4.5 4.5 l4.5 -4.5" fill="none" stroke="#007AFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-    <!-- Mini Settings Sheet -->
-    <rect x="30" y="74" width="280" height="144" rx="14" fill="var(--bg-surface)"/>
-    <text x="44" y="94" font-family="${font}" font-size="11.5" font-weight="800" fill="var(--text-main)">${settingsT}</text>
-    <!-- Muted row -->
-    <text x="44" y="114" font-family="${font}" font-size="10.5" font-weight="600" fill="var(--text-sub)" opacity="0.6">${homeRow}</text>
-    <!-- Highlighted Language Row -->
-    <rect x="38" y="124" width="264" height="42" rx="11" fill="var(--bg-white)" stroke="#007AFF" stroke-width="1.8"/>
-    <!-- Crisp vector globe icon -->
-    <circle cx="57" cy="145" r="8" fill="none" stroke="#007AFF" stroke-width="1.6"/>
-    <ellipse cx="57" cy="145" rx="3.8" ry="8" fill="none" stroke="#007AFF" stroke-width="1.3"/>
-    <line x1="49" y1="145" x2="65" y2="145" stroke="#007AFF" stroke-width="1.3"/>
-    <text x="72" y="149" font-family="${font}" font-size="12" font-weight="700" fill="var(--text-main)">${langRow}</text>
-    <rect x="220" y="133" width="72" height="24" rx="12" fill="#007AFF"/>
-    <text x="256" y="148.5" text-anchor="middle" font-family="${font}" font-size="10.5" font-weight="700" fill="#FFFFFF">${isZh ? '繁體中文' : 'English'}</text>
-    <!-- 3-Way Language Switcher Preview -->
-    <rect x="46" y="178" width="76" height="28" rx="14" fill="${userLangPref === 'auto' ? '#007AFF' : 'var(--bg-white)'}" stroke="var(--border-color)" stroke-width="1"/>
-    <text x="84" y="195.5" text-anchor="middle" font-family="${font}" font-size="10.5" font-weight="700" fill="${userLangPref === 'auto' ? '#FFFFFF' : 'var(--text-sub)'}">${autoPill}</text>
-    <rect x="132" y="178" width="76" height="28" rx="14" fill="${userLangPref === 'zh' ? '#007AFF' : 'var(--bg-white)'}" stroke="var(--border-color)" stroke-width="1"/>
-    <text x="170" y="195.5" text-anchor="middle" font-family="${font}" font-size="10.5" font-weight="700" fill="${userLangPref === 'zh' ? '#FFFFFF' : 'var(--text-sub)'}">繁體中文</text>
-    <rect x="218" y="178" width="76" height="28" rx="14" fill="${userLangPref === 'en' ? '#007AFF' : 'var(--bg-white)'}" stroke="var(--border-color)" stroke-width="1"/>
-    <text x="256" y="195.5" text-anchor="middle" font-family="${font}" font-size="10.5" font-weight="700" fill="${userLangPref === 'en' ? '#FFFFFF' : 'var(--text-sub)'}">English</text>
+    <rect width="340" height="244" fill="url(#obBg6)"/>
+    <rect x="20" y="14" width="300" height="58" rx="14" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
+    <rect x="34" y="22" width="272" height="18" rx="9" fill="var(--bg-surface)"/>
+    <text x="170" y="34.5" text-anchor="middle" font-family="${font}" font-size="9.5" font-weight="600" fill="var(--text-sub)">Transit HK · Web App</text>
+    <circle cx="170" cy="55" r="17" fill="#007AFF" opacity="0.18" class="ob-pulse-ring"/>
+    <circle cx="170" cy="55" r="12" fill="#007AFF"/>
+    <path d="M170 48 v10 M166 52 l4 -4 l4 4 M165 55 v4 h10 v-4" fill="none" stroke="#FFFFFF" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="191" y="59" font-family="${font}" font-size="9.5" font-weight="700" fill="#007AFF">${shareLbl}</text>
+    ${badgeCallout(144, 55, '1', '#007AFF')}
+    <path d="M170 76 v16 M165 87 l5 5 l5 -5" fill="none" stroke="#007AFF" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="36" y="96" width="268" height="46" rx="14" fill="var(--bg-white)" stroke="#007AFF" stroke-width="1.8"/>
+    <rect x="49" y="108" width="22" height="22" rx="6" fill="rgba(0,122,255,0.14)"/>
+    <path d="M60 113 v12 M54 119 h12" stroke="#007AFF" stroke-width="2.1" stroke-linecap="round"/>
+    <text x="82" y="123" font-family="${font}" font-size="13" font-weight="700" fill="var(--text-main)">${addLbl}</text>
+    ${badgeCallout(282, 119, '2', '#007AFF')}
+    <path d="M170 146 v15 M165 156 l5 5 l5 -5" fill="none" stroke="#007AFF" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="64" y="166" width="212" height="64" rx="16" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
+    <rect x="86" y="177" width="34" height="34" rx="9" fill="var(--bg-surface)" opacity="0.85"/>
+    <rect x="150" y="174" width="40" height="40" rx="11" fill="#E53935"/>
+    <rect x="159" y="182" width="22" height="17" rx="4" fill="#FFFFFF"/>
+    <rect x="162" y="185" width="16" height="8" rx="1.5" fill="#E53935"/>
+    <circle cx="164" cy="196" r="1.6" fill="#E53935"/>
+    <circle cx="176" cy="196" r="1.6" fill="#E53935"/>
+    <circle cx="187" cy="177" r="7" fill="#34C759"/>
+    <path d="M184 177 l2 2 l4 -4" fill="none" stroke="#FFFFFF" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="170" y="224" text-anchor="middle" font-family="${font}" font-size="9.5" font-weight="700" fill="var(--text-main)">${appLbl}</text>
+    <rect x="220" y="177" width="34" height="34" rx="9" fill="var(--bg-surface)" opacity="0.85"/>
+    ${badgeCallout(208, 184, '3', '#34C759')}
   </svg>`;
 }
 
@@ -5655,30 +5800,178 @@ function renderTutorialStep() {
   setV('tutorialCloseBtn', isZh ? '略過' : 'Skip');
 
   const slides = isZh ? [
-    { title: '加入主畫面', cue: '分享 ↑  ➔  加入主畫面' },
-    { title: '收藏常用車站', cue: '點按車站旁的 ☆ 即可收藏' },
-    { title: '隨時查看已收藏', cue: '點按右上角書籤圖示' },
-    { title: '路線及步行出口', cue: '按「規劃」看步行路線與港鐵出口', showOpenPlanner: true },
-    { title: '隨時切換語言', cue: '點按右上角設定  ➔  語言', showLangTryBtn: true, isFinal: true }
+    {
+      rank: '重點 1 · 每日必用',
+      title: '即睇附近實時班次',
+      cue: '自動鎖定最近車站（如旺角、銅鑼灣），一開即睇',
+      steps: [
+        '頂部切換「巴士 / 港鐵 / 渡輪」模式',
+        '按「🎯 GPS」鎖定最近站，或輸入路線如 112 / 旺角',
+        '點按任何路線，立即查看沿線站點及實時到站'
+      ]
+    },
+    {
+      rank: '重點 2 · 看懂班次',
+      title: '未來 3 班、實時GPS與座位',
+      cue: '清楚區分「實時GPS」同「預計班次」，唔會白等',
+      steps: [
+        '上方路線地圖顯示所有車站位置與你所在距離',
+        '「● 實時GPS」= 巴士已開出實時追蹤；「預計班次」= 班次表時間',
+        '綠色「有位」/ 橙色「企位」幫你預先判斷車廂擠迫度'
+      ]
+    },
+    {
+      rank: '重點 3 · 轉乘規劃',
+      title: '點對點規劃＋港鐵出口導航',
+      cue: '如由旺角去中環 IFC，自動教你邊個港鐵出口最近',
+      steps: [
+        '按頂部「規劃」，輸入起點及目的地（支援街名/港鐵/大廈）',
+        '跟隨地圖港鐵出口步行指引（如 B 出口），並可選「最快／最平」',
+        '按每程右邊「站點班次 ›」查看完整站表及下班車實時到站'
+      ],
+      showOpenPlanner: true
+    },
+    {
+      rank: '重點 4 · 一秒睇站',
+      title: '收藏常用車站，出門秒睇',
+      cue: '將返工放工站加星，唔使每次重新搜尋',
+      steps: [
+        '喺路線站表點按車站右邊 ☆ 變成橙色 ★ 即已收藏',
+        '日後點按右上角書籤圖示，一次過睇晒所有常用路線到站時間',
+        '可按 ⇅ 自由調動已收藏車站的上下次序'
+      ]
+    },
+    {
+      rank: '重點 5 · 地圖搵站',
+      title: '全港地圖搵站＋長按設起終點',
+      cue: '唔知附近有咩車？開地圖即睇紅紫藍站點圖示',
+      steps: [
+        '點按右上角地圖圖示，瀏覽附近巴士、港鐵、輕鐵及渡輪站',
+        '點按任何站點查看即時到站，並可直接「設為起點 / 終點」',
+        '長按地圖任意位置，即可直接定點規劃路線'
+      ],
+      showOpenMap: true
+    },
+    {
+      rank: '重點 6 · 個人設定',
+      title: '設定屋企/公司、語言及深色主題',
+      cue: '設定好屋企同公司站，出門一按即規劃返家路線',
+      steps: [
+        '點按右上角 ⚙️ 設定齒輪圖示',
+        '設定「🏠 屋企車站」及「💼 公司車站」（例如旺角 / 中環）',
+        '隨時切換「繁體中文 / English」及「淺色 / 深色」外觀'
+      ],
+      showLangTryBtn: true
+    },
+    {
+      rank: '重點 7 · 像 App 一樣用',
+      title: '加入主畫面，免下載即開即用',
+      cue: '一鍵放上手機桌面，全螢幕開啟更快更順手',
+      steps: [
+        '點按瀏覽器底部或右上角「分享 ↑」（Chrome 按 ⋮）',
+        '向下滑動並選擇「加入主畫面」',
+        '桌面出現紅色香港交通圖示，隨時一按即開'
+      ],
+      isFinal: true
+    }
   ] : [
-    { title: 'Bookmark This App', cue: 'Share ↑  →  Add to Home Screen' },
-    { title: 'Star Daily Stops', cue: 'Tap ☆ beside any stop to save' },
-    { title: 'Find in Saved', cue: 'Tap the bookmark icon at top-right' },
-    { title: 'Where to Walk To', cue: 'Tap Plan for walk paths & MTR exits', showOpenPlanner: true },
-    { title: 'Switch Language', cue: 'Tap Settings gear  →  Language', showLangTryBtn: true, isFinal: true }
+    {
+      rank: 'Step 1 · Most Used',
+      title: 'Check Nearby Live Arrivals',
+      cue: 'Auto-locks your nearest stop (e.g. Mong Kok, Causeway Bay)',
+      steps: [
+        'Switch Bus / Rail / Ferry tabs along the top bar',
+        'Tap 🎯 GPS to snap nearby, or search route/stop (e.g. 112)',
+        'Tap any route card to open its full stop list & map'
+      ]
+    },
+    {
+      rank: 'Step 2 · Read ETAs',
+      title: 'Next 3 Buses, Live GPS & Seats',
+      cue: 'Know instantly if a bus is already running or scheduled only',
+      steps: [
+        'Interactive map shows every stop along the route',
+        '● Live GPS = tracked en route · Scheduled = timetable only',
+        'Green Seats / Amber Standing badges show estimated crowding'
+      ]
+    },
+    {
+      rank: 'Step 3 · Route Planner',
+      title: 'Door-to-Door Plan & MTR Exits',
+      cue: 'Example: Mong Kok to Central IFC with exact exit walk',
+      steps: [
+        'Tap Plan at top and enter any stop, MTR, pier, or HK address',
+        'Follow exact MTR exit walk paths (e.g. Exit B) & Best priority',
+        'Tap "Stops & ETA ›" on any leg for full stops & live status'
+      ],
+      showOpenPlanner: true
+    },
+    {
+      rank: 'Step 4 · Save Daily Stops',
+      title: 'Star Stops for 1-Tap Morning Check',
+      cue: 'Keep your daily Bus, MTR & Ferry stops in one tab',
+      steps: [
+        'Tap ☆ beside any stop (e.g. SOGO Causeway Bay) to star ★ it',
+        'Tap the top-right Bookmark icon to view all saved ETAs together',
+        'Tap ⇅ anytime to reorder your saved stops'
+      ]
+    },
+    {
+      rank: 'Step 5 · Map Browser',
+      title: 'Browse Map & Hold to Pin From/To',
+      cue: 'See all Bus (red), MTR (purple) & Ferry (blue) pins around HK',
+      steps: [
+        'Tap the Map icon at top-right to explore stops visually',
+        'Tap any pin for live ETAs or to Set Origin / Set Dest',
+        'Press & hold anywhere on the map to plan from that spot'
+      ],
+      showOpenMap: true
+    },
+    {
+      rank: 'Step 6 · Personalize',
+      title: 'Home/Work Shortcuts, Language & Theme',
+      cue: 'Set your Home & Work stops once for 1-tap commute routing',
+      steps: [
+        'Tap the top-right ⚙️ Settings gear icon',
+        'Set Home (e.g. Mong Kok) & Work (e.g. Central) stops',
+        'Switch Language (Auto / 繁體中文 / English) & Light/Dark theme'
+      ],
+      showLangTryBtn: true
+    },
+    {
+      rank: 'Step 7 · Install Web App',
+      title: 'Add to Home Screen (No App Store)',
+      cue: 'Launch full-screen from your phone home screen like an app',
+      steps: [
+        'Tap browser Share ↑ (Safari) or menu ⋮ (Chrome)',
+        'Choose "Add to Home Screen"',
+        'Open the Transit HK icon directly whenever you commute'
+      ],
+      isFinal: true
+    }
   ];
 
   const st = slides[activeTutorialStep] || slides[0];
   const stage = document.getElementById('tutorialVisualStage');
   if (stage) stage.innerHTML = buildTutorialSlideSvg(activeTutorialStep, isZh);
 
+  setV('tutorialRankPill', st.rank || '');
   setV('tutorialSlideTitle', st.title);
   setV('tutorialSlideCue', st.cue);
+
+  const stepsListEl = document.getElementById('tutorialStepsList');
+  if (stepsListEl) {
+    stepsListEl.innerHTML = (st.steps || []).map((txt, sIdx) =>
+      `<div class="onboard-step-row"><span class="onboard-step-num">${sIdx + 1}</span><span>${escapeHtml(txt)}</span></div>`
+    ).join('');
+  }
 
   const quickRow = document.getElementById('tutorialQuickActionRow');
   if (quickRow) {
     if (st.showOpenPlanner) {
       quickRow.innerHTML = `<button type="button" class="onboard-secondary-btn" onclick="openPlannerFromTutorial()">${isZh ? '立即試用規劃 ›' : 'Try Planner ›'}</button>`;
+    } else if (st.showOpenMap) {
+      quickRow.innerHTML = `<button type="button" class="onboard-secondary-btn" onclick="openMapFromTutorial()">${isZh ? '立即打開地圖 ›' : 'Open Map ›'}</button>`;
     } else if (st.showLangTryBtn) {
       quickRow.innerHTML = `<button type="button" class="onboard-secondary-btn" onclick="cycleLanguagePreference()">${isZh ? '切換 English / 自動' : 'Switch 繁體中文 / Auto'}</button>`;
     } else {
@@ -5755,6 +6048,11 @@ function onTutorialBackClick() {
 function openPlannerFromTutorial() {
   closeTutorialModal();
   if (typeof openTransferPlannerFromTop === 'function') openTransferPlannerFromTop();
+}
+
+function openMapFromTutorial() {
+  closeTutorialModal();
+  if (typeof openMapBrowserFromTop === 'function') openMapBrowserFromTop();
 }
 
 function openTutorialModal(fromSettings = true) {

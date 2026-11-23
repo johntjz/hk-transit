@@ -121,6 +121,8 @@ function loadHardcodeAndPlannerSandbox(overrides: Record<string, any> = {}) {
       onPlannerInlineInput,
       clearCommuteSlot,
       renderPlannerInlineDropdown,
+      collapseParallelDirectRoutes,
+      formatLegSignalTagHtml,
     });`,
     ctx
   );
@@ -1897,17 +1899,23 @@ test('planner.js & index.html: deduplicates opposite-side stops in Settings Hub 
   assert.ok(html.includes('ONBOARDING_SEEN_KEY') && html.includes('maybeShowFirstVisitOnboarding') && html.includes('openPlannerFromTutorial'), 'First-use visual onboarding carousel with Skip/Next/Open Planner must be wired');
 });
 
-test('index.html: detects client device language on landing and renders MTR-style 5-slide visual picture tutorial with zero text walls', () => {
+test('index.html: detects client device language on landing and renders MTR-style 7-slide HK-landmark visual tutorial', () => {
   const html = fs.readFileSync('index.html', 'utf8');
 
   const detectMatch = html.match(/function detectClientDeviceLang\(navObj\) \{[\s\S]*?\n\}/);
   const svgFnMatch = html.match(/function buildTutorialSlideSvg\(stepIdx, isZh\) \{[\s\S]*?\n\}/);
+  const stepSecMatch = html.match(/function computeSegmentStepSeconds\([\s\S]*?\n\}/);
   assert.ok(detectMatch, 'detectClientDeviceLang must exist in index.html');
   assert.ok(svgFnMatch, 'buildTutorialSlideSvg must exist in index.html');
+  assert.ok(stepSecMatch, 'computeSegmentStepSeconds must exist in index.html');
 
-  const sandbox: any = { userLangPref: 'auto', navigator: { languages: ['en-US'], language: 'en-US' } };
+  const sandbox: any = {
+    userLangPref: 'auto',
+    navigator: { languages: ['en-US'], language: 'en-US' },
+    getCorridorLiveStatusAt: () => ({ status: 'SMOOTH', speedKmh: 70 }),
+  };
   vm.createContext(sandbox);
-  vm.runInContext(`${detectMatch[0]}\n${svgFnMatch[0]}`, sandbox);
+  vm.runInContext(`${detectMatch[0]}\n${svgFnMatch[0]}\n${stepSecMatch[0]}`, sandbox);
 
   // 1. Client device language detection on landing
   assert.equal(sandbox.detectClientDeviceLang({ languages: ['zh-HK', 'en-HK'], language: 'zh-HK' }), 'zh');
@@ -1918,25 +1926,126 @@ test('index.html: detects client device language on landing and renders MTR-styl
   assert.equal(sandbox.detectClientDeviceLang({ languages: ['en-US'], language: 'en-US' }), 'en');
   assert.equal(sandbox.detectClientDeviceLang({ language: 'zh-Hant-HK' }), 'zh');
 
-  // 2. All 5 visual picture slides in EN & ZH
-  const expectedEn = ['Add to Home Screen', 'Stop Saved', 'Saved Stops', 'Exit B', 'Language'];
-  const expectedZh = ['加入主畫面', '已收藏車站', '已收藏車站', 'B出口', '語言'];
-  for (let i = 0; i < 5; i++) {
+  // 2. All 7 priority-ranked HK-landmark visual picture slides in EN & ZH
+  const expectedEn = [
+    'Mong Kok',
+    'SOGO Causeway Bay',
+    'Stops & ETA ›',
+    'Saved Stops',
+    'TST Star Ferry Pier',
+    'Language',
+    'Add to Home Screen',
+  ];
+  const expectedZh = [
+    '旺角',
+    '崇光百貨 (銅鑼灣)',
+    '站點班次 ›',
+    '已收藏車站',
+    '尖沙咀天星碼頭',
+    '語言',
+    '加入主畫面',
+  ];
+  for (let i = 0; i < 7; i++) {
     const svgEn = sandbox.buildTutorialSlideSvg(i, false);
     const svgZh = sandbox.buildTutorialSlideSvg(i, true);
     assert.ok(svgEn.startsWith('<svg viewBox="0 0 340 244"'), `Slide ${i} EN must render crisp 340x244 SVG`);
     assert.ok(svgZh.startsWith('<svg viewBox="0 0 340 244"'), `Slide ${i} ZH must render crisp 340x244 SVG`);
     assert.ok(svgEn.includes(expectedEn[i]), `Slide ${i} EN visual must include "${expectedEn[i]}"`);
     assert.ok(svgZh.includes(expectedZh[i]), `Slide ${i} ZH visual must include "${expectedZh[i]}"`);
+    assert.ok(!/Lo Uk Tsuen|Pui O|羅屋村|貝澳/.test(svgEn + svgZh), `Slide ${i} must use mainstream HK landmarks instead of village defaults`);
   }
 
-  // 3. No legacy text-wall onboarding paragraphs/bullets remain
+  // 3. Structural & interactive checks
   assert.ok(!html.includes('onboard-step-points'), 'Old bullet-list text wall must be removed');
   assert.ok(!html.includes('onboard-step-desc'), 'Old paragraph text wall must be removed');
-  assert.ok(html.includes('TUTORIAL_SLIDE_COUNT = 5'), 'Must have 5 picture tutorial slides');
+  assert.ok(html.includes('TUTORIAL_SLIDE_COUNT = 7'), 'Must have 7 priority-ranked tutorial slides');
+  assert.ok(html.includes('onboard-rank-pill') && html.includes('onboard-step-row'), 'Tutorial must include priority pill & numbered step checklist');
+  assert.ok(html.includes('openMapFromTutorial') && html.includes('openPlannerFromTutorial'), 'Tutorial must link into Planner and Map');
   assert.ok(html.includes('attachTutorialSwipeGestures'), 'Must support mobile touch swipe navigation');
   assert.ok(html.includes("params.get('autostart') === '1'"), 'Must support ?autostart=1 bypass for testing');
+
+  // 4. South Lantau rural NLB segment speed calibration (11 stops, ~4.0 km Sun Wai Tsuen -> Mui Wo Market ~11-12m)
+  const ruralSec11Stops = 11 * sandbox.computeSegmentStepSeconds('BUS', 'NLB', 4.0 / 11, false, 22.248, 113.988);
+  assert.ok(ruralSec11Stops >= 580 && ruralSec11Stops <= 760, `Expected 11-stop 4km South Lantau ride ~10-12.5m, got ${(ruralSec11Stops / 60).toFixed(1)}m`);
 });
+
+test('planner.js: keeps 3M (19m live) above 1 (59m sched) without false merge and clarifies Stops & ETA + Live ETA labels', () => {
+  const sb = loadHardcodeAndPlannerSandbox();
+  const makeBusCand = (routeNo: string, headwayMins: number, totalMins: number, score: number, sigType1: string) => ({
+    group: { key: `NLB_${routeNo}___Mui_Wo_Ferry_Pier`, routeNo, company: 'NLB', mode: 'BUS', headwayMins },
+    boardStopObj: { stopName_e: 'Sun Wai Tsuen' },
+    alightStopObj: { stopName_e: 'Mui Wo Market' },
+    totalMins,
+    fareHkd: 3.7,
+    disruptionScore: score,
+    sigType1,
+    parallelRoutes: [],
+  });
+
+  // 1. Pre-ETA static order: NLB 1 (headway 12m) ranks ahead of 3M (headway 20m) and collapses safely for placeholder view
+  const route1Pre = makeBusCand('1', 12, 16, 17, 'SCHED');
+  const route3MPre = makeBusCand('3M', 20, 19, 20, 'SCHED');
+  const preCollapsed = sb.collapseParallelDirectRoutes([route1Pre, route3MPre], false, 'NOW', 'BEST');
+  assert.equal(preCollapsed.length, 1);
+  assert.deepEqual([...preCollapsed[0].parallelRoutes], ['3M']);
+
+  // 2. Post-ETA live resolution: 3M arrives in 8m (19m total LIVE), 1 is 37m away (59m total SCHED)
+  const route1Post = makeBusCand('1', 12, 59, 60, 'SCHED');
+  const route3MPost = makeBusCand('3M', 20, 19, 19, 'LIVE');
+  const postCollapsed = sb.collapseParallelDirectRoutes([route1Post, route3MPost], true, 'NOW', 'BEST');
+  assert.equal(postCollapsed[0].group.routeNo, '3M', '3M at 19m must rank #1 over 1 at 59m');
+  assert.deepEqual([...postCollapsed[0].parallelRoutes], [], 'Must NOT merge 59m Route 1 as a parallel substitute onto 19m 3M');
+  assert.equal(postCollapsed.length, 2);
+
+  // 3. Truly concurrent arrivals within 5m & $2.5 fare still collapse cleanly into "3M / 1"
+  const route1Concurrent = makeBusCand('1', 12, 22, 23, 'LIVE');
+  const concurrentCollapsed = sb.collapseParallelDirectRoutes([route1Concurrent, route3MPost], true, 'NOW', 'BEST');
+  assert.equal(concurrentCollapsed.length, 1);
+  assert.equal(concurrentCollapsed[0].group.routeNo, '3M');
+  assert.deepEqual([...concurrentCollapsed[0].parallelRoutes], ['1']);
+
+  // 4. buildFromToEdgeRequestSpec must keep both 1 and 3M in spec.directRoutes (no premature collapse)
+  const stops = [
+    { stopKey: 'SWT', stopId: 'SWT', stopName_e: 'Sun Wai Tsuen', latitude: '22.2448', longitude: '113.9720', seq: 1, fare: '3.7' },
+    { stopKey: 'MWM', stopId: 'MWM', stopName_e: 'Mui Wo Market', latitude: '22.2646', longitude: '113.9978', seq: 2, fare: '0' },
+  ];
+  const g1 = { key: 'NLB_1_O', routeNo: '1', company: 'NLB', mode: 'BUS', orig_e: 'Tai O', dest_e: 'Mui Wo', headwayMins: 12, maxFare: 3.7, routeIds: ['NLB_1_O'], _stops: stops };
+  const g3m = { key: 'NLB_3M_O', routeNo: '3M', company: 'NLB', mode: 'BUS', orig_e: 'Tung Chung', dest_e: 'Mui Wo', headwayMins: 20, maxFare: 3.7, routeIds: ['NLB_3M_O'], _stops: stops };
+  const sbSpec = loadHardcodeAndPlannerSandbox({
+    groupedRoutes: [g1, g3m],
+    routeStopsCache: { NLB_1_O: stops, NLB_3M_O: stops },
+    routeMapIndex: new Map([['NLB_1_O', g1], ['NLB_3M_O', g3m]]),
+    allStops: stops,
+    stopMapIndex: new Map([['SWT', stops[0]], ['MWM', stops[1]]]),
+    initRouteMapFast: () => {},
+    isParallelRailTerminusPair: () => false,
+    isAirportOrPortZone: () => false,
+    isLantauOrAirportZone: () => true,
+    computeSegmentStepSeconds: () => 600,
+    isRouteActiveAtPlannerTime: () => true,
+  });
+  sbSpec.ctx.userCommuteProfile = {
+    home: { stopKey: 'SWT', stopName_e: 'Sun Wai Tsuen', lat: 22.2448, lon: 113.9720 },
+    work: { stopKey: 'MWM', stopName_e: 'Mui Wo Market', lat: 22.2646, lon: 113.9978 },
+  };
+  const spec = sbSpec.buildFromToEdgeRequestSpec(new Date('2026-11-23T21:40:00+08:00'));
+  assert.ok(spec, 'buildFromToEdgeRequestSpec should resolve routes');
+  const directNos = [...spec.directRoutes.map((d: any) => d.group.routeNo)].sort();
+  assert.deepEqual(directNos, ['1', '3M'], 'Both NLB 1 and 3M must remain uncollapsed until live ETAs resolve');
+
+  // 5. Planner signal labels and action buttons distinguish "Live ETA" from "Stops & ETA ›"
+  sb.ctx.currentLang = 'en';
+  assert.ok(sb.formatLegSignalTagHtml('LIVE').includes('Live ETA'));
+  assert.ok(sb.formatLegSignalTagHtml('SCHED').includes('Scheduled'));
+  sb.ctx.currentLang = 'zh';
+  assert.ok(sb.formatLegSignalTagHtml('LIVE').includes('實時到站'));
+  assert.ok(sb.formatLegSignalTagHtml('SCHED').includes('預計班次'));
+
+  const plannerSrc = fs.readFileSync('public/planner.js', 'utf8');
+  assert.ok(plannerSrc.includes("'Stops & ETA ›'") && plannerSrc.includes("'站點班次 ›'"), 'Planner leg button must say Stops & ETA ›');
+  assert.ok(!plannerSrc.includes("'Live ›'") && !plannerSrc.includes("'實時 ›'"), 'Ambiguous Live › button label must be removed');
+});
+
 
 
 

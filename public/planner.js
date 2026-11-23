@@ -3239,28 +3239,6 @@ function buildFromToEdgeRequestSpec(queryDateObj = getHongKongNow()) {
   }
   const rawDirectRoutes = Array.from(bestDirectBySig.values()).sort((a, b) => a.disruptionScore - b.disruptionScore);
 
-  const directRoutes = [];
-  const parallelGroupMap = new Map();
-  for (const dp of rawDirectRoutes) {
-    const isBus = (!dp.group.mode || dp.group.mode === 'BUS');
-    if (isBus) {
-      const pKey = `${getBaseStopNameKey(dp.boardStopObj.stopName_e)}_${getBaseStopNameKey(dp.alightStopObj.stopName_e)}`;
-      if (parallelGroupMap.has(pKey)) {
-        const primary = parallelGroupMap.get(pKey);
-        if (primary.parallelRoutes.length < 3) {
-          primary.parallelRoutes.push(dp.group.routeNo);
-          if (xferSortPref === 'BULLETPROOF') {
-            primary.disruptionScore = Number(Math.max(1, primary.disruptionScore - 2.2).toFixed(1));
-          }
-        }
-        continue;
-      }
-      parallelGroupMap.set(pKey, dp);
-    }
-    directRoutes.push(dp);
-  }
-  directRoutes.sort((a, b) => a.disruptionScore - b.disruptionScore);
-
   const primaryCorridors = runRaptorCorridorPass(G, originAccess, destEgress, queryDateObj, isAirportTrip, isLantauTrip, isHoliday, fromMeta, toMeta, {
     maxRounds: 4,
     suppressLongHaulBusKm: 0,
@@ -3309,9 +3287,65 @@ function buildFromToEdgeRequestSpec(queryDateObj = getHongKongNow()) {
     isLantauTrip,
     mtrClosedNow,
     walkBikeDirectCard,
-    directRoutes: directRoutes.slice(0, 5),
+    directRoutes: rawDirectRoutes.slice(0, 12),
     transferCorridors: selectedCorridors
   };
+}
+
+// Collapse parallel direct bus routes sharing the same boarding & alighting stop ONLY if
+// pre-ETA (static render) or within 5m arrival & $2.5 fare of the winner (e.g. 3M 19m beats 1 59m without merging).
+function collapseParallelDirectRoutes(
+  directList,
+  isLiveResolved = false,
+  timeMode = (typeof xferTimeMode !== 'undefined' ? xferTimeMode : 'NOW'),
+  sortPref = (typeof xferSortPref !== 'undefined' ? xferSortPref : 'BEST')
+) {
+  if (!Array.isArray(directList) || !directList.length) return [];
+  const alive = directList
+    .filter(dp => dp && !dp.isDeadGhost)
+    .map(dp => ({ ...dp, parallelRoutes: [] }));
+
+  alive.sort((a, b) => {
+    const sDiff = (Number(a.disruptionScore) || 0) - (Number(b.disruptionScore) || 0);
+    if (Math.abs(sDiff) > 0.25) return sDiff;
+    const mDiff = (Number(a.totalMins) || 999) - (Number(b.totalMins) || 999);
+    if (mDiff !== 0) return mDiff;
+    return (Number(a.fareHkd) || 0) - (Number(b.fareHkd) || 0);
+  });
+
+  const out = [];
+  const parallelGroupMap = new Map();
+  for (const dp of alive) {
+    const isBus = (!dp.group?.mode || dp.group.mode === 'BUS');
+    if (isBus && dp.boardStopObj && dp.alightStopObj) {
+      const pKey = `${getBaseStopNameKey(dp.boardStopObj.stopName_e)}_${getBaseStopNameKey(dp.alightStopObj.stopName_e)}`;
+      if (parallelGroupMap.has(pKey)) {
+        const primary = parallelGroupMap.get(pKey);
+        const canMerge = !isLiveResolved || timeMode !== 'NOW' || (
+          Math.abs((Number(dp.totalMins) || 0) - (Number(primary.totalMins) || 0)) <= 5 &&
+          Math.abs((Number(dp.fareHkd) || 0) - (Number(primary.fareHkd) || 0)) <= 2.5
+        );
+        if (canMerge) {
+          if (primary.parallelRoutes.length < 3) {
+            primary.parallelRoutes.push(dp.group.routeNo);
+            if (sortPref === 'BULLETPROOF') {
+              primary.disruptionScore = Number(Math.max(1, primary.disruptionScore - 2.2).toFixed(1));
+            }
+          }
+          continue;
+        }
+      } else {
+        parallelGroupMap.set(pKey, dp);
+      }
+    }
+    out.push(dp);
+  }
+  out.sort((a, b) => (Number(a.disruptionScore) || 0) - (Number(b.disruptionScore) || 0));
+  return out;
+}
+
+if (typeof window !== 'undefined') {
+  window.collapseParallelDirectRoutes = collapseParallelDirectRoutes;
 }
 
 // ============================================================================
@@ -3817,9 +3851,9 @@ function formatLegSignalTagHtml(sigType, headwayMins = 0, isFreeFeeder = false, 
   const isZh = (currentLang === 'zh');
   const parts = [];
   if (sigType === 'LIVE') {
-    parts.push(`<span class="planner-sig-live">● ${isZh ? '實時' : 'Live'}</span>`);
+    parts.push(`<span class="planner-sig-live">● ${isZh ? '實時到站' : 'Live ETA'}</span>`);
   } else if (sigType === 'SCHED') {
-    parts.push(`<span class="planner-sig-sched">${isZh ? '班次表' : 'Scheduled'}</span>`);
+    parts.push(`<span class="planner-sig-sched">${isZh ? '預計班次' : 'Scheduled'}</span>`);
   } else if (sigType === 'HEADWAY_PROJ') {
     const hwTxt = headwayMins > 0 ? (isZh ? `約${headwayMins}分一班` : `every ~${headwayMins}m`) : (isZh ? '預計' : 'Est');
     parts.push(`<span class="planner-sig-est">${escapeHtml(hwTxt)}</span>`);
@@ -4126,6 +4160,7 @@ async function renderTransferPlannerView() {
     return;
   }
   lastXferSolvedSpec = spec;
+  activeUnifiedCardKey = '';
 
   const paintUnifiedCards = (isFinalPass = false) => {
     const unified = [];
@@ -4139,10 +4174,11 @@ async function renderTransferPlannerView() {
         isRailOrFerry: false
       });
     }
-    spec.directRoutes.forEach((dp, i) => {
+    const resolvedDirects = collapseParallelDirectRoutes(spec.directRoutes, isFinalPass, xferTimeMode, xferSortPref);
+    resolvedDirects.forEach((dp, i) => {
       if (dp.isDeadGhost) return;
       const isRF = dp.group?.mode === 'FERRY' || (dp.group?.mode === 'MTR' && dp.group?.company === 'MTR');
-      unified.push({ type: 'DIRECT', idx: i, score: dp.disruptionScore, item: dp, key: `DIRECT_${i}`, isRailOrFerry: isRF });
+      unified.push({ type: 'DIRECT', idx: i, score: dp.disruptionScore, item: dp, key: `DIRECT_${dp.group?.key || i}`, isRailOrFerry: isRF });
     });
     spec.transferCorridors.forEach((cor, i) => {
       if (cor.isDeadGhost) return;
@@ -4265,7 +4301,7 @@ async function renderTransferPlannerView() {
           waitMins >= 1 ? (isZh ? `${waitMins}分鐘後出發` : `Leave in ${waitMins}m`) : (isZh ? '立即出發' : 'Leave now'),
           `${isZh ? '抵達' : 'Arr'} ${arrClk}`,
           walkTotalMins >= 1 ? (isZh ? `步行${walkTotalMins}分` : `${walkTotalMins}m walk`) : null,
-          dp.sigType1 === 'LIVE' ? (isZh ? '實時' : 'Live') : null
+          dp.sigType1 === 'LIVE' ? (isZh ? '● 實時到站' : '● Live ETA') : null
         ].filter(Boolean).join(' · ');
 
         const boardDisp = getLegStopDisplayName(dp.group, dp.boardStopObj);
@@ -4295,8 +4331,8 @@ async function renderTransferPlannerView() {
           : '';
 
         return `
-          <details class="xfer-decision-card ${isWinner ? 'winner' : ''} ${isSelected ? 'selected' : ''}" data-card-key="${c.key}" ${isOpen ? 'open' : ''}>
-            <summary class="xfer-card-header" onclick="selectUnifiedPlannerCard('${c.key}', -1)">
+          <details class="xfer-decision-card ${isWinner ? 'winner' : ''} ${isSelected ? 'selected' : ''}" data-card-key="${escapeHtml(c.key)}" ${isOpen ? 'open' : ''}>
+            <summary class="xfer-card-header" onclick="selectUnifiedPlannerCard('${escapeJsAttr(c.key)}', -1)">
               <div class="planner-card-left">
                 ${cardTag ? `<div class="xfer-badge-title">${escapeHtml(cardTag)}</div>` : ''}
                 <div class="planner-route-chain">${renderRouteChipHtml(dp.group)}${parallelHtml}${directEgressChip}</div>
@@ -4318,10 +4354,11 @@ async function renderTransferPlannerView() {
                     <span class="planner-step-main">${escapeHtml(boardDisp)}</span>
                   </div>
                   <div class="planner-step-sub">
-                    <strong>${escapeHtml(badge)}</strong> → ${escapeHtml(alightDisp)} · ${rideMins}${t('minsUnit')} (${dp.stopsCount} ${isZh ? '站' : (dp.stopsCount === 1 ? 'stop' : 'stops')})${sigText ? ` · ${sigText}` : ''}
+                    <strong>${escapeHtml(badge)}</strong> → ${escapeHtml(alightDisp)} · ${rideMins}${t('minsUnit')} (${dp.stopsCount} ${isZh ? '站' : (dp.stopsCount === 1 ? 'stop' : 'stops')})
                   </div>
+                  ${sigText ? `<div class="planner-step-sigs">${sigText}</div>` : ''}
                 </div>
-                <button type="button" class="planner-live-btn" onclick="event.stopPropagation(); openRouteDetail('${escapeJsAttr(dp.group.key)}', '${escapeJsAttr(dp.boardStopKey)}');">${isZh ? '實時 ›' : 'Live ›'}</button>
+                <button type="button" class="planner-live-btn" title="${isZh ? '查看全線站點及未來班次' : 'View all route stops & next departures'}" aria-label="${isZh ? '站點班次' : 'Stops and ETA'}" onclick="event.stopPropagation(); openRouteDetail('${escapeJsAttr(dp.group.key)}', '${escapeJsAttr(dp.boardStopKey)}');">${isZh ? '站點班次 ›' : 'Stops & ETA ›'}</button>
               </div>
               ${egressWalkRow}
               <div class="planner-card-actions">
@@ -4365,7 +4402,7 @@ async function renderTransferPlannerView() {
         `${isZh ? '抵達' : 'Arr'} ${arrClk}`,
         isZh ? `${xferCount}次轉乘` : `${xferCount} ${xferCount === 1 ? 'transfer' : 'transfers'}`,
         walkTotalMins >= 1 ? (isZh ? `步行${walkTotalMins}分` : `${walkTotalMins}m walk`) : null,
-        anyLive ? (isZh ? '實時' : 'Live') : null
+        anyLive ? (isZh ? '● 實時到站' : '● Live ETA') : null
       ].filter(Boolean).join(' · ');
 
       const cutoff1 = (xferTimeMode === 'NOW') ? getLegServiceCutoffWarning(cor.leg1Group, dep1Ms, isZh) : null;
@@ -4373,7 +4410,7 @@ async function renderTransferPlannerView() {
       const sig1Text = formatLegSignalTagHtml(cor.sigType1, cor.hw1, Boolean(cor.leg1FreeFeeder), cor.load1, cutoff1);
       const sig2Text = formatLegSignalTagHtml(cor.sigType2, cor.hw2, Boolean(cor.leg2FreeFeeder), cor.load2, cutoff2);
       const tight1MinsTxt = cor.tightTransfer1Mins > 0 ? (isZh ? ` ${cor.tightTransfer1Mins}分` : ` ${cor.tightTransfer1Mins}m`) : '';
-      const tightText = cor.tightTransfer1 ? ` · <span class="planner-sig-warn">⚠ ${isZh ? '緊湊轉乘' : 'Tight xfer'}${tight1MinsTxt}</span>` : '';
+      const tightText = cor.tightTransfer1 ? `<span class="planner-sig-warn">⚠ ${isZh ? '緊湊轉乘' : 'Tight xfer'}${tight1MinsTxt}</span>` : '';
 
       const allLoadList = [cor.load1, cor.load2, ...(cor.leg3Options || []).map(l3 => l3.loadEstimate)];
       const allNotices = [...(cor.fareNotices || []), ...collectLoadNoticesFromList(allLoadList)];
@@ -4426,7 +4463,8 @@ async function renderTransferPlannerView() {
         const cutoff3 = (xferTimeMode === 'NOW') ? getLegServiceCutoffWarning(l3.group, l3DepMs, isZh) : null;
         const sig3Text = formatLegSignalTagHtml(l3.sigType, l3.hwMins, Boolean(l3.isFreeMtrFeeder), l3.loadEstimate, cutoff3);
         const l3TightMinsTxt = l3.tightTransferMins > 0 ? (isZh ? ` ${l3.tightTransferMins}分` : ` ${l3.tightTransferMins}m`) : '';
-        const l3TightText = l3.tightTransfer ? ` · <span class="planner-sig-warn">⚠ ${isZh ? '緊湊轉乘' : 'Tight xfer'}${l3TightMinsTxt}</span>` : '';
+        const l3TightText = l3.tightTransfer ? `<span class="planner-sig-warn">⚠ ${isZh ? '緊湊轉乘' : 'Tight xfer'}${l3TightMinsTxt}</span>` : '';
+        const l3SigsCombined = [sig3Text, l3TightText].filter(Boolean).join(' · ');
         const l3Mins = Math.max(1, Math.round((l3.driveSec || 180) / 60));
         const l3Col = l3.group?.colorHex || '#007AFF';
         const l3BoardDisp = getLegStopDisplayName(l3.group, l3.boardStopObj);
@@ -4451,16 +4489,19 @@ async function renderTransferPlannerView() {
                 <span class="planner-step-main">${escapeHtml(l3BoardDisp)}</span>
               </div>
               <div class="planner-step-sub">
-                <strong>${escapeHtml(l3Badge)}</strong> → ${escapeHtml(l3AlightDisp)} · ${l3Mins}${t('minsUnit')}${sig3Text ? ` · ${sig3Text}` : ''}${l3TightText}
+                <strong>${escapeHtml(l3Badge)}</strong> → ${escapeHtml(l3AlightDisp)} · ${l3Mins}${t('minsUnit')}
               </div>
+              ${l3SigsCombined ? `<div class="planner-step-sigs">${l3SigsCombined}</div>` : ''}
             </div>
-            <button type="button" class="planner-live-btn" onclick="event.stopPropagation(); openRouteDetail('${escapeJsAttr(l3.group.key)}', '${escapeJsAttr(l3.boardStopKey)}');">${isZh ? '實時 ›' : 'Live ›'}</button>
+            <button type="button" class="planner-live-btn" title="${isZh ? '查看全線站點及未來班次' : 'View all route stops & next departures'}" aria-label="${isZh ? '站點班次' : 'Stops and ETA'}" onclick="event.stopPropagation(); openRouteDetail('${escapeJsAttr(l3.group.key)}', '${escapeJsAttr(l3.boardStopKey)}');">${isZh ? '站點班次 ›' : 'Stops & ETA ›'}</button>
           </div>`;
       }).join('');
 
+      const sig2Combined = [sig2Text, tightText].filter(Boolean).join(' · ');
+
       return `
-        <details class="xfer-decision-card ${isWinner ? 'winner' : ''} ${isSelected ? 'selected' : ''}" data-card-key="${c.key}" ${isOpen ? 'open' : ''}>
-          <summary class="xfer-card-header" onclick="selectUnifiedPlannerCard('${c.key}', ${c.idx})">
+        <details class="xfer-decision-card ${isWinner ? 'winner' : ''} ${isSelected ? 'selected' : ''}" data-card-key="${escapeHtml(c.key)}" ${isOpen ? 'open' : ''}>
+          <summary class="xfer-card-header" onclick="selectUnifiedPlannerCard('${escapeJsAttr(c.key)}', ${c.idx})">
             <div class="planner-card-left">
               ${cardTag ? `<div class="xfer-badge-title">${escapeHtml(cardTag)}</div>` : ''}
               <div class="planner-route-chain">${chainChipsHtml}</div>
@@ -4482,10 +4523,11 @@ async function renderTransferPlannerView() {
                   <span class="planner-step-main">${escapeHtml(board1Disp)}</span>
                 </div>
                 <div class="planner-step-sub">
-                  <strong>${escapeHtml(b1Badge)}</strong> → ${escapeHtml(alight1Disp)} · ${leg1Mins}${t('minsUnit')}${sig1Text ? ` · ${sig1Text}` : ''}
+                  <strong>${escapeHtml(b1Badge)}</strong> → ${escapeHtml(alight1Disp)} · ${leg1Mins}${t('minsUnit')}
                 </div>
+                ${sig1Text ? `<div class="planner-step-sigs">${sig1Text}</div>` : ''}
               </div>
-              <button type="button" class="planner-live-btn" onclick="event.stopPropagation(); openRouteDetail('${escapeJsAttr(cor.leg1Group.key)}', '${escapeJsAttr(cor.board1StopKey)}');">${isZh ? '實時 ›' : 'Live ›'}</button>
+              <button type="button" class="planner-live-btn" title="${isZh ? '查看全線站點及未來班次' : 'View all route stops & next departures'}" aria-label="${isZh ? '站點班次' : 'Stops and ETA'}" onclick="event.stopPropagation(); openRouteDetail('${escapeJsAttr(cor.leg1Group.key)}', '${escapeJsAttr(cor.board1StopKey)}');">${isZh ? '站點班次 ›' : 'Stops & ETA ›'}</button>
             </div>
             ${xfer1WalkRow}
             <div class="planner-step-transit" onclick="event.stopPropagation(); focusPlannerMapLeg(${node.board2StopObj.lat}, ${node.board2StopObj.lon}, ${leg2AlightObj.lat}, ${leg2AlightObj.lon}, 1, this);">
@@ -4496,10 +4538,11 @@ async function renderTransferPlannerView() {
                   <span class="planner-step-main">${escapeHtml(board2Disp)}</span>
                 </div>
                 <div class="planner-step-sub">
-                  <strong>${escapeHtml(b2Badge)}</strong> → ${escapeHtml(leg2AlightDisp)} · ${leg2Mins}${t('minsUnit')}${sig2Text ? ` · ${sig2Text}` : ''}${tightText}
+                  <strong>${escapeHtml(b2Badge)}</strong> → ${escapeHtml(leg2AlightDisp)} · ${leg2Mins}${t('minsUnit')}
                 </div>
+                ${sig2Combined ? `<div class="planner-step-sigs">${sig2Combined}</div>` : ''}
               </div>
-              <button type="button" class="planner-live-btn" onclick="event.stopPropagation(); openRouteDetail('${escapeJsAttr(cor.leg2Group.key)}', '${escapeJsAttr(node.board2StopKey)}');">${isZh ? '實時 ›' : 'Live ›'}</button>
+              <button type="button" class="planner-live-btn" title="${isZh ? '查看全線站點及未來班次' : 'View all route stops & next departures'}" aria-label="${isZh ? '站點班次' : 'Stops and ETA'}" onclick="event.stopPropagation(); openRouteDetail('${escapeJsAttr(cor.leg2Group.key)}', '${escapeJsAttr(node.board2StopKey)}');">${isZh ? '站點班次 ›' : 'Stops & ETA ›'}</button>
             </div>
             ${leg3RowsHtml}
             ${egressWalkRow}
@@ -4516,6 +4559,7 @@ async function renderTransferPlannerView() {
   };
 
   paintUnifiedCards(false);
+  const initialAutoPickedKey = activeUnifiedCardKey;
 
   const fleetCheckCache = new Map();
   let prunedGhosts = 0;
@@ -4737,5 +4781,9 @@ async function renderTransferPlannerView() {
 
   if (myToken !== xferRenderToken || currentView !== 'xfer') return;
 
+  // If user didn't manually click another card during async ETA resolution, let the live #1 winner take focus
+  if (activeUnifiedCardKey === initialAutoPickedKey) {
+    activeUnifiedCardKey = '';
+  }
   paintUnifiedCards(true);
 }

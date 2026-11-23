@@ -3093,9 +3093,12 @@ async function fetchEtaRaw(group, stopKey, isExpandedDetailView = false, afterMs
     } else if (idx > 0 && rawK[idx - 1]) {
       obsHwSec = Math.max(0, Math.round((item.targetMs - rawK[idx - 1].targetMs) / 1000));
     }
+    const trailingHwSec = (idx === 0 && rawK[1] && rawK[2])
+      ? Math.max(0, Math.round((rawK[2].targetMs - rawK[1].targetMs) / 1000))
+      : 0;
 
     let loadEstimate = null;
-    if (typeof LoadFactorEngine !== 'undefined' && group.mode !== 'FERRY') {
+    if (typeof LoadFactorEngine !== 'undefined') {
       if (group.mode === 'MTR') {
         loadEstimate = LoadFactorEngine.inferMtrLoad({
           isLrt: group.company === 'LRT',
@@ -3112,14 +3115,36 @@ async function fetchEtaRaw(group, stopKey, isExpandedDetailView = false, afterMs
           dateObj: hkNow,
           isHoliday: isHol
         });
+      } else if (group.mode === 'FERRY') {
+        loadEstimate = typeof LoadFactorEngine.inferFerryLoad === 'function'
+          ? LoadFactorEngine.inferFerryLoad({
+              group,
+              origName: stops[0]?.stopName_e || group.orig_e || '',
+              destName: stops[stops.length - 1]?.stopName_e || group.dest_e || '',
+              vesselClass: item.vesselClass || group.ferryMeta?._activeVesselClass || '',
+              obsHeadwaySec: obsHwSec,
+              schedHeadwaySec: (typeof getPeriodHeadwaySecs === 'function')
+                ? getPeriodHeadwaySecs(group, item.targetMs || now)
+                : ((Number(group.headwayMins) || 35) * 60),
+              isSched: Boolean(item.isSched),
+              dateObj: hkNow,
+              isHoliday: isHol
+            })
+          : null;
       } else {
+        const periodBusHwSec = (typeof getPeriodHeadwaySecs === 'function')
+          ? getPeriodHeadwaySecs(group, item.targetMs || now)
+          : ((Number(group.headwayMins) || 12) * 60);
         loadEstimate = LoadFactorEngine.inferBusLoad({
           group,
           stopObj: effStopObj,
+          origName: stops[0]?.stopName_e || group.orig_e || '',
+          destName: stops[stops.length - 1]?.stopName_e || group.dest_e || '',
           stopIdx: effStopIdx,
           totalStops: stops.length || 12,
           obsHeadwaySec: obsHwSec,
-          schedHeadwaySec: (Number(group.headwayMins) || 12) * 60,
+          trailingHeadwaySec: trailingHwSec,
+          schedHeadwaySec: periodBusHwSec,
           etaDriftSec: idx === 0 ? busDriftSec : 0,
           corridorStatus: corStatus,
           isSched: Boolean(item.isSched),
@@ -3223,14 +3248,14 @@ function generateExpandedETAsHtml(arrs, group, stopKey, stopIdx) {
 
   const now = Date.now();
 
-  // EAL 9-Car First Class Warning (Car 4/6 + $1,000 surcharge) & Crowded Car-Position Tip (Bus/MTR only)
+  // EAL 9-Car First Class Warning (Car 4/6 + $1,000 surcharge) & Crowded Tip (Bus/MTR/Ferry)
   const firstLoad = arrs[0]?.loadEstimate || null;
   let loadTipBannerHtml = '';
-  if (firstLoad && group?.mode !== 'FERRY') {
+  if (firstLoad) {
     const tipTxt = isZh ? firstLoad.tipTc : firstLoad.tipEn;
     if (firstLoad.firstClassWarning && tipTxt) {
       loadTipBannerHtml = `<div class="sectional-notice-banner">🚆 ${escapeHtml(tipTxt)}</div>`;
-    } else if (tipTxt && firstLoad.pct >= 75) {
+    } else if (tipTxt && firstLoad.pct >= 72) {
       loadTipBannerHtml = `<div class="load-tip-banner">👥 ${escapeHtml(tipTxt)}</div>`;
     }
   }
@@ -3249,7 +3274,7 @@ function generateExpandedETAsHtml(arrs, group, stopKey, stopIdx) {
     const clk = formatHkArrivalClock(a.rawTargetMs || a.targetMs);
     const isSelected = (bIdx === activeBusIdx);
     const rowRemark = a.remark || '';
-    const loadPillHtml = (group?.mode !== 'FERRY' && a.loadEstimate) ? formatLoadPillHtml(a.loadEstimate, true) : '';
+    const loadPillHtml = a.loadEstimate ? formatLoadPillHtml(a.loadEstimate, true) : '';
     return `
       <div class="kmb-eta-line ${isSelected ? 'selected-bus-eta' : ''}" onclick="event.stopPropagation(); selectExpandedBusEtaIndex(${bIdx});">
         <span class="kmb-eta-mins">${minsTxt}</span>
@@ -4121,7 +4146,7 @@ async function renderMainNearby(isSilentRefresh = false) {
       });
       const subParts = [ui.clockStr, ...followUps].filter(Boolean).join(' · ');
       etaCol.innerHTML = `<div class="eta-time">${ui.mainTimeStr}</div>${subParts ? `<div class="eta-clock-sub">${subParts}</div>` : ''}`;
-      if (subLine && sr.returnGroup.mode !== 'FERRY' && arrs[0].loadEstimate) {
+      if (subLine && arrs[0].loadEstimate) {
         const stopLabel = getStopName(sr.returnStop);
         subLine.innerHTML = `${formatLoadPillHtml(arrs[0].loadEstimate, true)}<span>${isZh ? `上車站：${escapeHtml(stopLabel)}` : `Board @ ${escapeHtml(stopLabel)}`}</span>`;
       }
@@ -4154,8 +4179,8 @@ async function renderMainNearby(isSilentRefresh = false) {
           return m >= 120 ? `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}m` : `${m}${t('minsUnit')}`;
         });
         const subTimeParts = [ui.clockStr, ...nextFollowUps].filter(Boolean).join(' · ');
-        // Compact Bus/MTR/LRT load factor pill (strictly excluded on FERRY)
-        const loadPillHtml = (g.mode !== 'FERRY' && arrs[0].loadEstimate)
+        // Compact Bus/MTR/LRT/Ferry load factor pill
+        const loadPillHtml = arrs[0].loadEstimate
           ? formatLoadPillHtml(arrs[0].loadEstimate, true)
           : '';
 
@@ -5252,7 +5277,7 @@ async function renderFavList(isSilentRefresh = false) {
     const stName = stripPlatformCodeFromDisplay(currentLang === 'zh' && bm.stopName_tc ? bm.stopName_tc : bm.stopName_e);
     if (arrs[0]) {
       const ui = formatEtaUI(arrs[0], g);
-      const loadPillHtml = (g.mode !== 'FERRY' && arrs[0].loadEstimate)
+      const loadPillHtml = arrs[0].loadEstimate
         ? formatLoadPillHtml(arrs[0].loadEstimate, true)
         : '';
       etaEl.innerHTML = `<div class="eta-time">${ui.mainTimeStr}</div>${ui.clockStr ? `<div class="eta-clock-sub">${ui.clockStr}</div>` : ''}`;

@@ -87,6 +87,9 @@ function loadHardcodeAndPlannerSandbox(overrides: Record<string, any> = {}) {
       MTR_ENGINE,
       MTR_EXITS_SEED,
       LoadFactorEngine,
+      SHARED_BIKE_PRICING,
+      computeSharedBikeFareHkd,
+      inferPlannerLegLoad,
       SECTIONAL_FARE_REGISTRY,
       resolveBusLegNetFare,
       getRaptorGraph,
@@ -1623,6 +1626,219 @@ test('planner.js, map.js, index.html & actions.yml: Share Trip summary, active l
   const yml = fs.readFileSync('.github/workflows/actions.yml', 'utf8');
   assert.ok(yml.includes('mergedMtrExits.length < 50'), 'actions.yml must enforce mtrExits sanity gate before overwriting bus_index.min.json');
 });
+
+test('hardcode.js & planner.js: LocoBike HK shared bike pricing ($5.0/30m) factors into Direct Bike Ride, MTR+Bike fares, and notices', () => {
+  const {
+    ctx,
+    SHARED_BIKE_PRICING,
+    computeSharedBikeFareHkd,
+    computeLegChainFareHkd,
+    buildFromToEdgeRequestSpec,
+    formatPlannerCardShareText,
+  } = loadHardcodeAndPlannerSandbox({
+    initRouteMapFast: () => {},
+    getGlobalStopKey: (s: any) => (s?.mtrCode ? `MTR_${s.mtrCode}` : String(s?.stopId || s?.stopName_e || '')),
+    isParallelRailTerminusPair: () => false,
+    isAirportOrPortZone: () => false,
+    isLantauOrAirportZone: (la: number, lo: number) => lo < 114.04 && la < 22.34,
+    computeSegmentStepSeconds: (_mode: string, _co: string, dKm: number) => Math.max(45, Math.round((dKm / 28) * 3600)),
+    userCommuteProfile: { home: null, work: null },
+  });
+  ctx.window.getExactMtrFare = () => 5.3;
+
+  assert.equal(SHARED_BIKE_PRICING.ratePerBlockHkd, 5.0);
+  assert.equal(SHARED_BIKE_PRICING.blockMins, 30);
+
+  // 1. Sub-30m bike rides cost $5.0; >30m rides cost $10.0; 0m returns $0
+  assert.equal(computeSharedBikeFareHkd(0, 0), 0);
+  assert.equal(computeSharedBikeFareHkd(900, 3535), 5.0); // 15m ride
+  assert.equal(computeSharedBikeFareHkd(2400, 9980), 10.0); // 40m ride (2 x 30m blocks)
+
+  // 2. Tin Shui Wai MTR -> Long Ping MTR ($5.3) + Bike egress (2.0km) = $10.3 + notice
+  const legTml = {
+    group: { mode: 'MTR', company: 'MTR', routeNo: 'TML' },
+    boardStopObj: { mtrCode: 'TIS', stopName_e: 'Tin Shui Wai' },
+    alightStopObj: { mtrCode: 'LOP', stopName_e: 'Long Ping' },
+    driveSec: 240,
+  };
+  const fareMeta: any = {};
+  const totalWithBike = computeLegChainFareHkd([legTml], false, fareMeta, 22.448, 114.005, {
+    accessByBike: false,
+    accessWalkDistM: 80,
+    egressByBike: true,
+    egressWalkDistM: 2050,
+  });
+  assert.equal(totalWithBike, 10.3, `MTR ($5.3) + LocoBike ($5.0) must equal $10.3 (got ${totalWithBike})`);
+  assert.ok(fareMeta.notices.some((n: any) => n.type === 'shared_bike' && n.en.includes('5.0')));
+
+  // Dual bike access + egress charges two 30m rental sessions ($5.0 + $5.0)
+  const totalDualBike = computeLegChainFareHkd([legTml], false, {}, 22.448, 114.005, {
+    accessByBike: true,
+    accessWalkDistM: 1200,
+    egressByBike: true,
+    egressWalkDistM: 2050,
+  });
+  assert.equal(totalDualBike, 15.3);
+
+  // 3. End-to-end buildFromToEdgeRequestSpec with xferLocoBikeEnabled = true (Tin Shui Wai -> 48 Wang Lee St)
+  ctx.xferLocoBikeEnabled = true;
+  ctx.groupedRoutes = [
+    {
+      key: 'MTR_TML_O',
+      mode: 'MTR',
+      company: 'MTR',
+      routeNo: 'TML',
+      headwayMins: 4,
+      maxFare: 5.3,
+      _stops: [
+        { stopId: 'TIS', mtrCode: 'TIS', stopName_e: 'Tin Shui Wai Station', latitude: '22.4481', longitude: '114.0054', fare: '5.3' },
+        { stopId: 'LOP', mtrCode: 'LOP', stopName_e: 'Long Ping Station', latitude: '22.4476', longitude: '114.0254', fare: '0' },
+      ],
+    },
+  ];
+  ctx.userCommuteProfile = {
+    home: { stopKey: 'MTR_TIS', stopName_e: 'Tin Shui Wai Station', lat: 22.4481, lon: 114.0054 },
+    work: { stopKey: 'WANG_LEE', stopName_e: '48 Wang Lee St', lat: 22.4648, lon: 114.0262 },
+  };
+  const spec = buildFromToEdgeRequestSpec(new Date(2026, 10, 23, 9, 7, 0));
+  assert.ok(spec.walkBikeDirectCard?.isBike, 'Should produce Bike Direct option (~2.9km)');
+  assert.equal(spec.walkBikeDirectCard.fareHkd, 5.0, 'Direct Bike Ride must cost $5.0 (not $0)');
+  const mtrPlusBike = spec.directRoutes.find((d: any) => d.group.routeNo === 'TML' && d.egressByBike);
+  assert.ok(mtrPlusBike, 'Should produce TML MTR + Bike last-mile option');
+  assert.equal(mtrPlusBike.fareHkd, 10.3, `TML MTR + Bike must combine $5.3 + $5.0 = $10.3 (got ${mtrPlusBike.fareHkd})`);
+
+  const wbShare = formatPlannerCardShareText(spec, { type: 'WALK_BIKE', item: spec.walkBikeDirectCard }, false);
+  assert.ok(wbShare.includes('LocoBike') && wbShare.includes('$5.0'));
+});
+
+test('hardcode.js & planner.js: refactored LoadFactorEngine fixes Sunday 8pm / early morning South Lantau false crowding across all 3 modes (Bus, MTR, Ferry)', () => {
+  const { LoadFactorEngine, inferPlannerLegLoad } = loadHardcodeAndPlannerSandbox();
+
+  // Nov 22, 2026 is Sunday!
+  const sun0759 = new Date(2026, 10, 22, 7, 59, 0);
+  const sun2000 = new Date(2026, 10, 22, 20, 0, 0);
+  const sat1100 = new Date(2026, 10, 21, 11, 0, 0);
+  const sat1730 = new Date(2026, 10, 21, 17, 30, 0);
+  const wkAm0815 = new Date(2026, 10, 23, 8, 15, 0);
+  const wkPm1815 = new Date(2026, 10, 23, 18, 15, 0);
+  const sat2045 = new Date(2026, 10, 21, 20, 45, 0);
+
+  // 1. South Lantau NLB 1, 3M, 4, A35 at Sunday 20:00 (BOTH WAYS) and Sunday 07:59 must report LOW / Seats — no tourists, no false 12m gap inflation
+  const nlbCases = [
+    { group: { company: 'NLB', routeNo: '1', mode: 'BUS', headwayMins: 12, orig_e: 'Mui Wo Ferry Pier', dest_e: 'Tai O' }, idx: 25, total: 56 },
+    { group: { company: 'NLB', routeNo: '1', mode: 'BUS', headwayMins: 12, orig_e: 'Tai O', dest_e: 'Mui Wo Ferry Pier' }, idx: 26, total: 52 },
+    { group: { company: 'NLB', routeNo: '3M', mode: 'BUS', headwayMins: 20, orig_e: 'Tung Chung Station', dest_e: 'Mui Wo Ferry Pier' }, idx: 16, total: 34 },
+    { group: { company: 'NLB', routeNo: '3M', mode: 'BUS', headwayMins: 20, orig_e: 'Mui Wo Ferry Pier', dest_e: 'Tung Chung Station' }, idx: 17, total: 35 },
+    { group: { company: 'NLB', routeNo: '4', mode: 'BUS', headwayMins: 20, orig_e: 'Mui Wo Ferry Pier', dest_e: 'Tong Fuk' }, idx: 12, total: 25 },
+    { group: { company: 'NLB', routeNo: 'A35', mode: 'BUS', headwayMins: 30, orig_e: 'Mui Wo Ferry Pier', dest_e: 'HZMB Hong Kong Port' }, idx: 28, total: 61 },
+  ];
+
+  for (const tc of nlbCases) {
+    const loadSun20 = LoadFactorEngine.inferBusLoad({
+      group: tc.group,
+      stopIdx: tc.idx,
+      totalStops: tc.total,
+      obsHeadwaySec: 1500,
+      schedHeadwaySec: tc.group.headwayMins * 60,
+      isSched: false,
+      dateObj: sun2000,
+      isHoliday: true,
+    });
+    assert.equal(
+      loadSun20.tier,
+      'LOW',
+      `NLB ${tc.group.routeNo} (${tc.group.orig_e} -> ${tc.group.dest_e}) at Sun 20:00 must be Seats/LOW (got ${loadSun20.pct}% ${loadSun20.labelEn})`
+    );
+    assert.ok(loadSun20.pct <= 36, `Expected <=36% at Sun 20:00, got ${loadSun20.pct}%`);
+
+    const loadSun0759 = LoadFactorEngine.inferBusLoad({
+      group: tc.group,
+      stopIdx: tc.idx,
+      totalStops: tc.total,
+      dateObj: sun0759,
+      isHoliday: true,
+    });
+    assert.equal(
+      loadSun0759.tier,
+      'LOW',
+      `NLB ${tc.group.routeNo} (${tc.group.orig_e} -> ${tc.group.dest_e}) at Sun 07:59 must be Seats/LOW (got ${loadSun0759.pct}% ${loadSun0759.labelEn})`
+    );
+  }
+
+  // Tourist contrast: Saturday 11:00 heading TO Tai O is significantly busier than Sat 20:45
+  const nlb11ToTaiO = { company: 'NLB', routeNo: '11', mode: 'BUS', headwayMins: 15, orig_e: 'Tung Chung Station', dest_e: 'Tai O' };
+  const satMorningToTaiO = LoadFactorEngine.inferBusLoad({
+    group: nlb11ToTaiO, stopIdx: 22, totalStops: 54, dateObj: sat1100, isHoliday: false,
+  });
+  const satEveningToTaiO = LoadFactorEngine.inferBusLoad({
+    group: nlb11ToTaiO, stopIdx: 22, totalStops: 54, dateObj: sat2045, isHoliday: false,
+  });
+  assert.ok(
+    satMorningToTaiO.pct >= satEveningToTaiO.pct + 20,
+    `Sat 11:00 tourist wave toward Tai O (${satMorningToTaiO.pct}%) must far exceed Sat 20:45 (${satEveningToTaiO.pct}%)`
+  );
+
+  // 2. MTR refactored curves: Disneyland DRL fireworks wave vs quiet midday; Sunday 20:00 suburban quiet
+  const drlExitFireworks = LoadFactorEngine.inferMtrLoad({
+    lineCode: 'DRL', staCode: 'DIS', destCode: 'SUN', destName: 'Sunny Bay', dateObj: sat2045, isHoliday: false,
+  });
+  const drlQuietMid = LoadFactorEngine.inferMtrLoad({
+    lineCode: 'DRL', staCode: 'DIS', destCode: 'SUN', destName: 'Sunny Bay', dateObj: wkAm0815, isHoliday: false,
+  });
+  assert.ok(drlExitFireworks.pct > drlQuietMid.pct + 20, 'DRL post-fireworks exit (20:45) must surge vs quiet weekday AM');
+
+  const mtrSun20 = LoadFactorEngine.inferMtrLoad({
+    lineCode: 'TML', staCode: 'LOP', destCode: 'WKS', destName: 'Wu Kai Sha', dateObj: sun2000, isHoliday: true,
+  });
+  assert.equal(mtrSun20.tier, 'LOW', `Sunday 20:00 suburban TML must be LOW/Seats (got ${mtrSun20.pct}%)`);
+
+  // 3. Ferry refactored model: Commuter direction, Fast vs Triple-Deck Ordinary capacity, Tourist weekend, Sunday 20:00 calm, & Planner integration
+  const gCcOut = {
+    mode: 'FERRY',
+    company: 'SF',
+    routeNo: 'Central-CC',
+    orig_e: 'Central',
+    dest_e: 'Cheung Chau',
+    ferryMeta: { durFast: 40, durOrd: 60 },
+  };
+  const gCcIn = {
+    mode: 'FERRY',
+    company: 'SF',
+    routeNo: 'CC-Central',
+    orig_e: 'Cheung Chau',
+    dest_e: 'Central',
+    ferryMeta: { durFast: 40, durOrd: 60 },
+  };
+
+  // Weekday AM: Cheung Chau -> Central commuters >> Central -> Cheung Chau counter-flow
+  const wkAmToCentral = LoadFactorEngine.inferFerryLoad({ group: gCcIn, vesselClass: 'FAST', dateObj: wkAm0815 });
+  const wkAmToIsland = LoadFactorEngine.inferFerryLoad({ group: gCcOut, vesselClass: 'FAST', dateObj: wkAm0815 });
+  assert.ok(wkAmToCentral.pct >= wkAmToIsland.pct + 25, `Wkdy AM ferry to Central (${wkAmToCentral.pct}%) >> outbound (${wkAmToIsland.pct}%)`);
+  assert.equal(wkAmToCentral.mode, 'FERRY');
+  assert.equal(wkAmToCentral.capacityPax, 320);
+
+  // Weekday PM: Central -> Cheung Chau commuters >> reverse
+  const wkPmToIsland = LoadFactorEngine.inferFerryLoad({ group: gCcOut, vesselClass: 'FAST', dateObj: wkPm1815 });
+  const wkPmToCentral = LoadFactorEngine.inferFerryLoad({ group: gCcIn, vesselClass: 'FAST', dateObj: wkPm1815 });
+  assert.ok(wkPmToIsland.pct >= wkPmToCentral.pct + 25);
+
+  // Weekend return wave (17:30): Fast Ferry (~320 pax) significantly higher % than Triple-Deck Ordinary (~850 pax)
+  const satReturnFast = LoadFactorEngine.inferFerryLoad({ group: gCcIn, vesselClass: 'FAST', dateObj: sat1730 });
+  const satReturnOrd = LoadFactorEngine.inferFerryLoad({ group: gCcIn, vesselClass: 'ORD', dateObj: sat1730 });
+  assert.ok(satReturnFast.pct >= 72 && satReturnFast.pct >= satReturnOrd.pct + 20, `Sat 17:30 Fast (${satReturnFast.pct}%) >> Ord (${satReturnOrd.pct}%)`);
+  assert.equal(satReturnOrd.capacityPax, 850);
+
+  // Sunday 20:00 both ways calm ('Seats')
+  const sun20FerryOut = LoadFactorEngine.inferFerryLoad({ group: gCcOut, vesselClass: 'FAST', dateObj: sun2000, isHoliday: true });
+  const sun20FerryIn = LoadFactorEngine.inferFerryLoad({ group: gCcIn, vesselClass: 'ORD', dateObj: sun2000, isHoliday: true });
+  assert.equal(sun20FerryOut.tier, 'LOW');
+  assert.equal(sun20FerryIn.tier, 'LOW');
+
+  // Planner integration: inferPlannerLegLoad supports FERRY now (no longer returns null!)
+  const plannerFerryLoad = inferPlannerLegLoad(gCcIn, { stopName_e: 'Cheung Chau Pier' }, sat1730, false, 0, { vesselClass: 'FAST' });
+  assert.ok(plannerFerryLoad && plannerFerryLoad.mode === 'FERRY' && plannerFerryLoad.pct >= 72);
+});
+
 
 
 

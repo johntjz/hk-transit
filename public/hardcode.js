@@ -1363,6 +1363,26 @@ const MTR_BOTTLENECK_STATIONS = {
   SHT: { boostPeak: 14, boostOff: 6,  lines: ['EAL'] }
 };
 
+const SHARED_BIKE_PRICING = {
+  operator: 'LocoBike',
+  blockMins: 30,
+  ratePerBlockHkd: 5.0,
+  payg15MinsHkd: 5.0,
+  monthlyPassHkd: 88.0,
+  speedMps: 4.16
+};
+
+function computeSharedBikeFareHkd(rideSecs = 0, distM = 0) {
+  const dM = Math.max(0, Number(distM) || 0);
+  const secs = Number(rideSecs) > 0
+    ? Number(rideSecs)
+    : (dM > 0 ? Math.round(dM / SHARED_BIKE_PRICING.speedMps) : 0);
+  if (secs <= 0 && dM <= 0) return 0;
+  const rideMins = Math.max(1, secs / 60);
+  const blocks = Math.max(1, Math.ceil(rideMins / SHARED_BIKE_PRICING.blockMins));
+  return Number((blocks * SHARED_BIKE_PRICING.ratePerBlockHkd).toFixed(1));
+}
+
 const LoadFactorEngine = {
   _toBand(pct, mode = 'BUS') {
     const p = Math.max(8, Math.min(99, Math.round(pct)));
@@ -1382,10 +1402,10 @@ const LoadFactorEngine = {
         pct: p,
         tier: 'MED',
         cssClass: 'load-med',
-        labelEn: 'Standing',
-        labelTc: mode === 'MTR' ? '一般' : '企位',
+        labelEn: mode === 'FERRY' ? 'Busy' : 'Standing',
+        labelTc: mode === 'FERRY' ? '適中' : (mode === 'MTR' ? '一般' : '企位'),
         isSkipRisk: false,
-        isStandingOrWorse: true
+        isStandingOrWorse: mode !== 'FERRY'
       };
     }
     if (p < 90) {
@@ -1420,86 +1440,127 @@ const LoadFactorEngine = {
     const isSat = !isHolOrSun && day === 6;
     const dayType = isHolOrSun ? 'HOLIDAY' : (isSat ? 'SATURDAY' : 'WEEKDAY');
 
-    // Smooth Gaussian-like bell helper (returns 0..1)
     const bell = (centerMin, halfWidthMin) => {
       const z = (mins - centerMin) / Math.max(1, halfWidthMin);
       return Math.exp(-0.5 * z * z);
     };
 
-    if (mins >= 1365 || mins < 360) {
+    // Tourist outing window: zero tourists before 08:30 or from 19:00 onward
+    const isTouristWindow = mins >= 510 && mins < 1140;
+    const touristWave = isTouristWindow
+      ? bell(795, 135) * (dayType === 'HOLIDAY' ? 1.0 : (dayType === 'SATURDAY' ? 0.92 : 0.38))
+      : 0;
+    const isEveningQuiet = mins >= 1170 || mins < 390; // >=19:30 or <06:30
+
+    if (mins >= 1350 || mins < 360) {
       return {
         period: 'LATE',
         dayType,
-        baseBusPct: isHolOrSun ? 16 : 18,
-        baseMtrPct: isHolOrSun ? 18 : 20,
+        mins,
+        baseBusPct: isHolOrSun ? 15 : 17,
+        baseMtrPct: isHolOrSun ? 17 : 19,
+        baseFerryPct: isHolOrSun ? 14 : 16,
         isPeak: false,
         isAmPeak: false,
         isPmPeak: false,
+        isEveningQuiet: true,
+        touristWave: 0,
         peakWave: 0
       };
     }
 
     if (dayType === 'WEEKDAY') {
-      const amWave = bell(505, 48);      // 08:25 AM peak (07:35–09:15)
-      const lunchWave = bell(785, 55);   // 13:05 lunch wave
-      const pmWave = bell(1105, 56);     // 18:25 PM peak (17:30–19:25)
-      const eveWave = bell(1245, 55);    // 20:45 evening shoulder
+      const amWave = bell(505, 45);      // 08:25 AM peak (07:40–09:10)
+      const lunchWave = bell(785, 50);   // 13:05 lunch wave
+      const pmWave = bell(1100, 50);     // 18:20 PM peak (17:30–19:10)
+      const eveSocial = (mins >= 1140 && mins < 1350) ? bell(1170, 50) * 0.45 : 0;
       const peakWave = Math.max(amWave, pmWave);
       const isAmPeak = amWave >= 0.48;
       const isPmPeak = pmWave >= 0.48;
       const isPeak = isAmPeak || isPmPeak;
 
-      const baseBusPct = Math.round(
-        26 + amWave * 30 + pmWave * 32 + lunchWave * 14 + eveWave * 10
-      );
-      const baseMtrPct = Math.round(
-        30 + amWave * 34 + pmWave * 36 + lunchWave * 15 + eveWave * 11
-      );
-      const period = isPeak ? 'PEAK' : ((lunchWave >= 0.5 || eveWave >= 0.55) ? 'BUSY' : 'OFF_PEAK');
-      return { period, dayType, baseBusPct, baseMtrPct, isPeak, isAmPeak, isPmPeak, peakWave };
+      const baseBusPct = Math.round(22 + amWave * 32 + pmWave * 33 + lunchWave * 13 + eveSocial * 9);
+      const baseMtrPct = Math.round(26 + amWave * 36 + pmWave * 37 + lunchWave * 14 + eveSocial * 11);
+      const baseFerryPct = Math.round(18 + amWave * 24 + pmWave * 25 + lunchWave * 8);
+      const period = isPeak ? 'PEAK' : (lunchWave >= 0.5 ? 'BUSY' : 'OFF_PEAK');
+      return {
+        period,
+        dayType,
+        mins,
+        baseBusPct,
+        baseMtrPct,
+        baseFerryPct,
+        isPeak,
+        isAmPeak,
+        isPmPeak,
+        isEveningQuiet,
+        touristWave,
+        peakWave
+      };
     }
 
     if (dayType === 'SATURDAY') {
-      const midWave = bell(855, 165);    // 14:15 shopping & outing plateau
-      const eveWave = bell(1125, 105);   // 18:45 dining/leisure evening
-      const baseBusPct = Math.round(24 + Math.max(midWave * 21, eveWave * 23));
-      const baseMtrPct = Math.round(28 + Math.max(midWave * 24, eveWave * 26));
+      const midWave = bell(855, 130);    // 14:15 shopping & outing plateau
+      const eveWave = bell(1110, 75);    // 18:30 dining/evening, tapers sharply after 20:00
+      const baseBusPct = Math.max(17, Math.round(20 + Math.max(midWave * 24, eveWave * 21) - (mins >= 1200 ? 2 : 0)));
+      const baseMtrPct = Math.max(20, Math.round(24 + Math.max(midWave * 27, eveWave * 24) - (mins >= 1200 ? 2 : 0)));
+      const baseFerryPct = Math.max(15, Math.round(18 + Math.max(midWave * 23, eveWave * 16) - (mins >= 1200 ? 3 : 0)));
       const isBusy = Math.max(midWave, eveWave) >= 0.55;
       return {
         period: isBusy ? 'BUSY' : 'OFF_PEAK',
         dayType,
+        mins,
         baseBusPct,
         baseMtrPct,
+        baseFerryPct,
         isPeak: false,
         isAmPeak: false,
         isPmPeak: false,
+        isEveningQuiet,
+        touristWave,
         peakWave: Math.max(midWave, eveWave) * 0.6
       };
     }
 
-    // Sunday / Public Holiday: midday-afternoon leisure wave, gentler morning ramp
-    const holWave = bell(870, 175);      // 14:30 afternoon leisure peak
-    const baseBusPct = Math.round(22 + holWave * 20);
-    const baseMtrPct = Math.round(25 + holWave * 23);
+    // Sunday / Public Holiday: very quiet <09:00 and >=19:30; focused midday–late afternoon outing wave
+    const holWave = bell(865, 130);      // 14:25 afternoon leisure wave (~0.02 at 08:00 & ~0.04 at 20:00)
+    const holReturn = bell(1045, 70);    // 17:25 return wave (~0.11 at 20:00)
+    const eveWindDown = mins >= 1170 ? 3 : 0;
+    const baseBusPct = Math.max(15, Math.round(18 + Math.max(holWave * 24, holReturn * 16) - eveWindDown));
+    const baseMtrPct = Math.max(17, Math.round(21 + Math.max(holWave * 26, holReturn * 18) - Math.min(2, eveWindDown)));
+    const baseFerryPct = Math.max(14, Math.round(16 + Math.max(holWave * 24, holReturn * 17) - eveWindDown));
+    const isBusy = Math.max(holWave, holReturn) >= 0.55;
     return {
-      period: holWave >= 0.55 ? 'BUSY' : 'OFF_PEAK',
+      period: isBusy ? 'BUSY' : 'OFF_PEAK',
       dayType,
+      mins,
       baseBusPct,
       baseMtrPct,
+      baseFerryPct,
       isPeak: false,
       isAmPeak: false,
       isPmPeak: false,
-      peakWave: holWave * 0.5
+      isEveningQuiet,
+      touristWave,
+      peakWave: Math.max(holWave, holReturn) * 0.55
     };
   },
 
   _inferMtrPeakDirectionBias(lineCode, opts, prof) {
-    if (!prof.isPeak) return 0;
     const destC = String(opts.destCode || '').toUpperCase();
     const destStr = String(opts.destName || '').toLowerCase();
     const dirC = String(opts.dirCode || '').toUpperCase();
 
-    // Detect CBD-bound vs suburb-bound direction on commuter trunk lines
+    if (lineCode === 'DRL') {
+      const toDis = destC === 'DIS' || /disneyland|迪士尼/i.test(destStr) || dirC === 'O';
+      const toSun = destC === 'SUN' || /sunny bay|欣澳/i.test(destStr) || dirC === 'I';
+      if (toDis && prof.mins >= 555 && prof.mins <= 705) return 18; // 09:15–11:45 park opening
+      if (toSun && prof.mins >= 1215 && prof.mins <= 1305) return 26; // 20:15–21:45 post-fireworks exit
+      return -10;
+    }
+
+    if (!prof.isPeak) return 0;
+
     const isInboundCbd = (
       (lineCode === 'TCL' && (destC === 'HOK' || /hong kong|香港/.test(destStr) || dirC === 'I')) ||
       (lineCode === 'TML' && (destC === 'WKS' || /wu kai sha|hung hom|mei foo|nam cheong|紅磡|烏溪沙/.test(destStr)) && !/tuen mun|屯門/.test(destStr)) ||
@@ -1507,22 +1568,24 @@ const LoadFactorEngine = {
       (lineCode === 'TWL' && (destC === 'CEN' || /central|中環/.test(destStr) || dirC === 'I')) ||
       (lineCode === 'KTL' && (destC === 'WHA' || /whampoa|ho man tin|黃埔/.test(destStr))) ||
       (lineCode === 'TKL' && (destC === 'NOP' || /north point|北角/.test(destStr) || dirC === 'I')) ||
-      (lineCode === 'ISL' && (destC === 'KET' || destC === 'CEN' || /kennedy town|central|堅尼地城|中環/.test(destStr)))
+      (lineCode === 'ISL' && (destC === 'KET' || destC === 'CEN' || /kennedy town|central|堅尼地城|中環/.test(destStr))) ||
+      (lineCode === 'SIL' && (destC === 'ADM' || /admiralty|金鐘/.test(destStr)))
     );
     const isOutboundSuburb = (
       (lineCode === 'TCL' && (destC === 'TUC' || /tung chung|東涌/.test(destStr) || dirC === 'O')) ||
       (lineCode === 'TML' && (destC === 'TUM' || /tuen mun|屯門/.test(destStr))) ||
       (lineCode === 'EAL' && (destC === 'LOW' || destC === 'LMC' || /lo wu|lok ma chau|羅湖|落馬洲/.test(destStr) || dirC === 'O')) ||
       (lineCode === 'TWL' && (destC === 'TSW' || /tsuen wan|荃灣/.test(destStr) || dirC === 'O')) ||
-      (lineCode === 'TKL' && (destC === 'POA' || destC === 'LHP' || /po lam|lohas|寶琳|康城/.test(destStr) || dirC === 'O'))
+      (lineCode === 'TKL' && (destC === 'POA' || destC === 'LHP' || /po lam|lohas|寶琳|康城/.test(destStr) || dirC === 'O')) ||
+      (lineCode === 'SIL' && (destC === 'SOH' || /south horizons|海怡/.test(destStr)))
     );
 
     if (prof.isAmPeak) {
-      if (isInboundCbd) return 9;
-      if (isOutboundSuburb) return -7;
+      if (isInboundCbd) return 10;
+      if (isOutboundSuburb) return -8;
     } else if (prof.isPmPeak) {
-      if (isOutboundSuburb) return 9;
-      if (isInboundCbd) return -6;
+      if (isOutboundSuburb) return 10;
+      if (isInboundCbd) return -7;
     }
     return 0;
   },
@@ -1534,64 +1597,111 @@ const LoadFactorEngine = {
     const co = String(g.company || '').toUpperCase();
     const rNo = String(g.routeNo || '').toUpperCase();
     const isGmb = co.startsWith('GMB');
-    const isLantauRural = (co === 'NLB' && /^(1|2|3M|4|11|21|23|34|36)$/.test(rNo));
+    const isLantauRural = (co === 'NLB' && /^(1|2|3M|4|11|11A|21|23|34|36)$/.test(rNo));
+    const isTouristLeisure = isLantauRural || /^(6|6A|6X|15|X15|65|73|91|91R|92|94|96R|99|260|289R|973|1A|101M)$/.test(rNo);
+    const isAirportLink = /^(A\d+|E\d+|S\d+|B\d+)[A-Z]?$/.test(rNo);
+    const isNightRoute = /^N\d+/.test(rNo);
     const isSingleDeck = isGmb || isLantauRural;
     const isHighwayTrunk = /^(1\d{2}|6\d{2}|9\d{2}|E\d{2}|A\d{2}|268|269|277|278|960|968|978)/.test(rNo);
     const isIndustrialFeeder = /^(74|74A|K66|K68|K73|K74|268A|611)$/.test(rNo);
-    const capacityFactor = isGmb ? 1.36 : (isSingleDeck ? 1.15 : 1.0);
 
     const prof = this._getPeriodProfile(opts.dateObj, opts.isHoliday);
-    let score = prof.baseBusPct * capacityFactor;
+    let score = prof.baseBusPct;
 
-    // Leisure surge on South Lantau rural single-deck routes on weekends/holidays
-    if (isLantauRural && (prof.dayType === 'HOLIDAY' || prof.dayType === 'SATURDAY') && prof.period === 'BUSY') {
-      score += 12;
+    // Night routes peak gently around 00:00–01:45 and thin out pre-dawn
+    if (isNightRoute) {
+      score += (prof.mins < 110) ? 10 : -4;
     }
-    // Industrial estate feeders peak sharply during weekday commuter waves, lighter on Sundays
+
+    // Demand-scaled capacity effect (19-seat GMB fills fast at high demand, stays light when quiet)
+    if (isGmb) {
+      score += Math.round(Math.max(4, (prof.baseBusPct - 10) * 0.50));
+    } else if (isSingleDeck && prof.baseBusPct > 26) {
+      score += Math.round((prof.baseBusPct - 26) * 0.28);
+    }
+
+    // Tourist & rural leisure directionality — strictly zero tourists <08:30 or >=19:00
+    const origStr = String(opts.origName || g.orig_e || '').toLowerCase();
+    const destStr = String(opts.destName || g.dest_e || '').toLowerCase();
+    const isToTouristSpot = /tai o|ngong ping|po lin|big buddha|stanley|repulse|peak|sai kung|wong shek|hoi ha|cheung sha|pui o|tong fuk|shui hau|大澳|昂坪|寶蓮|赤柱|淺水灣|山頂|西貢|長沙|貝澳|塘福|水口/.test(destStr);
+    const isToUrbanHub = /tung chung|mui wo|central|admiralty|exchange|diamond hill|hang hau|choi hung|東涌|梅窩|中環|金鐘|鑽石山|坑口|彩虹/.test(destStr);
+    const isFromTouristSpot = isToUrbanHub && /tai o|ngong ping|stanley|repulse|peak|sai kung|tong fuk|shui hau|pui o|cheung sha|大澳|昂坪|赤柱|淺水灣|山頂|西貢|塘福|水口|貝澳|長沙/.test(origStr);
+
+    if (isTouristLeisure) {
+      if (prof.touristWave > 0.08) {
+        if (prof.mins < 870) {
+          score += isToTouristSpot ? Math.round(prof.touristWave * 22) : (isFromTouristSpot ? -5 : Math.round(prof.touristWave * 8));
+        } else {
+          score += isFromTouristSpot ? Math.round(prof.touristWave * 22) : (isToTouristSpot ? -7 : Math.round(prof.touristWave * 8));
+        }
+      } else {
+        // Non-tourist window (<08:30 or >=19:00)
+        if (isLantauRural) {
+          if (prof.dayType === 'WEEKDAY' && prof.mins >= 440 && prof.mins <= 550) {
+            score += isToUrbanHub ? 6 : -8; // Morning village commute vs empty outbound
+          } else {
+            score -= (prof.isEveningQuiet || prof.dayType === 'HOLIDAY') ? 4 : 2;
+          }
+        }
+      }
+    }
+
+    if (isAirportLink && co === 'NLB' && (prof.isEveningQuiet || (prof.dayType === 'HOLIDAY' && prof.mins < 540))) {
+      score -= 5;
+    }
+
+    // Industrial estate feeders peak during Mon–Fri commute, light on Sundays/Holidays
     if (isIndustrialFeeder) {
-      if (prof.isPeak) score += 10;
-      else if (prof.dayType === 'HOLIDAY') score -= 10;
+      if (prof.isPeak) score += 11;
+      else if (prof.dayType === 'HOLIDAY') score -= 9;
     }
 
-    // 1. Stop-sequence progression curve (empty near terminus, peaking mid-corridor / major hubs)
+    // 1. Stop-sequence progression curve scaled by period demand wave
     const stopIdx = Number.isFinite(opts.stopIdx) ? opts.stopIdx : 0;
     const totalStops = Math.max(2, Number(opts.totalStops) || 12);
     const ratio = stopIdx / Math.max(1, totalStops - 1);
+    const demandWaveMult = Math.max(0.25, Math.min(1.25, (prof.baseBusPct - 12) / 34));
     if (stopIdx <= 1) {
-      score -= 18;
-    } else if (ratio >= 0.24 && ratio <= 0.75) {
-      score += prof.isPeak ? 13 : 6;
+      score -= 16;
+    } else if (ratio >= 0.24 && ratio <= 0.78) {
+      const midBump = prof.isPeak ? 12 : ((isLantauRural && (prof.isEveningQuiet || prof.mins < 540)) ? 2 : 7);
+      score += Math.round(midBump * demandWaveMult);
     } else if (ratio > 0.85) {
-      score -= 12;
+      score -= 11;
     }
 
     const stopLabel = `${opts.stopObj?.stopName_e || ''} ${opts.stopObj?.name_tc || ''}`;
     const isMajorBbi = Boolean(opts.stopObj && typeof getMajorBbiHubMatch === 'function' && getMajorBbiHubMatch(opts.stopObj));
     const isHubBoard = isMajorBbi || /\bmtr\b|station|ferry\s*pier|bus\s*terminus|站|碼頭|轉車站/i.test(stopLabel);
     if (isMajorBbi) {
-      score += prof.isPeak ? 12 : 6;
+      score += Math.round((prof.isPeak ? 12 : 7) * demandWaveMult);
     } else if (isHubBoard && stopIdx > 0) {
-      score += prof.isPeak ? 7 : 4;
+      score += Math.round((prof.isPeak ? 7 : 4) * demandWaveMult);
     }
 
-    // Cross-harbour & trunk highway routes pack faster during peak
     if (isHighwayTrunk && prof.isPeak) {
       score += 8;
     }
 
-    // 2. Headway Expansion Ratio (H_obs / H_sched): wider gap => leading bus absorbs accumulated demand
-    // Ignore scheduled-only un-departed slots during incidents so ghost timetables do not fake live gap telemetry
+    // 2. Period-calibrated Headway Expansion Ratio (prevents normal sparse evening/rural headways from looking like delayed surges)
     const corStatus = String(opts.corridorStatus || 'SMOOTH').toUpperCase();
     const isSchedOnly = Boolean(opts.isSched);
     const obsHw = Number(opts.obsHeadwaySec || 0);
-    const schedHw = Math.max(180, Number(opts.schedHeadwaySec || ((Number(g.headwayMins) || 12) * 60)));
+    const rawSchedHw = Math.max(180, Number(opts.schedHeadwaySec || ((Number(g.headwayMins) || (isLantauRural ? 25 : 12)) * 60)));
+    const periodHwMult = prof.isEveningQuiet
+      ? (isLantauRural ? 1.65 : 1.35)
+      : (!prof.isPeak ? (isLantauRural ? 1.35 : 1.10) : 1.0);
+    const trailingHw = Number(opts.trailingHeadwaySec || 0);
+    const schedHw = Math.max(rawSchedHw * periodHwMult, trailingHw > 180 ? trailingHw * 0.85 : 0);
+
     const hasLiveGapSignal = (obsHw > 60 && schedHw > 0 && !(isSchedOnly && corStatus === 'INCIDENT') && !isSchedOnly);
     if (hasLiveGapSignal) {
       const hwRatio = obsHw / schedHw;
-      if (hwRatio >= 2.0) score += 28;
-      else if (hwRatio >= 1.65) score += 20;
-      else if (hwRatio >= 1.35) score += 12;
-      else if (hwRatio <= 0.62) score -= 14; // Trailing bunched bus is noticeably emptier
+      const gapScale = Math.max(0.28, Math.min(1.15, prof.baseBusPct / 42));
+      if (hwRatio >= 2.0) score += Math.round(27 * gapScale);
+      else if (hwRatio >= 1.65) score += Math.round(19 * gapScale);
+      else if (hwRatio >= 1.35) score += Math.round(11 * gapScale);
+      else if (hwRatio <= 0.62) score -= 14;
       else if (hwRatio <= 0.78) score -= 7;
     }
 
@@ -1599,19 +1709,17 @@ const LoadFactorEngine = {
     const driftSec = Number(opts.etaDriftSec || 0);
     if (driftSec >= 40 && !isSchedOnly) {
       if (corStatus === 'SMOOTH') {
-        // High road speed + ETA slipping backwards = boarding/alighting dwell bottleneck
-        score += Math.min(22, Math.round((driftSec - 30) * 0.28));
+        score += Math.min(20, Math.round((driftSec - 30) * 0.26));
       } else {
-        // Corridor incident/slow traffic: discount drift so congestion isn't misread as full bus
         score += Math.min(7, Math.round((driftSec - 30) * 0.08));
       }
     }
 
-    // 4. Live HKO Weather Demand Surge (typhoon/rain spikes bus load 12–24%)
+    // 4. Live HKO Weather Demand Surge (typhoon/heavy rain dampens rural holiday leisure, boosts urban buses)
     const wx = opts.weather || (typeof window !== 'undefined' ? window.__HKO_WEATHER__ : null);
-    if (wx?.typhoon) score += 24;
-    else if (wx?.heavyRain) score += 20;
-    else if (wx?.rainAdvisory) score += 12;
+    if (wx?.typhoon) score += 22;
+    else if (wx?.heavyRain) score += (isLantauRural && prof.dayType === 'HOLIDAY' ? 4 : 18);
+    else if (wx?.rainAdvisory) score += (isLantauRural && prof.dayType === 'HOLIDAY' ? 2 : 10);
 
     const band = this._toBand(score, 'BUS');
     const basis = (hasLiveGapSignal || (driftSec >= 40 && !isSchedOnly)) ? 'LIVE_GAP' : 'SCHEDULE_PROFILE';
@@ -1624,7 +1732,7 @@ const LoadFactorEngine = {
     } else if (band.isSkipRisk) {
       tipEn = 'High load inferred — check next departure';
       tipTc = '推算載客率偏高 — 可留意下一班車';
-    } else if (basis === 'LIVE_GAP' && obsHw / schedHw >= 1.45) {
+    } else if (basis === 'LIVE_GAP' && (obsHw / schedHw) >= 1.45 && band.pct >= 55) {
       tipEn = 'Wider live gap than scheduled — heavier boarding likely';
       tipTc = '實時班距較正常寬 — 候車人數可能較多';
     }
@@ -1649,27 +1757,36 @@ const LoadFactorEngine = {
     const staCode = resolveMtrStationCode(opts.staCode) || String(opts.staCode || '').trim().toUpperCase();
     const prof = this._getPeriodProfile(opts.dateObj, opts.isHoliday);
 
-    let score = prof.baseMtrPct;
-    if (fleet.allSeated) score = Math.min(score, 32); // AEL dedicated airport express
+    let score = lineCode === 'DRL' ? (prof.mins >= 1350 || prof.mins < 480 ? 14 : 24) : prof.baseMtrPct;
+    if (fleet.allSeated) score = Math.min(score, 32); // AEL dedicated seated express
 
-    // 1. Directional peak vs counter-peak asymmetry on commuter trunk lines
+    // 1. Directional & line-specific demand asymmetry (incl. DRL Disney waves)
     if (!isLrt && !fleet.allSeated) {
       score += this._inferMtrPeakDirectionBias(lineCode, opts, prof);
     }
 
-    // 2. EAL 9-Car First Class Capacity Isolation (8 standard cars instead of 9 / legacy 12)
+    // 2. EAL 9-Car First Class isolation (8 standard cars + cross-border weekend wave)
     if (lineCode === 'EAL') {
-      score += prof.isPeak ? 12 : 5;
+      score += prof.isPeak ? 11 : (prof.baseMtrPct >= 38 ? 6 : 3);
+      if (prof.dayType !== 'WEEKDAY' && prof.mins >= 510 && prof.mins <= 1140 && /^(LOW|LMC|SHS|FAN|TAP|SHT|TAW|KOT)$/.test(staCode)) {
+        score += 5;
+      }
     }
 
     // 3. LRT 1-Car vs 2-Car live formation denominator
     const lrtCars = Number(opts.lrtTrainLength || 0);
     if (isLrt) {
-      if (lrtCars === 1) score += prof.isPeak ? 18 : 8;
+      const lrtScale = prof.isPeak ? 1.0 : (prof.isEveningQuiet ? 0.35 : 0.55);
+      if (lrtCars === 1) score += Math.round(16 * lrtScale);
       else if (lrtCars >= 2) score -= 12;
     }
 
-    // 4. Terminus vs. Bottleneck & Interchange Pinch-Point Mapping
+    // 4. Weekend shopping & outing core hubs (MOK/TST/CAB/CEN/SHT/KOT), strictly faded by 20:00
+    if (prof.dayType !== 'WEEKDAY' && prof.mins >= 720 && prof.mins <= 1140 && /^(MOK|TST|CAB|CEN|SHT|KOT|PRE)$/.test(staCode)) {
+      score += 6;
+    }
+
+    // 5. Terminus vs. Bottleneck & Interchange Surge (off-peak boost scaled smoothly by time-of-day demand)
     const INTERCHANGE_SURGE = {
       NAC: { boostPeak: 14, boostOff: 6 },
       LAK: { boostPeak: 12, boostOff: 5 },
@@ -1680,41 +1797,44 @@ const LoadFactorEngine = {
       YUL: { boostPeak: 9,  boostOff: 4 },
       LOP: { boostPeak: 6,  boostOff: 2 }
     };
+    const offScale = Math.max(0.22, Math.min(1.15, (prof.baseMtrPct - 15) / 28));
+    const isDrlFireworksExit = (lineCode === 'DRL' && staCode === 'DIS' && prof.mins >= 1215 && prof.mins <= 1305);
     if (!isLrt && staCode) {
-      if (MTR_ENGINE.isTerminusStation(staCode)) {
+      if (MTR_ENGINE.isTerminusStation(staCode) && !isDrlFireworksExit) {
         score -= 22;
       } else {
         const bp = MTR_BOTTLENECK_STATIONS[staCode] || INTERCHANGE_SURGE[staCode];
         if (bp && (!bp.lines || bp.lines.includes(lineCode))) {
-          score += prof.isPeak ? bp.boostPeak : bp.boostOff;
+          score += prof.isPeak ? bp.boostPeak : Math.round(bp.boostOff * offScale);
         }
       }
     }
 
-    // 5. Live Next Train API Headway Expansion (Platform Accumulation Proxy)
+    // 6. Live Next Train API Headway Expansion (Platform Accumulation Proxy)
     const obsHw = Number(opts.obsHeadwaySec || 0);
-    const baseHw = prof.isPeak ? fleet.peakBaseHwSec : fleet.offPeakHwSec;
+    const baseHw = prof.isPeak ? fleet.peakBaseHwSec : (prof.isEveningQuiet ? Math.round(fleet.offPeakHwSec * 1.25) : fleet.offPeakHwSec);
     const hasLiveGap = obsHw > 60 && baseHw > 0;
     if (hasLiveGap) {
       const hwRatio = obsHw / baseHw;
-      if (hwRatio >= 1.85) score += 26;
-      else if (hwRatio >= 1.40) score += 14;
+      const gapScale = Math.max(0.35, Math.min(1.1, prof.baseMtrPct / 45));
+      if (hwRatio >= 1.85) score += Math.round(25 * gapScale);
+      else if (hwRatio >= 1.40) score += Math.round(13 * gapScale);
       else if (hwRatio <= 0.75) score -= 8;
     }
 
-    // 6. EAL Arrival-to-Departure Dwell Delta (timetype "A" -> "D")
+    // 7. EAL Arrival-to-Departure Dwell Delta (timetype "A" -> "D")
     const ealDwellSec = Number(opts.ealDwellDeltaSec || 0);
     if (lineCode === 'EAL' && ealDwellSec >= 45) {
       score = Math.max(score + 14, 86);
     }
 
-    // 7. Live MTR isdelay === 'Y' flag -> immediate maximum downstream accumulation
+    // 8. Live MTR isdelay === 'Y' flag -> immediate maximum downstream accumulation
     const isDelayed = String(opts.isDelay || '').toUpperCase() === 'Y' || opts.isDelay === true;
     if (isDelayed) {
       score = Math.max(score + 24, 92);
     }
 
-    // 8. Rain / typhoon surge into underground stations
+    // 9. Rain / typhoon surge into underground stations
     const wx = opts.weather || (typeof window !== 'undefined' ? window.__HKO_WEATHER__ : null);
     if (wx?.typhoon) score += 18;
     else if (wx?.heavyRain) score += 12;
@@ -1724,7 +1844,6 @@ const LoadFactorEngine = {
     const basis = (hasLiveGap || isDelayed || ealDwellSec >= 45) ? 'LIVE_GAP' : 'SCHEDULE_PROFILE';
     const confidence = (hasLiveGap || isDelayed) ? 'HIGH' : (ealDwellSec >= 45 ? 'MEDIUM' : 'BASELINE');
 
-    // Determine EAL direction for exact First Class Car # (Car 4 Southbound to ADM / Car 6 Northbound to LOW/LMC)
     let firstClassWarning = false;
     let firstClassCarNo = 0;
     let tipEn = '', tipTc = '';
@@ -1766,6 +1885,121 @@ const LoadFactorEngine = {
       dayType: prof.dayType,
       tipEn,
       tipTc
+    };
+  },
+
+  inferFerryLoad(opts = {}) {
+    const g = opts.group || {};
+    const origStr = String(opts.origName || g.orig_e || '').toLowerCase();
+    const destStr = String(opts.destName || g.dest_e || '').toLowerCase();
+    const routeCtx = `${origStr} ${destStr} ${g.routeNo || ''} ${g.ferryMeta?.key || ''}`.toLowerCase();
+
+    const isStarFerry = /star|tsim sha tsui.*central|central.*tsim sha tsui|tsim sha tsui.*wan chai|wan chai.*tsim sha tsui/.test(routeCtx);
+    const isCheungChau = /cheung chau|長洲/.test(routeCtx);
+    const isTaiOKaito = /tai o|sha lo wan|tuen mun.*tai o|tung chung.*tai o|peng chau.*chi ma wan|inter.?island/.test(routeCtx);
+    const isOutlyingIsland = isCheungChau || isTaiOKaito || /mui wo|peng chau|yung shue wan|sok kwu wan|discovery bay|ma wan|chi ma wan/.test(routeCtx);
+
+    const fMeta = g.ferryMeta || {};
+    const rawVClass = String(opts.vesselClass || fMeta._activeVesselClass || '').toUpperCase();
+    const vClass = rawVClass || ((fMeta.durOrd >= 50 && (!fMeta.durFast || fMeta.dur >= 50)) ? 'ORD' : 'FAST');
+
+    const prof = this._getPeriodProfile(opts.dateObj, opts.isHoliday);
+    let score = prof.baseFerryPct;
+
+    // Directional flow for Outlying Islands (Commuter AM to city, PM to island; Weekend tourists AM/midday out, 15:30-19:00 back)
+    const isIslandOrigin = /cheung chau|mui wo|peng chau|yung shue wan|sok kwu wan|discovery bay|ma wan|tai o/.test(origStr);
+    const isHubDest = /central|tsim sha tsui|wan chai|hung hom|north point|tuen mun|tung chung/.test(destStr);
+    const isToUrban = isIslandOrigin && isHubDest;
+    const isToIsland = !isIslandOrigin && /cheung chau|mui wo|peng chau|yung shue wan|sok kwu wan|discovery bay|ma wan|tai o/.test(destStr);
+
+    if (isOutlyingIsland) {
+      if (prof.dayType === 'WEEKDAY') {
+        if (prof.mins >= 405 && prof.mins <= 555) { // 06:45–09:15 AM
+          score += isToUrban ? 24 : (isToIsland ? -9 : 0);
+        } else if (prof.mins >= 1035 && prof.mins <= 1170) { // 17:15–19:30 PM
+          score += isToIsland ? 25 : (isToUrban ? -9 : 0);
+        } else if (prof.isEveningQuiet) {
+          score -= 5;
+        }
+      } else {
+        // Saturday / Sunday / Public Holiday island visitor curve
+        if (prof.mins >= 555 && prof.mins <= 870) { // 09:15–14:30 island bound
+          const islandBoost = isCheungChau ? 30 : (/yung shue wan|sok kwu wan|tai o/.test(routeCtx) ? 26 : 19);
+          score += isToIsland ? islandBoost : (prof.mins < 780 ? -7 : 4);
+        } else if (prof.mins >= 930 && prof.mins <= 1140) { // 15:30–19:00 return wave
+          const returnBoost = isCheungChau ? 32 : (/yung shue wan|sok kwu wan|tai o/.test(routeCtx) ? 28 : 20);
+          score += isToUrban ? returnBoost : -9;
+        } else if (prof.mins >= 1170) { // >=19:30 Sunday/Sat evening — no tourists, light sailings both ways
+          score -= (prof.mins >= 1230 ? 9 : 4);
+        } else {
+          score -= 4; // Early weekend morning
+        }
+      }
+
+      // Vessel capacity differentiation (Ordinary triple-deckers ~850 pax vs Fast catamarans ~320 pax vs Kaito ~140 pax)
+      if (isTaiOKaito) {
+        if (prof.dayType !== 'WEEKDAY' && prof.mins >= 600 && prof.mins <= 1050) score += 10;
+      } else if (vClass === 'ORD') {
+        score -= 14;
+      } else if (vClass === 'FAST' && (score >= 38 || prof.isPeak || prof.touristWave > 0.25)) {
+        score += 10;
+      }
+    } else if (isStarFerry) {
+      // High-capacity iconic harbour crossing (~450 pax)
+      if (prof.isPeak) score += 12;
+      else if (prof.dayType !== 'WEEKDAY' && prof.mins >= 840 && prof.mins <= 1200) score += 11; // Harbour sunset/evening sightseeing
+      else if (prof.mins < 540 || prof.mins >= 1290) score -= 5;
+    } else {
+      // Inner harbour ferries (North Point / Hung Hom / Kowloon City / Kwun Tong / Sai Wan Ho)
+      if (prof.isPeak) score += 18;
+      else if (prof.isEveningQuiet || prof.dayType === 'HOLIDAY') score -= 5;
+    }
+
+    // Sailing gap proxy (e.g. cancelled sailing due to rough weather or mechanical issue)
+    const obsHw = Number(opts.obsHeadwaySec || 0);
+    const schedHw = Math.max(600, Number(opts.schedHeadwaySec || ((Number(g.headwayMins) || (isStarFerry ? 8 : 30)) * 60)));
+    const isSchedOnly = Boolean(opts.isSched);
+    const hasLiveGap = obsHw > 180 && schedHw > 0 && !isSchedOnly;
+    if (hasLiveGap) {
+      const hwRatio = obsHw / schedHw;
+      if (hwRatio >= 1.85) score += 16;
+      else if (hwRatio >= 1.45) score += 9;
+    }
+
+    // Weather sensitivity (Typhoon disrupts/suspends, weekend heavy rain reduces island leisure visitors)
+    const wx = opts.weather || (typeof window !== 'undefined' ? window.__HKO_WEATHER__ : null);
+    if (wx?.typhoon) score += 22;
+    else if (wx?.heavyRain) score += (isOutlyingIsland && prof.dayType !== 'WEEKDAY' ? -12 : 4);
+    else if (wx?.rainAdvisory && isOutlyingIsland && prof.dayType !== 'WEEKDAY') score -= 6;
+
+    const capacityPax = isStarFerry
+      ? 450
+      : (isTaiOKaito ? 140 : (isOutlyingIsland ? (vClass === 'ORD' ? 850 : 320) : 300));
+
+    const band = this._toBand(score, 'FERRY');
+    const basis = hasLiveGap ? 'LIVE_GAP' : 'SCHEDULE_PROFILE';
+    const confidence = hasLiveGap ? 'HIGH' : 'BASELINE';
+
+    let tipEn = '', tipTc = '';
+    if (isCheungChau && vClass === 'FAST' && band.pct >= 72) {
+      tipEn = 'Fast Ferry busy (~320 seats) — Ordinary Ferry carries 3× more pax & costs less';
+      tipTc = '高速船載客率偏高（約320座）— 普通渡輪載客量多3倍且船費較平';
+    } else if (isOutlyingIsland && band.pct >= 75) {
+      tipEn = 'High island sailing demand — arrive at pier 10–15m early to queue';
+      tipTc = '離島渡輪客流較多 — 建議提早10–15分鐘到碼頭排隊登船';
+    }
+
+    return {
+      ...band,
+      mode: 'FERRY',
+      vesselClass: isTaiOKaito ? 'KAITO' : vClass,
+      capacityPax,
+      basis,
+      confidence,
+      dayType: prof.dayType,
+      tipEn,
+      tipTc,
+      firstClassWarning: false
     };
   }
 };
@@ -2245,6 +2479,8 @@ if (typeof window !== 'undefined') {
   window.MTR_ENGINE = MTR_ENGINE;
   window.MTR_FLEET_CONFIG = MTR_FLEET_CONFIG;
   window.MTR_BOTTLENECK_STATIONS = MTR_BOTTLENECK_STATIONS;
+  window.SHARED_BIKE_PRICING = SHARED_BIKE_PRICING;
+  window.computeSharedBikeFareHkd = computeSharedBikeFareHkd;
   window.LoadFactorEngine = LoadFactorEngine;
   window.MTR_EXITS_SEED = MTR_EXITS_SEED;
   window.MAJOR_BBI_HUBS = MAJOR_BBI_HUBS;
@@ -2283,6 +2519,8 @@ if (typeof module !== 'undefined' && module.exports) {
     MTR_ENGINE,
     MTR_FLEET_CONFIG,
     MTR_BOTTLENECK_STATIONS,
+    SHARED_BIKE_PRICING,
+    computeSharedBikeFareHkd,
     LoadFactorEngine,
     MTR_EXITS_SEED,
     MAJOR_BBI_HUBS,

@@ -390,9 +390,26 @@ function isInSharedBikeZone(lat, lon) {
   );
 }
 
-// Infers projected Bus/MTR/LRT load for Planner legs (FERRY strictly returns null)
-function inferPlannerLegLoad(group, boardStopObj, targetDateObj, isHoliday = false, obsHeadwaySec = 0) {
-  if (!group || group.mode === 'FERRY' || typeof LoadFactorEngine === 'undefined') return null;
+// Infers projected Bus/MTR/LRT/Ferry load for Planner legs
+function inferPlannerLegLoad(group, boardStopObj, targetDateObj, isHoliday = false, obsHeadwaySec = 0, extra = {}) {
+  if (!group || typeof LoadFactorEngine === 'undefined') return null;
+  if (group.mode === 'FERRY') {
+    return typeof LoadFactorEngine.inferFerryLoad === 'function'
+      ? LoadFactorEngine.inferFerryLoad({
+          group,
+          origName: boardStopObj?.stopName_e || group.orig_e || '',
+          destName: extra?.alightStopObj?.stopName_e || group.dest_e || '',
+          vesselClass: extra?.vesselClass || group.ferryMeta?._activeVesselClass || '',
+          obsHeadwaySec,
+          schedHeadwaySec: typeof getPeriodHeadwaySecs === 'function'
+            ? getPeriodHeadwaySecs(group, targetDateObj?.getTime?.() || Date.now())
+            : ((Number(group.headwayMins) || 35) * 60),
+          isSched: Boolean(extra?.isSched),
+          dateObj: targetDateObj,
+          isHoliday
+        })
+      : null;
+  }
   if (group.mode === 'MTR') {
     const isLrt = group.company === 'LRT';
     return LoadFactorEngine.inferMtrLoad({
@@ -401,7 +418,7 @@ function inferPlannerLegLoad(group, boardStopObj, targetDateObj, isHoliday = fal
       lineCode: group.routeNo,
       staCode: boardStopObj?.mtrCode || boardStopObj?.stopId || '',
       dirCode: extractRouteBoundCode(group),
-      destName: group.dest_e || '',
+      destName: extra?.alightStopObj?.stopName_e || group.dest_e || '',
       obsHeadwaySec,
       dateObj: targetDateObj,
       isHoliday
@@ -414,14 +431,20 @@ function inferPlannerLegLoad(group, boardStopObj, targetDateObj, isHoliday = fal
   const corStatus = (typeof getCorridorLiveStatusAt === 'function' && Number.isFinite(bLat) && Number.isFinite(bLon))
     ? (getCorridorLiveStatusAt(bLat, bLon)?.status || 'SMOOTH')
     : 'SMOOTH';
+  const schedHw = typeof getPeriodHeadwaySecs === 'function'
+    ? getPeriodHeadwaySecs(group, targetDateObj?.getTime?.() || Date.now())
+    : ((Number(group.headwayMins) || 12) * 60);
   return LoadFactorEngine.inferBusLoad({
     group,
     stopObj: boardStopObj,
+    origName: group.orig_e || rStops[0]?.stopName_e || '',
+    destName: extra?.alightStopObj?.stopName_e || group.dest_e || rStops[rStops.length - 1]?.stopName_e || '',
     stopIdx,
     totalStops: rStops.length || 16,
     obsHeadwaySec,
-    schedHeadwaySec: (Number(group.headwayMins) || 12) * 60,
+    schedHeadwaySec: schedHw,
     corridorStatus: corStatus,
+    isSched: Boolean(extra?.isSched),
     dateObj: targetDateObj,
     isHoliday
   });
@@ -2095,7 +2118,18 @@ function getRaptorGraph() {
 // ============================================================================
 // UNIFIED MULTI-MODAL FARE ENGINE
 // ============================================================================
-function computeLegChainFareHkd(legs, isHoliday = isHongKongHolidayFareDay(), metaOut = null, originLat = null, originLon = null) {
+function getSharedBikeLegFareHkd(distM = 0) {
+  const dM = Math.max(0, Number(distM) || 0);
+  if (dM <= 0) return 0;
+  const rideSecs = Math.round(dM / 4.16);
+  if (typeof computeSharedBikeFareHkd === 'function') {
+    return computeSharedBikeFareHkd(rideSecs, dM);
+  }
+  const blocks = Math.max(1, Math.ceil(Math.max(1, rideSecs / 60) / 30));
+  return Number((blocks * 5.0).toFixed(1));
+}
+
+function computeLegChainFareHkd(legs, isHoliday = isHongKongHolidayFareDay(), metaOut = null, originLat = null, originLon = null, bikeSpec = null) {
   if (!Array.isArray(legs) || !legs.length) return 0;
   let totalFare = 0;
   let railBuffer = [];
@@ -2242,6 +2276,27 @@ function computeLegChainFareHkd(legs, isHoliday = isHongKongHolidayFareDay(), me
   }
 
   flushRailBuffer();
+
+  if (bikeSpec && typeof bikeSpec === 'object') {
+    let bikeFareTotal = 0;
+    if (bikeSpec.accessByBike) {
+      bikeFareTotal += getSharedBikeLegFareHkd(bikeSpec.accessWalkDistM || bikeSpec.accessDistM || 500);
+    }
+    if (bikeSpec.egressByBike) {
+      bikeFareTotal += getSharedBikeLegFareHkd(bikeSpec.egressWalkDistM || bikeSpec.egressDistM || 500);
+    }
+    bikeFareTotal = Number(bikeFareTotal.toFixed(1));
+    if (bikeFareTotal > 0) {
+      totalFare += bikeFareTotal;
+      notices.push({
+        type: 'shared_bike',
+        routeNo: '🚲',
+        en: `Includes LocoBike rental ~$${bikeFareTotal.toFixed(1)} ($5.0/30m wallet rate)`,
+        tc: `已計入 LocoBike 共享單車費 ~$${bikeFareTotal.toFixed(1)}（錢包標準價 $5.0/30分鐘）`
+      });
+    }
+  }
+
   if (metaOut && typeof metaOut === 'object') {
     metaOut.notices = notices;
   }
@@ -2435,8 +2490,8 @@ function computeDisruptionAdjustedScore(totalTravelMins, legs, accessWalkSec = 0
       penaltyMins += ((leg.driveSec - 1200) / 60) * 1.4 + 10.0;
     }
 
-    // Load-factor penalties (Bus & MTR only; Ferry excluded)
-    if (ld && !isFerry) {
+    // Load-factor penalties (Bus, MTR & Ferry)
+    if (ld) {
       if (isBus) {
         if (ld.isSkipRisk) {
           penaltyMins += (mode === 'BULLETPROOF' ? 14.0 : (mode === 'EASY' ? 16.0 : 5.0));
@@ -2448,6 +2503,12 @@ function computeDisruptionAdjustedScore(totalTravelMins, legs, accessWalkSec = 0
           penaltyMins += (mode === 'BULLETPROOF' ? 10.0 : 4.0);
         } else if (mode === 'EASY' && ld.pct >= 75) {
           penaltyMins += 5.0;
+        }
+      } else if (isFerry) {
+        if (ld.isSkipRisk) {
+          penaltyMins += (mode === 'EASY' ? 8.0 : (mode === 'BULLETPROOF' ? 6.0 : 2.5));
+        } else if (mode === 'EASY' && ld.pct >= 75) {
+          penaltyMins += 4.0;
         }
       }
     }
@@ -2898,7 +2959,10 @@ function runRaptorCorridorPass(G, originAccess, destEgress, queryDateObj, isAirp
       const totalTravelSec = finalRideArrSec + effEgressSec;
       const totalMins = Math.max(5, Math.round(totalTravelSec / 60));
       const fareMeta = {};
-      const fareHkd = computeLegChainFareHkd(allLegSpecs, isHoliday, fareMeta, fromMeta.lat, fromMeta.lon);
+      const bikeSpec = (acc.byBike || egr.byBike)
+        ? { accessByBike: acc.byBike, accessWalkDistM: acc.distM, egressByBike: egr.byBike, egressWalkDistM: effEgressDistM }
+        : null;
+      const fareHkd = computeLegChainFareHkd(allLegSpecs, isHoliday, fareMeta, fromMeta.lat, fromMeta.lon, bikeSpec);
       const score = computeDisruptionAdjustedScore(totalMins, allLegSpecs, acc.sec, effEgressSec, xferMtrCodes, fareHkd, xferStopObjs, totalTransferWalkSec, {
         queryDate: queryDateObj,
         isLantauTrip,
@@ -3052,13 +3116,15 @@ function buildFromToEdgeRequestSpec(queryDateObj = getHongKongNow()) {
     const useBike = canBikeOrigin && directKm > 0.35;
     const roadM = Math.round(directKm * 1000 * (useBike ? 1.35 : 1.22));
     const durMins = Math.max(2, Math.round((roadM / (useBike ? 4.16 : 1.25) + (useBike ? 90 : 0)) / 60));
+    const bikeFareHkd = useBike ? getSharedBikeLegFareHkd(roadM) : 0;
+    const fareWeight = xferSortPref === 'CHEAPEST' ? 1.55 : (xferSortPref === 'BULLETPROOF' ? 0.25 : 0.15);
     const rainPen = window.__HKO_WEATHER__?.heavyRain ? 18 : 0;
     walkBikeDirectCard = {
       isBike: useBike,
       distM: roadM,
       totalMins: durMins,
-      fareHkd: 0,
-      disruptionScore: Number((durMins + rainPen + (useBike ? 1.5 : (xferSortPref === 'EASY' ? 14 : 2.5))).toFixed(1))
+      fareHkd: bikeFareHkd,
+      disruptionScore: Number((durMins + rainPen + bikeFareHkd * fareWeight + (useBike ? 1.5 : (xferSortPref === 'EASY' ? 14 : 2.5))).toFixed(1))
     };
   }
 
@@ -3107,10 +3173,13 @@ function buildFromToEdgeRequestSpec(queryDateObj = getHongKongNow()) {
       }
       const effTotalSec = bestPair.totalSec - (bestPair.egr.sec || 0) + effEgressSec;
       const totalMins = Math.max(3, Math.round(effTotalSec / 60));
-      const load1 = inferPlannerLegLoad(rt.group, bObj, queryDateObj, isHoliday);
+      const load1 = inferPlannerLegLoad(rt.group, bObj, queryDateObj, isHoliday, 0, { alightStopObj: aObj });
       const fareMeta = {};
       const legSpec = { group: rt.group, boardStopObj: bObj, alightStopObj: aObj, driveSec: bestPair.driveSec, stopsCount, loadEstimate: load1 };
-      const fareHkd = computeLegChainFareHkd([legSpec], isHoliday, fareMeta, fromMeta.lat, fromMeta.lon);
+      const directBikeSpec = (bestPair.acc.byBike || bestPair.egr.byBike)
+        ? { accessByBike: bestPair.acc.byBike, accessWalkDistM: bestPair.acc.distM, egressByBike: bestPair.egr.byBike, egressWalkDistM: effEgressDistM }
+        : null;
+      const fareHkd = computeLegChainFareHkd([legSpec], isHoliday, fareMeta, fromMeta.lat, fromMeta.lon, directBikeSpec);
       const score = computeDisruptionAdjustedScore(
         totalMins,
         [legSpec],
@@ -3263,7 +3332,13 @@ function resolveStaticFerrySlot(group, earliestBoardMs, fallbackDriveSec) {
 
   const depMs = earliestBoardMs + Math.max(0, bestWaitSec) * 1000;
   const isOrd = bestSlot.slotDur >= 50;
+  const vClass = isOrd ? 'ORD' : 'FAST';
   const durMins = bestSlot.slotDur || (isOrd ? fMeta.durOrd : fMeta.durFast) || fMeta.dur || Math.round(fallbackDriveSec / 60);
+  const depDate = getHongKongNow(depMs);
+  const loadEstimate = inferPlannerLegLoad(group, null, depDate, isHongKongHolidayFareDay(depDate), 0, {
+    vesselClass: vClass,
+    isSched: true
+  });
   return {
     depMs,
     arrMs: depMs + durMins * 60000,
@@ -3272,12 +3347,12 @@ function resolveStaticFerrySlot(group, earliestBoardMs, fallbackDriveSec) {
     headwayMins: 0,
     hasSignal: true,
     isDeadGhost: false,
-    vesselClass: isOrd ? 'ORD' : 'FAST',
-    loadEstimate: null
+    vesselClass: vClass,
+    loadEstimate
   };
 }
 
-function resolveStaticDownstreamLegWindow(group, earliestBoardMs, driveSec, boardStopObj = null) {
+function resolveStaticDownstreamLegWindow(group, earliestBoardMs, driveSec, boardStopObj = null, alightStopObj = null) {
   if (group?.mode === 'FERRY') {
     const ferrySlot = resolveStaticFerrySlot(group, earliestBoardMs, driveSec);
     if (ferrySlot) return ferrySlot;
@@ -3286,7 +3361,7 @@ function resolveStaticDownstreamLegWindow(group, earliestBoardMs, driveSec, boar
   const expectedWaitSec = Math.min(900, Math.round(hwSec * 0.50));
   const depMs = earliestBoardMs + expectedWaitSec * 1000;
   const depDate = getHongKongNow(depMs);
-  const loadEstimate = inferPlannerLegLoad(group, boardStopObj, depDate, isHongKongHolidayFareDay(depDate), hwSec);
+  const loadEstimate = inferPlannerLegLoad(group, boardStopObj, depDate, isHongKongHolidayFareDay(depDate), hwSec, { alightStopObj, isSched: true });
   return {
     depMs,
     arrMs: depMs + driveSec * 1000,
@@ -3479,7 +3554,7 @@ async function resolveLiveOrStaticLegWindow(group, boardStopKey, earliestBoardMs
           hasSignal: true,
           isDeadGhost: false,
           vesselClass: valid.vesselClass || null,
-          loadEstimate: group?.mode === 'FERRY' ? null : (valid.loadEstimate || null)
+          loadEstimate: valid.loadEstimate || inferPlannerLegLoad(group, boardStopObj, getHongKongNow(depMs), isHongKongHolidayFareDay(getHongKongNow(depMs)), 0, { vesselClass: valid.vesselClass, alightStopObj, isSched: Boolean(valid.isSched) })
         };
       }
     } catch (e) {}
@@ -3509,7 +3584,7 @@ async function resolveLiveOrStaticLegWindow(group, boardStopKey, earliestBoardMs
     }
   }
 
-  return resolveStaticDownstreamLegWindow(group, earliestBoardMs, driveSec, boardStopObj);
+  return resolveStaticDownstreamLegWindow(group, earliestBoardMs, driveSec, boardStopObj, alightStopObj);
 }
 
 async function resolveFirstLegWindow(group, boardStopKey, earliestBoardMs, driveSec, boardStopObj = null, alightStopObj = null) {
@@ -3525,7 +3600,7 @@ function extractCardMetrics(card, refStartMs = 0) {
     const mins = Math.max(1, Number(item.totalMins) || 1);
     return {
       mins,
-      fareHkd: 0,
+      fareHkd: Number(item.fareHkd) || 0,
       transfers: 0,
       walkM: Number(item.distM) || 0,
       legIds: ['WALK_BIKE'],
@@ -3853,6 +3928,17 @@ function formatPlannerCardShareText(spec, card, isZh = false) {
   const fmtEx = (ex) => ex?.ref ? (isZh ? ` (${ex.ref}出口)` : ` (Exit ${ex.ref})`) : '';
   const lines = [];
 
+  if (card.type === 'WALK_BIKE') {
+    const wb = card.item;
+    const mins = Math.max(1, Number(wb.totalMins) || 1);
+    const fareNum = Number(wb.fareHkd) || 0;
+    const fareStr = fareNum > 0 ? ` · ~$${fareNum.toFixed(1)}` : ' · $0';
+    lines.push(`${origName} → ${destName}`);
+    lines.push(`${mins}${isZh ? '分鐘' : 'm'}${fareStr}`);
+    lines.push(`• ${wb.isBike ? (isZh ? '共享單車 (LocoBike)' : 'Bike Direct (LocoBike)') : (isZh ? '步行前往' : 'Walk Direct')} ${wb.distM}m → ${destName}`);
+    return lines.join('\n');
+  }
+
   if (card.type === 'DIRECT') {
     const dp = card.item;
     const badge = window.getDisplayRouteBadge ? window.getDisplayRouteBadge(dp.group) : dp.group?.routeNo;
@@ -4061,7 +4147,7 @@ async function renderTransferPlannerView() {
 
     const metricsList = topCards.map(c => extractCardMetrics(c, refStartMs));
     const minMins = Math.min(...metricsList.map(m => m.mins));
-    const pricedMetrics = metricsList.filter(m => !m.isWalkBike && m.fareHkd > 0);
+    const pricedMetrics = metricsList.filter(m => (!m.isWalkBike || (m.modes?.[0] === 'BIKE')) && m.fareHkd > 0);
     const minFare = pricedMetrics.length ? Math.min(...pricedMetrics.map(m => m.fareHkd)) : Infinity;
     const winnerFare = metricsList[0]?.fareHkd || 0;
 
@@ -4077,7 +4163,7 @@ async function renderTransferPlannerView() {
         if (xferSortPref === 'EASY') return isZh ? '少步行' : 'Less Walk';
         return isZh ? '最佳路線' : 'Best';
       }
-      if (!m.isWalkBike && m.fareHkd > 0 && m.fareHkd <= minFare + 0.1 && (winnerFare - m.fareHkd) >= 2.0) {
+      if ((!m.isWalkBike || m.modes?.[0] === 'BIKE') && m.fareHkd > 0 && m.fareHkd <= minFare + 0.1 && (winnerFare - m.fareHkd) >= 2.0) {
         const diff = (winnerFare - m.fareHkd).toFixed(1);
         return isZh ? `較平 · 慳$${diff}` : `Cheaper · Save $${diff}`;
       }
@@ -4105,6 +4191,11 @@ async function renderTransferPlannerView() {
         const arrClk = formatHkArrivalClock(wbArrMs);
         const depClk = formatHkArrivalClock(wbDepMs);
         const modeTitle = wb.isBike ? (isZh ? '單車直達' : 'Bike Direct') : (isZh ? '步行前往' : 'Walk Direct');
+        const wbFare = Number(wb.fareHkd || 0);
+        const wbFareStr = wbFare > 0 ? `~$${wbFare.toFixed(1)}` : '$0';
+        const wbBikeNotice = wb.isBike
+          ? `<div class="planner-notice-row">🚲 ${isZh ? '含 LocoBike 共享單車約 $5.0/30分鐘（錢包標準價）' : 'Includes LocoBike ~$5.0/30m (standard wallet rate)'}</div>`
+          : '';
         const mapUrl = `https://www.google.com/maps/dir/?api=1&origin=${Number(spec.fromMeta.lat).toFixed(6)},${Number(spec.fromMeta.lon).toFixed(6)}&destination=${Number(spec.toMeta.lat).toFixed(6)},${Number(spec.toMeta.lon).toFixed(6)}&travelmode=${wb.isBike ? 'bicycling' : 'walking'}`;
         return `
           <details class="xfer-decision-card ${isWinner ? 'winner' : ''} ${isSelected ? 'selected' : ''}" data-card-key="${c.key}" ${isOpen ? 'open' : ''}>
@@ -4112,14 +4203,15 @@ async function renderTransferPlannerView() {
               <div class="planner-card-left">
                 ${cardTag ? `<div class="xfer-badge-title">${escapeHtml(cardTag)}</div>` : ''}
                 <div class="planner-route-chain">${wb.isBike ? '🚲' : '🚶'} <strong>${modeTitle}</strong></div>
-                <div class="planner-meta-line">${wb.distM}m · ${depClk} → ${arrClk} · $0</div>
+                <div class="planner-meta-line">${wb.distM}m · ${depClk} → ${arrClk} · ${escapeHtml(wbFareStr)}</div>
               </div>
               <div class="planner-card-right">
                 <div class="planner-dur-big">${wb.totalMins}<span class="planner-dur-unit">${t('minsUnit')}</span></div>
-                <div class="planner-fare-sub">$0</div>
+                <div class="planner-fare-sub">${escapeHtml(wbFareStr)}</div>
               </div>
             </summary>
             <div class="xfer-timeline">
+              ${wbBikeNotice}
               <div class="planner-step-walk" onclick="event.stopPropagation(); focusPlannerMapLeg(${spec.fromMeta.lat}, ${spec.fromMeta.lon}, ${spec.toMeta.lat}, ${spec.toMeta.lon});">
                 <div class="planner-step-rail walk"></div>
                 <div class="planner-step-content">
@@ -4465,7 +4557,10 @@ async function renderTransferPlannerView() {
         vesselClass: w1.vesselClass,
         loadEstimate: dp.load1
       };
-      dp.fareHkd = computeLegChainFareHkd([legSpec], isHolQuery, fareMeta, spec.fromMeta.lat, spec.fromMeta.lon);
+      const directBikeSpec = (dp.accessByBike || dp.egressByBike)
+        ? { accessByBike: dp.accessByBike, accessWalkDistM: dp.accessWalkDistM, egressByBike: dp.egressByBike, egressWalkDistM: dp.egressWalkDistM }
+        : null;
+      dp.fareHkd = computeLegChainFareHkd([legSpec], isHolQuery, fareMeta, spec.fromMeta.lat, spec.fromMeta.lon, directBikeSpec);
       dp.fareNotices = fareMeta.notices || [];
       dp.liveDepMs = w1.depMs;
       dp.liveArrMs = w1.arrMs + dp.egressWalkSec * 1000;
@@ -4584,7 +4679,10 @@ async function renderTransferPlannerView() {
       });
 
       const fareMeta = {};
-      cor.fareHkd = computeLegChainFareHkd(allLegs, isHolQuery, fareMeta, spec.fromMeta.lat, spec.fromMeta.lon);
+      const corBikeSpec = (cor.accessByBike || cor.egressByBike)
+        ? { accessByBike: cor.accessByBike, accessWalkDistM: cor.accessWalkDistM, egressByBike: cor.egressByBike, egressWalkDistM: cor.egressWalkDistM }
+        : null;
+      cor.fareHkd = computeLegChainFareHkd(allLegs, isHolQuery, fareMeta, spec.fromMeta.lat, spec.fromMeta.lon, corBikeSpec);
       cor.fareNotices = fareMeta.notices || [];
       cor.leg1FreeFeeder = Boolean(allLegs[0]?.isFreeMtrFeeder);
       cor.leg2FreeFeeder = Boolean(allLegs[1]?.isFreeMtrFeeder);

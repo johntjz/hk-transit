@@ -32,15 +32,30 @@
 
     (function setupApplePwaIconAndManifest() {
       try {
+        const isStandalonePwa = Boolean(
+          window.matchMedia?.('(display-mode: standalone)')?.matches ||
+          window.navigator.standalone === true
+        );
+        const isIosDevice = /iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+          (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+        if (isStandalonePwa && isIosDevice) {
+          document.documentElement.classList.add('ios-standalone');
+        }
+        let savedTheme = 'light';
+        try { savedTheme = localStorage.getItem('transit_theme_pref_v4') || 'light'; } catch (e) {}
+        const isDarkPref = savedTheme === 'dark';
+        const chromeBg = isDarkPref ? '#1C1C1E' : '#FFFFFF';
         const iconUrl = new URL('icon.png', location.href).href;
         const manifest = {
+          id: './',
           name: 'Transit — HK Bus, MTR & Ferry (通)',
           short_name: 'Transit HK',
           start_url: new URL('./', location.href).href,
+          scope: new URL('./', location.href).href,
           display: 'standalone',
-          background_color: '#FFFFFF',
-          theme_color: '#FFFFFF',
-          icons: [{ src: iconUrl, sizes: '512x512', type: 'image/png', purpose: 'any maskable' }]
+          background_color: chromeBg,
+          theme_color: chromeBg,
+          icons: [{ src: iconUrl, sizes: '512x512', type: 'image/png', purpose: 'any' }]
         };
         const mLink = document.createElement('link');
         mLink.rel = 'manifest';
@@ -325,7 +340,8 @@
     html.text-sm { font-size: 14.5px; }
     html.text-xs { font-size: 13px; }
     .leaflet-container *, .leaflet-pane img, .leaflet-tile, .leaflet-marker-icon { box-sizing: content-box !important; }
-    .leaflet-container, html, body { background-color: var(--bg-light) !important; overscroll-behavior-y: contain; max-width: 100vw; overflow-x: hidden; }
+    .leaflet-container, body { background-color: var(--bg-light) !important; overscroll-behavior-y: contain; max-width: 100vw; overflow-x: hidden; }
+    html { background-color: var(--bg-white) !important; overscroll-behavior-y: none; }
     .leaflet-tile-pane { filter: none !important; }
     html:not(.light-mode) .dark-tiles { filter: invert(92%) hue-rotate(180deg) brightness(96%) contrast(92%) !important; }
     .utility-btn, .header-pill-btn, .xfer-opt-pill, .section-bar, .stop-action-pill, .settings-row, .commute-slot-btn, .recent-search-chip, .ferry-hub-tab, .ferry-compact-pill, .quick-line-chip, .state-pill, .load-pill, .stn-busy-pill { filter: none !important; }
@@ -336,21 +352,49 @@
     .route-list-item, .stop-item, .quick-line-chip, .recent-search-chip, .xfer-decision-card, .xfer-card-header, .xfer-step-row, .location-text { user-select: text; -webkit-user-select: text; touch-action: manipulation; }
 
     .app-switcher {
+      position: relative; isolation: isolate;
       background: var(--bg-white) !important;
       backdrop-filter: none !important; -webkit-backdrop-filter: none !important;
-      border-bottom: 1px solid var(--border-color); display: flex; align-items: center; gap: 2px;
-      height: calc(50px + env(safe-area-inset-top)); padding: env(safe-area-inset-top) 4px 0 4px;
+      border-bottom: 1px solid var(--border-color); display: flex; align-items: center; gap: 3px;
+      height: calc(50px + env(safe-area-inset-top)); padding: env(safe-area-inset-top) 6px 0 6px;
       flex-shrink: 0; z-index: 4500; overflow: hidden;
+    }
+    /* iOS 18/26 Standalone PWA: clear the system Liquid Glass status-bar frost/whiteout zone */
+    @media (display-mode: standalone) {
+      .app-switcher {
+        height: auto;
+        min-height: calc(52px + env(safe-area-inset-top) + 14px);
+        padding: calc(env(safe-area-inset-top) + 14px) 6px 7px 6px;
+      }
+    }
+    html.ios-standalone .app-switcher {
+      height: auto;
+      min-height: calc(52px + env(safe-area-inset-top) + 14px);
+      padding: calc(env(safe-area-inset-top) + 14px) 6px 7px 6px;
     }
     .app-switcher-item {
       flex: 1; min-width: 0; height: 34px; border-radius: 999px;
       display: flex; align-items: center; justify-content: center; gap: 4px;
       text-decoration: none; color: var(--text-sub); font-size: 0.75rem; font-weight: 600;
-      letter-spacing: -0.01em; cursor: pointer; white-space: nowrap; padding: 0 6px; border: none;
+      letter-spacing: -0.01em; cursor: pointer; white-space: nowrap; padding: 0 7px; border: none;
+      background: transparent;
     }
     .app-switcher-item.active-bus   { color: #FFFFFF !important; background: var(--ios-red) !important; font-weight: 700; box-shadow: 0 2px 8px rgba(255, 59, 48, 0.25); }
     .app-switcher-item.active-mtr   { color: #FFFFFF !important; background: var(--ios-indigo) !important; font-weight: 700; box-shadow: 0 2px 8px rgba(88, 86, 214, 0.25); }
     .app-switcher-item.active-ferry { color: #FFFFFF !important; background: var(--ios-teal) !important; font-weight: 700; box-shadow: 0 2px 8px rgba(0, 144, 217, 0.25); }
+    .app-switcher-item.app-switcher-plan {
+      color: var(--ios-blue);
+      background: rgba(0, 122, 255, 0.10);
+      font-weight: 700;
+    }
+    html:not(.light-mode) .app-switcher-item.app-switcher-plan {
+      background: rgba(10, 132, 255, 0.18);
+    }
+    .app-switcher-item.app-switcher-plan.active-top-tab {
+      color: #FFFFFF !important;
+      background: var(--ios-blue) !important;
+      box-shadow: 0 2px 8px rgba(0, 122, 255, 0.28);
+    }
 
     .app-switcher-item.active-bus svg rect,
     .app-switcher-item.active-mtr svg circle,
@@ -370,7 +414,14 @@
     }
     .utility-btn:hover { background: var(--bg-surface); color: var(--text-main); }
     .utility-btn.active-top-tab { color: #FFFFFF !important; background: var(--ios-blue) !important; }
-    #backBtn { width: auto; height: 30px; border-radius: 999px; padding: 0 8px !important; font-size: 0.75rem; font-weight: 700; display: none; background: rgba(0, 122, 255, 0.12) !important; color: var(--ios-blue) !important; border: none !important; margin-right: 1px; flex-shrink: 0; }
+    #backBtn { width: auto; height: 30px; border-radius: 999px; padding: 0 8px !important; font-size: 0.74rem; font-weight: 700; display: none; background: rgba(0, 122, 255, 0.12) !important; color: var(--ios-blue) !important; border: none !important; margin-right: 1px; flex-shrink: 0; white-space: nowrap; }
+    @media (max-width: 440px) {
+      .app-switcher { gap: 2px; padding-left: 4px; padding-right: 4px; }
+      .app-switcher-item { font-size: 0.71rem; padding: 0 4px; gap: 3px; height: 32px; }
+      .app-switcher-item svg { width: 14px; height: 14px; }
+      .utility-btn { width: 28px; height: 28px; }
+      #backBtn { padding: 0 6px !important; font-size: 0.71rem; height: 28px; }
+    }
 
     .view-container { flex: 1; overflow-y: auto; overflow-x: hidden; position: relative; display: none; flex-direction: column; background: var(--bg-light); min-height: 0; }
     .view-container.active { display: flex; }
@@ -1131,7 +1182,68 @@
     .settings-close-btn { background: var(--bg-surface); color: var(--text-main); border: none; border-radius: 999px; padding: 6px 12px; font-size: 0.76rem; font-weight: 600; cursor: pointer; flex-shrink: 0; }
     .settings-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 12px 2px; border-bottom: 1px solid var(--border-color); cursor: pointer; font-weight: 600; font-size: 0.88rem; }
     .settings-row:last-child { border-bottom: none; }
-    .settings-val-pill { background: var(--bg-surface); border: none; padding: 4px 11px; border-radius: 999px; font-size: 0.75rem; font-weight: 600; color: var(--ios-blue); max-width: 55%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .settings-section-divider { font-size: 0.72rem; font-weight: 600; color: var(--text-sub); padding: 12px 2px 2px 2px; letter-spacing: 0.01em; }
+    .settings-row-sub { display: block; font-size: 0.72rem; font-weight: 500; color: var(--text-sub); margin-top: 2px; }
+    .settings-val-pill { background: var(--bg-surface); border: none; padding: 4px 11px; border-radius: 999px; font-size: 0.75rem; font-weight: 600; color: var(--ios-blue); max-width: 55%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
+
+    /* Interactive 3-Step First-Use & Tutorial Walkthrough */
+    .onboard-card {
+      background: var(--bg-white); border: 1px solid var(--border-color); border-radius: 22px;
+      width: 100%; max-width: 440px; max-height: 88dvh; overflow-y: auto;
+      padding: 20px 20px 18px 20px; display: flex; flex-direction: column; gap: 14px;
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.38);
+    }
+    .onboard-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+    .onboard-kicker { font-size: 0.76rem; font-weight: 700; color: var(--ios-blue); margin-bottom: 3px; }
+    .onboard-title { font-size: 1.24rem; font-weight: 700; letter-spacing: -0.02em; line-height: 1.25; color: var(--text-main); text-wrap: balance; }
+    .onboard-skip-btn {
+      background: var(--bg-surface); color: var(--text-sub); border: none; border-radius: 10px;
+      padding: 6px 12px; font-size: 0.78rem; font-weight: 600; cursor: pointer; flex-shrink: 0; white-space: nowrap;
+    }
+    .onboard-skip-btn:hover { color: var(--text-main); }
+    .onboard-stepper {
+      display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px;
+      background: var(--bg-surface); padding: 4px; border-radius: 12px;
+    }
+    .onboard-step-tab {
+      border: none; background: transparent; color: var(--text-sub); border-radius: 9px;
+      padding: 8px 6px; font-size: 0.74rem; font-weight: 600; cursor: pointer;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center;
+      transition: background-color 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
+    }
+    .onboard-step-tab.active {
+      background: var(--bg-white); color: var(--text-main);
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.10);
+    }
+    .onboard-body { display: flex; flex-direction: column; gap: 10px; min-height: 148px; }
+    .onboard-step-heading { font-size: 1.02rem; font-weight: 700; color: var(--text-main); line-height: 1.3; }
+    .onboard-step-desc { font-size: 0.85rem; line-height: 1.55; color: var(--text-sub); }
+    .onboard-step-points {
+      display: flex; flex-direction: column; gap: 6px;
+      background: var(--bg-surface); border-radius: 14px; padding: 11px 13px;
+      font-size: 0.80rem; line-height: 1.45; color: var(--text-main);
+    }
+    .onboard-foot {
+      display: flex; align-items: center; justify-content: space-between; gap: 10px;
+      padding-top: 6px; border-top: 1px solid var(--border-color);
+    }
+    .onboard-back-link {
+      background: transparent; border: none; color: var(--text-sub);
+      font-size: 0.82rem; font-weight: 600; padding: 8px 4px; cursor: pointer; white-space: nowrap;
+    }
+    .onboard-back-link:hover { color: var(--text-main); }
+    .onboard-cta-group { display: flex; align-items: center; gap: 8px; }
+    .onboard-secondary-btn {
+      background: rgba(0, 122, 255, 0.12); color: var(--ios-blue); border: none; border-radius: 12px;
+      padding: 9px 13px; font-size: 0.81rem; font-weight: 700; cursor: pointer; white-space: nowrap;
+    }
+    .onboard-primary-btn {
+      background: var(--ios-blue); color: #FFFFFF; border: none; border-radius: 12px;
+      padding: 9px 16px; font-size: 0.82rem; font-weight: 700; cursor: pointer; white-space: nowrap;
+    }
+    .onboard-primary-btn.finish-dark { background: #1C1C1E; color: #FFFFFF; }
+    html:not(.light-mode) .onboard-primary-btn.finish-dark { background: #FFFFFF; color: #1C1C1E; }
+
     .kmb-map-stop-label { background: rgba(255,255,255,0.96) !important; color: #1C1C1E !important; border: 1px solid rgba(0,0,0,0.12) !important; border-radius: 8px !important; padding: 3px 8px !important; font-weight: 600 !important; font-size: 0.73rem !important; box-shadow: 0 3px 10px rgba(0,0,0,0.15) !important; max-width: 220px !important; white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important; }
     .gps-user-dot-wrap { position: relative; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; pointer-events: none; }
     .gps-user-beam { position: absolute; inset: 0; width: 44px; height: 44px; transform-origin: 22px 22px; transition: transform 0.15s linear; }
@@ -1157,8 +1269,9 @@
     <svg width="16" height="16" viewBox="0 0 512 512" style="flex-shrink:0;"><rect width="512" height="512" rx="115" fill="currentColor"/><path d="M144 208V136c0-13 11-24 24-24h176c13 0 24 11 24 24v72l48 40-36 108H132L96 248l48-40zm48-48v48h128v-48H192zm-96 248c32 0 48-16 80-16s48 16 80 16 48-16 80-16 48 16 80 16" stroke="#FFFFFF" stroke-width="28" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
     <span data-i18n="ferryApp">Ferry</span>
   </div>
-  <button class="utility-btn" id="topXferBtn" onclick="openTransferPlannerFromTop()" title="Route Planner" aria-label="Route Planner">
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M16 3h5v5"/><path d="M4 20L21 3"/><path d="M21 16v5h-5"/><path d="M15 15l6 6"/><path d="M4 4l5 5"/></svg>
+  <button class="app-switcher-item app-switcher-plan" id="topXferBtn" onclick="openTransferPlannerFromTop()" title="Route Planner" aria-label="Route Planner">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><polyline points="12 2 15 5 12 8"/></svg>
+    <span data-i18n="planApp">Plan</span>
   </button>
   <button class="utility-btn" id="topMapBtn" onclick="openMapBrowserFromTop()" title="Map" aria-label="Map">
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21"/><line x1="9" y1="3" x2="9" y2="18"/><line x1="15" y1="6" x2="15" y2="21"/></svg>
@@ -1378,26 +1491,44 @@
       <span id="settingRowLblStatus">⚡ Status &amp; Watchdog</span>
       <span class="settings-val-pill" id="settingValStatusOpen">Open ›</span>
     </div>
+    <div class="settings-section-divider" id="settingSecCompanion">More HK Maps</div>
     <div class="settings-row" onclick="openCompanionAppAtCurrentStop('property')">
-      <span id="settingRowLblProp">🏠 Property Risk &amp; Commute</span>
+      <div>
+        <div id="settingRowLblProp">🏠 Renters-First Digital Twin</div>
+        <span class="settings-row-sub" id="settingRowSubProp">18 HK regions · rent value &amp; livability</span>
+      </div>
       <span class="settings-val-pill">HKProperty ↗</span>
     </div>
     <div class="settings-row" onclick="openCompanionAppAtCurrentStop('past')">
-      <span id="settingRowLblPast">🕰️ 1889–1970 Archival Map</span>
+      <div>
+        <div id="settingRowLblPast">🕰️ Historical Split-View Map</div>
+        <span class="settings-row-sub" id="settingRowSubPast">1950s–1970s vs modern HK LandsD map</span>
+      </div>
       <span class="settings-val-pill">HK Past ↗</span>
     </div>
   </div>
 </div>
 
-<!-- APP TUTORIAL MODAL -->
+<!-- INTERACTIVE 3-STEP ONBOARDING & TUTORIAL MODAL -->
 <div id="tutorialModal" style="display:none; position:fixed; inset:0; z-index:5100; background:rgba(0,0,0,0.55); backdrop-filter:blur(6px); align-items:center; justify-content:center; padding:16px;" onclick="if(event.target===this)closeTutorialModal()">
-  <div class="settings-modal-card" style="max-width:460px;">
-    <div class="settings-top-bar">
-      <button class="settings-back-btn" id="tutorialBackBtn" onclick="closeTutorialModal(); openSettingsModal();">‹ Back</button>
-      <div style="font-weight:700; font-size:0.96rem;" id="tutorialModalTitle">📖 Tutorial</div>
-      <button class="settings-close-btn" id="tutorialCloseBtn" onclick="closeTutorialModal()">✕ Close</button>
+  <div class="onboard-card" role="dialog" aria-modal="true" aria-labelledby="tutorialModalTitle">
+    <div class="onboard-head">
+      <div>
+        <div class="onboard-kicker" id="tutorialModalKicker">Welcome to Transit HK</div>
+        <div class="onboard-title" id="tutorialModalTitle">How Real-Time HK Transit Works</div>
+      </div>
+      <button type="button" class="onboard-skip-btn" id="tutorialCloseBtn" onclick="closeTutorialModal()">Skip</button>
     </div>
-    <div id="tutorialModalBody" style="display:flex; flex-direction:column; gap:10px; margin-top:6px; font-size:0.83rem; line-height:1.5;"></div>
+    <div class="onboard-stepper" id="tutorialStepper" role="tablist">
+      <button type="button" class="onboard-step-tab active" data-step="0" onclick="setTutorialStep(0)" id="tutorialTab0">1. Live Radar</button>
+      <button type="button" class="onboard-step-tab" data-step="1" onclick="setTutorialStep(1)" id="tutorialTab1">2. Planner</button>
+      <button type="button" class="onboard-step-tab" data-step="2" onclick="setTutorialStep(2)" id="tutorialTab2">3. Commute</button>
+    </div>
+    <div id="tutorialModalBody" class="onboard-body"></div>
+    <div class="onboard-foot" id="tutorialModalFoot">
+      <button type="button" class="onboard-back-link" id="tutorialBackBtn" onclick="onTutorialBackClick()">Skip Tutorial</button>
+      <div class="onboard-cta-group" id="tutorialCtaGroup"></div>
+    </div>
   </div>
 </div>
 
@@ -1434,6 +1565,10 @@ window.QUICK_FERRY_LINES = [];
 
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
+    const tut = document.getElementById('tutorialModal');
+    if (tut && tut.style.display === 'flex' && typeof closeTutorialModal === 'function') {
+      closeTutorialModal();
+    }
     ['builtInStatusModal','tutorialModal','settingsModal','commutePickerModal'].forEach(id => {
       const el = document.getElementById(id); if (el) el.style.display = 'none';
     });
@@ -1549,7 +1684,7 @@ function resolveFerryLiveEtaKeyClient(origEn, destEn) {
 const i18n = {
   en: {
     docTitle: 'Transit — HK Bus, MTR & Ferry (通)',
-    busApp: 'Bus', mtrApp: 'Rail', ferryApp: 'Ferry',
+    busApp: 'Bus', mtrApp: 'Rail', ferryApp: 'Ferry', planApp: 'Plan',
     connecting: 'Locking Nearest Stop...',
     gpsResetBtn: 'GPS', reverseDir: 'Swap',
     favoriteRoutes: 'Saved Bookmarks (Bus / MTR / Ferry)',
@@ -1576,7 +1711,7 @@ const i18n = {
   },
   zh: {
     docTitle: '通 — 全港巴士、港鐵、輕鐵及渡輪實時雷達',
-    busApp: '巴士', mtrApp: '港鐵', ferryApp: '渡輪',
+    busApp: '巴士', mtrApp: '港鐵', ferryApp: '渡輪', planApp: '規劃',
     connecting: '正在鎖定最近車站...',
     gpsResetBtn: '定位', reverseDir: '對調',
     favoriteRoutes: '已收藏車站及碼頭 (巴士/港鐵/渡輪)',
@@ -2107,10 +2242,25 @@ function resolveEffectiveTheme() {
 function applyTheme() {
   const isLight = resolveEffectiveTheme() === 'light';
   document.documentElement.classList.toggle('light-mode', isLight);
+  const chromeBg = isLight ? '#FFFFFF' : '#1C1C1E';
   const meta = document.getElementById('themeColorMeta');
-  if (meta) meta.setAttribute('content', isLight ? '#FFFFFF' : '#1C1C1E');
+  if (meta) meta.setAttribute('content', chromeBg);
+  document.documentElement.style.backgroundColor = chromeBg;
 }
 applyTheme();
+
+function triggerIosStandaloneTopBarReflow() {
+  try {
+    const isStandalone = Boolean(window.matchMedia?.('(display-mode: standalone)')?.matches || window.navigator.standalone === true);
+    const isIos = /iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    if (!isStandalone || !isIos) return;
+    document.documentElement.classList.add('ios-standalone');
+    const nudge = document.createElement('div');
+    nudge.style.cssText = 'position:fixed;top:0;left:0;width:100px;height:1px;background:rgba(0,0,0,0.01);z-index:2147483647;pointer-events:none;';
+    document.body.appendChild(nudge);
+    requestAnimationFrame(() => nudge.remove());
+  } catch (e) {}
+}
 
 let currentTextSize = SafeStorage.getItem('transit_text_size') || 'lg';
 function applyTextSize() {
@@ -4386,16 +4536,22 @@ function onStopSearchInput() {
 
   if (!q) {
     buildNearbyStopsFast(lastKnownPos);
+    const dedupNearby = (typeof deduplicatePlannerAutocompleteStops === 'function'
+      ? deduplicatePlannerAutocompleteStops(nearbyStopsList.slice(0, 48), lastKnownPos?.lat, lastKnownPos?.lon, '', 0.22)
+      : nearbyStopsList).slice(0, 16);
     html += `<div class="section-bar"><span>${t('nearestStopsHeader')}</span></div>`;
-    html += `<div style="margin:0 12px 16px 12px;border-radius:16px;overflow:hidden;border:1px solid var(--border-color);background:var(--bg-white);box-shadow:var(--card-shadow);">` + nearbyStopsList.slice(0, 18).map(s => {
-      const distTag = getStopDistrictTag(s);
-      const dStr = formatStopDistance(s);
+    html += `<div style="margin:0 12px 16px 12px;border-radius:16px;overflow:hidden;border:1px solid var(--border-color);background:var(--bg-white);box-shadow:var(--card-shadow);">` + dedupNearby.map(s => {
+      const distTag = s._distTag || getStopDistrictTag(s);
+      const dStr = Number.isFinite(s._distKm)
+        ? (s._distKm < 1 ? `${Math.round(s._distKm * 1000)}m` : `${s._distKm.toFixed(1)}km`)
+        : formatStopDistance(s);
+      const rList = (s.mergedRouteNos && s.mergedRouteNos.length ? s.mergedRouteNos : Array.from(s.routeNos || [])).slice(0, 8);
       const escKey = escapeJsAttr(s.stopKey);
       return `
         <div class="route-list-item" onclick="if(!isUserSelectingText())selectStopFromSearch('${escKey}')">
           <div class="route-info-col">
             <div class="route-dest"><span>${escapeHtml(getStopName(s))}</span> ${distTag ? `<span class="district-tag">${escapeHtml(distTag)}</span>` : ''}</div>
-            <div class="route-sub"><span>${Array.from(s.routeNos || []).slice(0, 8).join(', ')}</span></div>
+            <div class="route-sub"><span>${escapeHtml(rList.join(', '))}</span></div>
           </div>
           <div class="route-eta-col">${dStr ? `<span class="location-dist-pill">${escapeHtml(dStr)}</span>` : ''}</div>
         </div>`;
@@ -4430,23 +4586,26 @@ function onStopSearchInput() {
     }).slice(0, 32);
 
     const matchedStopsRaw = [];
-    const seenBase = new Set();
     for (let i = 0; i < allStops.length; i++) {
       const s = allStops[i];
       const lrtInfo = (s.mode === 'MTR' && s.lrtCode && typeof LRT_STATION_DIRECTORY !== 'undefined') ? LRT_STATION_DIRECTORY[String(parseInt(s.lrtCode, 10))] : null;
       const lrtAlias = lrtInfo ? `${lrtInfo.code || ''} ${lrtInfo.altEn || ''} ${lrtInfo.altTc || ''}` : '';
-      const hay = `${s.stopName_e || ''} ${s.name_tc || ''} ${lrtAlias} ${s.mode === 'FERRY' ? 'ferry pier 碼頭' : ''}`;
-      if (matchesAllTokens(hay)) {
-        const b = `${s.mode || 'BUS'}_${s.company || ''}_${getBaseStopNameKey(s.stopName_e)}_${getStopDistrictTag(s)}`;
-        if (!seenBase.has(b)) { seenBase.add(b); matchedStopsRaw.push(s); }
-      }
+      const distTag = getStopDistrictTag(s);
+      const hay = `${s.stopName_e || ''} ${s.name_tc || ''} ${distTag} ${lrtAlias} ${s.mode === 'FERRY' ? 'ferry pier 碼頭' : ''}`;
+      if (matchesAllTokens(hay)) matchedStopsRaw.push(s);
     }
-    matchedStopsRaw.sort((a, b) => {
+    const dedupMatched = typeof deduplicatePlannerAutocompleteStops === 'function'
+      ? deduplicatePlannerAutocompleteStops(matchedStopsRaw, lastKnownPos?.lat, lastKnownPos?.lon, q, 0.22)
+      : matchedStopsRaw;
+    dedupMatched.sort((a, b) => {
       const mA = ((a.mode || 'BUS') === activeAppMode) ? 1 : 0;
       const mB = ((b.mode || 'BUS') === activeAppMode) ? 1 : 0;
-      return mB - mA;
+      if (mA !== mB) return mB - mA;
+      const dA = Number.isFinite(a._distKm) ? a._distKm : 9999;
+      const dB = Number.isFinite(b._distKm) ? b._distKm : 9999;
+      return dA - dB;
     });
-    const matchedStops = matchedStopsRaw.slice(0, 24);
+    const matchedStops = dedupMatched.slice(0, 20);
 
     const isRouteCodeIntent = /^(?:[a-z]{0,2}\d+[a-z]?|eal|tml|twl|isl|ktl|tkl|tcl|ael|sil|drl)$/i.test(q);
 
@@ -4469,14 +4628,19 @@ function onStopSearchInput() {
     const stopsSectionHtml = matchedStops.length
       ? `<div class="section-bar"><span>${t('busStopsHeader')}</span></div>` +
         `<div style="margin:0 12px 16px 12px;border-radius:16px;overflow:hidden;border:1px solid var(--border-color);background:var(--bg-white);box-shadow:var(--card-shadow);">` + matchedStops.map(s => {
-          const distTag = getStopDistrictTag(s);
+          const distTag = s._distTag || getStopDistrictTag(s);
+          const dStr = Number.isFinite(s._distKm)
+            ? (s._distKm < 1 ? `${Math.round(s._distKm * 1000)}m` : `${s._distKm.toFixed(1)}km`)
+            : formatStopDistance(s);
+          const rList = (s.mergedRouteNos && s.mergedRouteNos.length ? s.mergedRouteNos : Array.from(s.routeNos || [])).slice(0, 8);
           const escKey = escapeJsAttr(s.stopKey);
           return `
             <div class="route-list-item" onclick="if(!isUserSelectingText())selectStopFromSearch('${escKey}')">
               <div class="route-info-col">
                 <div class="route-dest"><span>${escapeHtml(getStopName(s))}</span> ${distTag ? `<span class="district-tag">${escapeHtml(distTag)}</span>` : ''}</div>
-                <div class="route-sub"><span>${Array.from(s.routeNos || []).slice(0, 8).join(', ')}</span></div>
+                <div class="route-sub"><span>${escapeHtml(rList.join(', '))}</span></div>
               </div>
+              <div class="route-eta-col">${dStr ? `<span class="location-dist-pill">${escapeHtml(dStr)}</span>` : ''}</div>
             </div>`;
         }).join('') + `</div>`
       : '';
@@ -5112,8 +5276,11 @@ function syncSettingsModalLabels() {
   setV('settingRowLblStatus', isZh ? '⚡ 狀態及時間表監察' : '⚡ Status & Watchdog');
   const driftTotal = (window.__DATA_DRIFT_ALERTS__?.length || 0) + (window.__LIVE_FERRY_DRIFT_ALERTS__?.size || 0);
   setV('settingValStatusOpen', driftTotal > 0 ? (isZh ? `⚠️ ${driftTotal}項提示 ›` : `⚠️ ${driftTotal} Alert ›`) : (isZh ? '開啟 ›' : 'Open ›'));
-  setV('settingRowLblProp', isZh ? '🏠 樓宇風險及通勤評估' : '🏠 Property Risk & Commute');
-  setV('settingRowLblPast', isZh ? '🕰️ 1889–1970 歷史地圖對照' : '🕰️ 1889–1970 Archival Map');
+  setV('settingSecCompanion', isZh ? '同系列香港地圖工具' : 'More HK Maps');
+  setV('settingRowLblProp', isZh ? '🏠 租樓數碼分身・地區性價比' : '🏠 Renters-First Digital Twin');
+  setV('settingRowSubProp', isZh ? '全港18區 · 租金溢價、噪音及宜居分層' : '18 HK regions · rent value & livability layers');
+  setV('settingRowLblPast', isZh ? '🕰️ 香港歷史地圖對照' : '🕰️ Historical Split-View Map');
+  setV('settingRowSubPast', isZh ? '歷代舊地圖與現代地政總署地圖同步拉頁' : 'Archival HK maps split against modern LandsD');
   setV('statusModalTitle', isZh ? '⚡ 狀態及時間表監察' : '⚡ Status & Watchdog');
 
   setV('settingValLang', userLangPref === 'auto' ? (isZh ? '自動' : 'Auto') : (userLangPref === 'zh' ? '繁體中文' : 'English'));
@@ -5158,34 +5325,161 @@ function cycleTextSize() {
   syncSettingsModalLabels();
 }
 
-function openTutorialModal() {
-  triggerHaptic(10);
-  const body = document.getElementById('tutorialModalBody');
+let activeTutorialStep = 0;
+let tutorialOpenedFromSettings = false;
+const ONBOARDING_SEEN_KEY = 'transit_onboarding_seen_v1';
+
+function renderTutorialStep() {
   const isZh = (currentLang === 'zh');
   const setV = (id, v) => { const el = document.getElementById(id); if (el) el.innerText = v; };
-  setV('tutorialModalTitle', isZh ? '📖 教學' : '📖 Tutorial');
-  setV('tutorialBackBtn', isZh ? '‹ 返回' : '‹ Back');
-  setV('tutorialCloseBtn', isZh ? '✕ 關閉' : '✕ Close');
+  setV('tutorialModalKicker', isZh ? '歡迎使用 Transit HK' : 'Welcome to Transit HK');
+  setV('tutorialModalTitle', isZh ? '3 步上手實時香港交通雷達' : 'How Real-Time HK Transit Works');
+  setV('tutorialCloseBtn', isZh ? '略過' : 'Skip');
+  setV('tutorialTab0', isZh ? '1. 實時雷達' : '1. Live Radar');
+  setV('tutorialTab1', isZh ? '2. 路線規劃' : '2. Planner');
+  setV('tutorialTab2', isZh ? '3. 常用車站' : '3. Commute');
 
-  const cardStyle = 'background:var(--bg-surface); border:1px solid var(--border-color); border-radius:14px; padding:11px 13px;';
+  document.querySelectorAll('#tutorialStepper .onboard-step-tab').forEach((btn, idx) => {
+    btn.classList.toggle('active', idx === activeTutorialStep);
+  });
+
+  const steps = isZh ? [
+    {
+      heading: 'GPS 即時鎖定附近巴士、港鐵及渡輪',
+      desc: '打開即顯示最近車站的實時到站時間（KMB、城巴、嶼巴、專線小巴、港鐵、輕鐵及渡輪），並按班距與時段推算實時載客率（有位／企位／擠迫）。',
+      points: [
+        '• 頂部切換 <strong>巴士 / 港鐵 / 渡輪</strong>，同區對面線車站已自動合併免混淆。',
+        '• 點按路線可查看沿途實時分段車資（含嶼巴 3M/1 通知車長分段及城巴落車拍卡回贈）。'
+      ],
+      nextLabel: '下一步：路線規劃 →'
+    },
+    {
+      heading: '點選頂部「規劃」串連跨交通實時轉乘',
+      desc: '內置香港多模式轉乘引擎，結合實時 GPS 班次、港鐵精準出口步行、運輸署幹道車速與天文台天氣，計算真實最慳時或最平路線。',
+      points: [
+        '• 自由切換 <strong>最穩陣 / 最快 / 少行 / 最平</strong>，亦可開啟 <strong>🚲 單車接駁</strong>（已計入 LocoBike 約 $5/30 分鐘車資）。',
+        '• 支援全港街道地址、大廈、車站與碼頭搜尋，一鍵複製或分享行程摘要。'
+      ],
+      nextLabel: '下一步：常用車站 →',
+      showOpenPlanner: true
+    },
+    {
+      heading: '本機儲存屋企／公司車站 + 智能回程',
+      desc: '在「設定」錨定常用的公共巴士站、港鐵站或碼頭（100% 只存於本機裝置），日後一按即開規劃，停留外區 45 分鐘後更會自動置頂回程班次。',
+      points: [
+        '• 點擊地圖圖示可瀏覽全港車站，或於「收藏」釘選每日必搭路線。',
+        '• 隨時可於「設定 ➔ 教學」再次查看此指南。'
+      ],
+      isFinal: true,
+      showOpenPlanner: true
+    }
+  ] : [
+    {
+      heading: 'Instant GPS Radar for Bus, Rail & Ferry',
+      desc: 'Live arrival times across KMB, Citybus, NLB, Green Minibus, MTR, Light Rail, and Ferries — paired with time-calibrated crowding estimates (Seats / Standing / Packed).',
+      points: [
+        '• Switch <strong>Bus / Rail / Ferry</strong> at the top — opposite-side stops are merged cleanly into one hub.',
+        '• Tap any route for exact HK two-way sectional fares (NLB 3M/1 driver override, KMB & Citybus tap-off rebates).'
+      ],
+      nextLabel: 'Next: Route Planner →'
+    },
+    {
+      heading: 'Tap "Plan" at the Top for Live Multi-Modal Routing',
+      desc: 'Chains live GPS buses, MTR (snapped to the nearest physical station exit), ferries, and shared bikes using live TD highway speeds and HKO weather alerts.',
+      points: [
+        '• Switch <strong>Best / Fastest / Less Walk / Cheapest</strong> and toggle <strong>🚲 Bike</strong> (factors in LocoBike ~$5.0/30m pricing).',
+        '• Search any HK street address, building, MTR station, or pier — and share trip cards in one tap.'
+      ],
+      nextLabel: 'Next: Commute →',
+      showOpenPlanner: true
+    },
+    {
+      heading: 'On-Device Home/Work Hubs & Quick Return',
+      desc: 'Anchor your public Home or Work stop in Settings (stored 100% locally on your device) for one-tap trip planning and automatic Quick Return cards after 45+ mins away.',
+      points: [
+        '• Use <strong>Map</strong> to inspect any stop across Hong Kong, or star daily stops in <strong>Saved</strong>.',
+        '• Replay this walkthrough anytime under <strong>Settings ➔ Tutorial</strong>.'
+      ],
+      isFinal: true,
+      showOpenPlanner: true
+    }
+  ];
+
+  const st = steps[activeTutorialStep] || steps[0];
+  const body = document.getElementById('tutorialModalBody');
   if (body) {
-    body.innerHTML = isZh
-      ? `
-        <div style="${cardStyle}"><strong>1️⃣ 快捷回程 &amp; 屋企／公司車站捷徑</strong><br>可於「設定 ➔ <strong>🏠 屋企車站</strong> / <strong>💼 公司車站</strong>」設定常用公共車站（只存本機，絕不上傳私人位置）。停留超過 45 分鐘後重開程式，系統亦會自動置頂回程班次。</div>
-        <div style="${cardStyle}"><strong>2️⃣ 實時載客率推算 &amp; 東鐵頭等提示</strong><br>巴士及港鐵實時班次會根據班次間距、停站時間及車廂編組（包括東鐵9卡頭等隔離）推算擠迫程度，並提示較鬆動車廂位置。</div>
-        <div style="${cardStyle}"><strong>3️⃣ 四大情景規劃模式（頂部雙箭咀按鈕）</strong><br>可切換 <strong>🛡️ 穩陣順暢</strong>、<strong>⚡ 最快</strong>、<strong>🪑 舒適少行</strong> 或 <strong>💰 最平</strong>，並支援單車接駁及跨交通工具轉乘。</div>
-        <div style="${cardStyle}"><strong>4️⃣ 香港地道雙向分段提示</strong><br>內置嶼巴 3M/1 通知車長分段、九巴 53/64K 前門拍卡及城巴後門拍卡回贈計算，清楚提示實付車資及拍卡方式。</div>
-      `
-      : `
-        <div style="${cardStyle}"><strong>1️⃣ Quick Return &amp; Node-Based Home/Work Hubs</strong><br>Set your <strong>🏠 Home Stop</strong> or <strong>💼 Work Stop</strong> in Settings — anchored strictly to public transit stops and stored 100% on your device. After 45+ mins at a destination, Quick Return automatically pins your reverse route at the top.</div>
-        <div style="${cardStyle}"><strong>2️⃣ Live Bus &amp; MTR Crowding + EAL 1st Class Alerts</strong><br>Infers Bus, MTR, and LRT load from live headway gaps, dwell anomalies, and 8-car vs. 9-car formations (isolating East Rail Line Car 4/6 First Class with car-position tips).</div>
-        <div style="${cardStyle}"><strong>3️⃣ 4 Behavioral Planning Modes</strong><br>Tap the crossing-arrows icon to switch between <strong>🛡️ Bulletproof</strong>, <strong>⚡ Fastest</strong>, <strong>🪑 Easy</strong>, and <strong>💰 Cheapest</strong>, plus street-routed Bike Last-Mile and multi-modal transfers.</div>
-        <div style="${cardStyle}"><strong>4️⃣ Local HK Two-Way Sectional Fares</strong><br>Accounts for NLB 3M/1 driver-override short hops, NLB 11 full-fare locks, KMB 53/64K front-door rebates, and Citybus rear-door tap-offs.</div>
-      `;
+    body.innerHTML = `
+      <div class="onboard-step-heading">${escapeHtml(st.heading)}</div>
+      <div class="onboard-step-desc">${escapeHtml(st.desc)}</div>
+      <div class="onboard-step-points">${st.points.map(p => `<div>${p}</div>`).join('')}</div>
+    `;
   }
-  document.getElementById('tutorialModal').style.display = 'flex';
+
+  const backBtn = document.getElementById('tutorialBackBtn');
+  if (backBtn) {
+    if (activeTutorialStep === 0) {
+      backBtn.innerText = tutorialOpenedFromSettings
+        ? (isZh ? '← 返回設定' : '← Settings')
+        : (isZh ? '略過教學' : 'Skip Tutorial');
+    } else {
+      backBtn.innerText = isZh ? '← 上一步' : '← Back';
+    }
+  }
+
+  const ctaGroup = document.getElementById('tutorialCtaGroup');
+  if (ctaGroup) {
+    const planBtnHtml = st.showOpenPlanner
+      ? `<button type="button" class="onboard-secondary-btn" onclick="openPlannerFromTutorial()">${isZh ? '立即用規劃' : 'Open Planner'}</button>`
+      : '';
+    const mainBtnHtml = st.isFinal
+      ? `<button type="button" class="onboard-primary-btn finish-dark" onclick="closeTutorialModal()">${isZh ? '開始使用 →' : 'Start Exploring →'}</button>`
+      : `<button type="button" class="onboard-primary-btn" onclick="setTutorialStep(${activeTutorialStep + 1})">${escapeHtml(st.nextLabel)}</button>`;
+    ctaGroup.innerHTML = planBtnHtml + mainBtnHtml;
+  }
 }
-function closeTutorialModal() { document.getElementById('tutorialModal').style.display = 'none'; }
+
+function setTutorialStep(idx) {
+  triggerHaptic(8);
+  activeTutorialStep = Math.max(0, Math.min(2, Number(idx) || 0));
+  renderTutorialStep();
+}
+
+function onTutorialBackClick() {
+  if (activeTutorialStep > 0) {
+    setTutorialStep(activeTutorialStep - 1);
+  } else {
+    const returnToSettings = tutorialOpenedFromSettings;
+    closeTutorialModal();
+    if (returnToSettings) openSettingsModal();
+  }
+}
+
+function openPlannerFromTutorial() {
+  closeTutorialModal();
+  if (typeof openTransferPlannerFromTop === 'function') openTransferPlannerFromTop();
+}
+
+function openTutorialModal(fromSettings = true) {
+  triggerHaptic(10);
+  tutorialOpenedFromSettings = Boolean(fromSettings);
+  activeTutorialStep = 0;
+  renderTutorialStep();
+  const modal = document.getElementById('tutorialModal');
+  if (modal) modal.style.display = 'flex';
+}
+
+function closeTutorialModal() {
+  SafeStorage.setItem(ONBOARDING_SEEN_KEY, '1');
+  const modal = document.getElementById('tutorialModal');
+  if (modal) modal.style.display = 'none';
+}
+
+function maybeShowFirstVisitOnboarding(hasDeepLink = false) {
+  if (hasDeepLink) return;
+  if (SafeStorage.getItem(ONBOARDING_SEEN_KEY)) return;
+  if (document.getElementById('settingsModal')?.style.display === 'flex') return;
+  openTutorialModal(false);
+}
 
 function renderStopList() {
   const container = document.getElementById('stop-list-container');
@@ -5779,9 +6073,15 @@ window.openCompanionAppAtCurrentStop = function(target) {
 
   setTimeout(() => {
     syncEdgeTrafficCorridors();
+    triggerIosStandaloneTopBarReflow();
   }, 350);
 
+  setTimeout(() => {
+    maybeShowFirstVisitOnboarding(isValidRailOrFerryCoord(extLat, extLng));
+  }, 600);
+
   window.addEventListener('pageshow', (ev) => {
+    triggerIosStandaloneTopBarReflow();
     if (ev.persisted || allStops.length === 0) {
       executeSync(true);
     }

@@ -1839,6 +1839,64 @@ test('hardcode.js & planner.js: refactored LoadFactorEngine fixes Sunday 8pm / e
   assert.ok(plannerFerryLoad && plannerFerryLoad.mode === 'FERRY' && plannerFerryLoad.pct >= 72);
 });
 
+test('planner.js & index.html: deduplicates opposite-side stops in Settings Hub Picker, promotes labeled Plan tab, updates companion links, fixes iOS standalone top bar, and wires 3-step onboarding', () => {
+  const rendered = { listHtml: '' };
+  const fakeInput = { value: 'Lo uk' };
+  const fakeList = {
+    set innerHTML(v: string) { rendered.listHtml = v; },
+    get innerHTML() { return rendered.listHtml; },
+  };
+  const { ctx } = loadHardcodeAndPlannerSandbox({
+    document: {
+      getElementById: (id: string) => {
+        if (id === 'commutePickerSearchInput') return fakeInput;
+        if (id === 'commutePickerList') return fakeList;
+        return null;
+      },
+      querySelectorAll: () => [],
+      createElement: () => ({ style: {}, setAttribute: () => {}, appendChild: () => {}, remove: () => {} }),
+      addEventListener: () => {},
+    },
+    activeCommutePickerSlot: 'hub_home',
+    lastKnownPos: { lat: 22.2448, lon: 113.9720 },
+    buildNearbyStopsFast: () => {},
+    getPlannerHubDirectory: () => [],
+    getStopName: (s: any) => s.stopName_e,
+    getStopDistrictTag: (s: any) => s._testDist || '',
+    formatStopDistance: () => '',
+    escapeHtml: (s: any) => String(s || ''),
+    escapeJsAttr: (s: any) => String(s || ''),
+    allStops: [
+      { stopKey: 'NLB_SL_A', stopName_e: 'Lo Uk Tsuen', name_tc: '羅屋村', latitude: '22.2392', longitude: '113.9665', _testDist: 'South Lantau', routeNos: new Set(['4', '3M', '1', 'A35']) },
+      { stopKey: 'NLB_SL_B', stopName_e: 'Lo Uk Tsuen', name_tc: '羅屋村', latitude: '22.2393', longitude: '113.9666', _testDist: 'South Lantau', routeNos: new Set(['3M', '2', '1', 'N35']) },
+      { stopKey: 'KMB_KL_A', stopName_e: 'Lo Uk Tsuen', name_tc: '羅屋村', latitude: '22.4320', longitude: '114.0850', _testDist: 'Kowloon', routeNos: new Set(['54', '251B']) },
+      { stopKey: 'KMB_KL_B', stopName_e: 'Lo Uk Tsuen', name_tc: '羅屋村', latitude: '22.4322', longitude: '114.0852', _testDist: 'Kowloon', routeNos: new Set(['54', '251B', '251M', '917']) },
+      { stopKey: 'MTRB_YL_A', stopName_e: 'Lo Uk Tsuen', name_tc: '羅屋村', latitude: '22.4440', longitude: '113.9980', _testDist: 'Yuen Long', routeNos: new Set(['K65', 'K65A']) },
+      { stopKey: 'MTRB_YL_B', stopName_e: 'Lo Uk Tsuen', name_tc: '羅屋村', latitude: '22.4447', longitude: '113.9983', _testDist: 'Yuen Long', routeNos: new Set(['K65', 'K65A']) },
+    ],
+    nearbyStopsList: [],
+  });
+
+  ctx.renderCommutePickerList();
+  const matches = rendered.listHtml.match(/<span>Lo Uk Tsuen<\/span>/g) || [];
+  assert.equal(matches.length, 3, `Expected 3 deduplicated Lo Uk Tsuen rows (1 per district), got ${matches.length}`);
+  assert.ok(rendered.listHtml.includes('1, 2, 3M, 4, A35, N35'), 'Merged South Lantau stop must combine naturally-sorted route numbers');
+  assert.ok(rendered.listHtml.includes('54, 251B, 251M, 917'), 'Merged Kowloon stop must combine all routes');
+  assert.ok(
+    rendered.listHtml.indexOf('South Lantau') < rendered.listHtml.indexOf('Yuen Long') &&
+    rendered.listHtml.indexOf('Yuen Long') < rendered.listHtml.indexOf('Kowloon'),
+    'Deduplicated stops must be sorted closest-first'
+  );
+
+  const html = fs.readFileSync('index.html', 'utf8');
+  assert.ok(html.includes('class="app-switcher-item app-switcher-plan" id="topXferBtn"'), 'Route Planner must be promoted to a labeled top-bar Plan tab');
+  assert.ok(html.includes('data-i18n="planApp">Plan</span>') && html.includes("planApp: '規劃'"), 'Plan tab must have EN/ZH labels');
+  assert.ok(html.includes('html.ios-standalone .app-switcher') && html.includes('calc(env(safe-area-inset-top) + 14px)'), 'iOS standalone PWA must clear the status-bar whiteout frost zone');
+  assert.ok(html.includes('function triggerIosStandaloneTopBarReflow()'), 'index.html must include post-load iOS standalone compositor reflow');
+  assert.ok(html.includes('Renters-First Digital Twin') && html.includes('Historical Split-View Map'), 'Settings companion links must match updated HKProperty & HK Past apps');
+  assert.ok(html.includes('ONBOARDING_SEEN_KEY') && html.includes('maybeShowFirstVisitOnboarding') && html.includes('openPlannerFromTutorial'), 'First-use 3-step onboarding walkthrough with Skip/Next/Open Planner must be wired');
+});
+
 
 
 

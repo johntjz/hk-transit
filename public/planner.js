@@ -1907,20 +1907,37 @@ function renderCommutePickerList() {
   }
 
   buildNearbyStopsFast(lastKnownPos);
-  const stopPool = q
-    ? allStops.filter(s => `${s.stopName_e || ''} ${s.name_tc || ''}`.toLowerCase().includes(q)).slice(0, 25)
-    : nearbyStopsList.slice(0, 18);
+  const qTokens = q ? q.split(/\s+/).filter(Boolean) : [];
+  const rawStopPool = q
+    ? allStops.filter(s => {
+        const distTag = typeof getStopDistrictTag === 'function' ? getStopDistrictTag(s) : '';
+        const routesStr = Array.from(s.routeNos || []).join(' ');
+        const hay = `${s.stopName_e || ''} ${s.name_tc || ''} ${distTag} ${routesStr}`.toLowerCase();
+        return qTokens.every(tok => hay.includes(tok));
+      })
+    : nearbyStopsList.slice(0, 48);
+
+  const stopPool = deduplicatePlannerAutocompleteStops(
+    rawStopPool,
+    lastKnownPos?.lat,
+    lastKnownPos?.lon,
+    q,
+    0.22
+  ).slice(0, q ? 20 : 14);
 
   if (stopPool.length > 0) {
     html += `<div class="section-bar"><span>${q ? (isZh ? '符合的車站' : 'MATCHING STOPS') : (isZh ? '附近車站' : 'NEARBY STOPS')}</span></div>`;
     html += stopPool.map(s => {
-      const distTag = getStopDistrictTag(s);
-      const dStr = formatStopDistance(s);
+      const distTag = s._distTag || getStopDistrictTag(s);
+      const dStr = Number.isFinite(s._distKm)
+        ? (s._distKm < 1 ? `${Math.round(s._distKm * 1000)}m` : `${s._distKm.toFixed(1)}km`)
+        : formatStopDistance(s);
+      const rList = (s.mergedRouteNos && s.mergedRouteNos.length ? s.mergedRouteNos : Array.from(s.routeNos || [])).slice(0, 8);
       return `
         <div class="route-list-item" style="padding:10px 14px;" onclick="selectCommuteStopOption('${escapeJsAttr(s.stopKey)}', '${escapeJsAttr(s.stopName_e)}', '${escapeJsAttr(s.name_tc || s.stopName_e)}', ${parseFloat(s.latitude)}, ${parseFloat(s.longitude)}, '${s.mode || 'BUS'}')">
           <div class="route-info-col">
             <div class="route-dest" style="font-size:0.84rem;"><span>${escapeHtml(getStopName(s))}</span> ${distTag ? `<span class="district-tag">${escapeHtml(distTag)}</span>` : ''}</div>
-            <div class="route-sub" style="font-size:0.72rem;"><span>${Array.from(s.routeNos || []).slice(0, 6).join(', ')}</span></div>
+            <div class="route-sub" style="font-size:0.72rem;"><span>${escapeHtml(rList.join(', '))}</span></div>
           </div>
           <div class="route-eta-col">${dStr ? `<span class="location-dist-pill">${escapeHtml(dStr)}</span>` : ''}</div>
         </div>`;

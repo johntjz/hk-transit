@@ -1894,7 +1894,48 @@ test('planner.js & index.html: deduplicates opposite-side stops in Settings Hub 
   assert.ok(html.includes('html.ios-standalone .app-switcher') && html.includes('calc(env(safe-area-inset-top) + 14px)'), 'iOS standalone PWA must clear the status-bar whiteout frost zone');
   assert.ok(html.includes('function triggerIosStandaloneTopBarReflow()'), 'index.html must include post-load iOS standalone compositor reflow');
   assert.ok(html.includes('Renters-First Digital Twin') && html.includes('Historical Split-View Map'), 'Settings companion links must match updated HKProperty & HK Past apps');
-  assert.ok(html.includes('ONBOARDING_SEEN_KEY') && html.includes('maybeShowFirstVisitOnboarding') && html.includes('openPlannerFromTutorial'), 'First-use 3-step onboarding walkthrough with Skip/Next/Open Planner must be wired');
+  assert.ok(html.includes('ONBOARDING_SEEN_KEY') && html.includes('maybeShowFirstVisitOnboarding') && html.includes('openPlannerFromTutorial'), 'First-use visual onboarding carousel with Skip/Next/Open Planner must be wired');
+});
+
+test('index.html: detects client device language on landing and renders MTR-style 5-slide visual picture tutorial with zero text walls', () => {
+  const html = fs.readFileSync('index.html', 'utf8');
+
+  const detectMatch = html.match(/function detectClientDeviceLang\(navObj\) \{[\s\S]*?\n\}/);
+  const svgFnMatch = html.match(/function buildTutorialSlideSvg\(stepIdx, isZh\) \{[\s\S]*?\n\}/);
+  assert.ok(detectMatch, 'detectClientDeviceLang must exist in index.html');
+  assert.ok(svgFnMatch, 'buildTutorialSlideSvg must exist in index.html');
+
+  const sandbox: any = { userLangPref: 'auto', navigator: { languages: ['en-US'], language: 'en-US' } };
+  vm.createContext(sandbox);
+  vm.runInContext(`${detectMatch[0]}\n${svgFnMatch[0]}`, sandbox);
+
+  // 1. Client device language detection on landing
+  assert.equal(sandbox.detectClientDeviceLang({ languages: ['zh-HK', 'en-HK'], language: 'zh-HK' }), 'zh');
+  assert.equal(sandbox.detectClientDeviceLang({ languages: ['yue-Hant-HK'], language: 'yue-Hant-HK' }), 'zh');
+  assert.equal(sandbox.detectClientDeviceLang({ languages: ['zh-TW'], language: 'zh-TW' }), 'zh');
+  assert.equal(sandbox.detectClientDeviceLang({ languages: ['zh-CN'] }), 'zh');
+  assert.equal(sandbox.detectClientDeviceLang({ languages: ['en-GB', 'zh-HK'], language: 'en-GB' }), 'en');
+  assert.equal(sandbox.detectClientDeviceLang({ languages: ['en-US'], language: 'en-US' }), 'en');
+  assert.equal(sandbox.detectClientDeviceLang({ language: 'zh-Hant-HK' }), 'zh');
+
+  // 2. All 5 visual picture slides in EN & ZH
+  const expectedEn = ['Add to Home Screen', 'Stop Saved', 'Saved Stops', 'Exit B', 'Language'];
+  const expectedZh = ['加入主畫面', '已收藏車站', '已收藏車站', 'B出口', '語言'];
+  for (let i = 0; i < 5; i++) {
+    const svgEn = sandbox.buildTutorialSlideSvg(i, false);
+    const svgZh = sandbox.buildTutorialSlideSvg(i, true);
+    assert.ok(svgEn.startsWith('<svg viewBox="0 0 340 244"'), `Slide ${i} EN must render crisp 340x244 SVG`);
+    assert.ok(svgZh.startsWith('<svg viewBox="0 0 340 244"'), `Slide ${i} ZH must render crisp 340x244 SVG`);
+    assert.ok(svgEn.includes(expectedEn[i]), `Slide ${i} EN visual must include "${expectedEn[i]}"`);
+    assert.ok(svgZh.includes(expectedZh[i]), `Slide ${i} ZH visual must include "${expectedZh[i]}"`);
+  }
+
+  // 3. No legacy text-wall onboarding paragraphs/bullets remain
+  assert.ok(!html.includes('onboard-step-points'), 'Old bullet-list text wall must be removed');
+  assert.ok(!html.includes('onboard-step-desc'), 'Old paragraph text wall must be removed');
+  assert.ok(html.includes('TUTORIAL_SLIDE_COUNT = 5'), 'Must have 5 picture tutorial slides');
+  assert.ok(html.includes('attachTutorialSwipeGestures'), 'Must support mobile touch swipe navigation');
+  assert.ok(html.includes("params.get('autostart') === '1'"), 'Must support ?autostart=1 bypass for testing');
 });
 
 

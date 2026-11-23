@@ -1186,60 +1186,85 @@
     .settings-row-sub { display: block; font-size: 0.72rem; font-weight: 500; color: var(--text-sub); margin-top: 2px; }
     .settings-val-pill { background: var(--bg-surface); border: none; padding: 4px 11px; border-radius: 999px; font-size: 0.75rem; font-weight: 600; color: var(--ios-blue); max-width: 55%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
 
-    /* Interactive 3-Step First-Use & Tutorial Walkthrough */
+    /* Visual Picture-First Onboarding Carousel (MTR Mobile style) */
     .onboard-card {
-      background: var(--bg-white); border: 1px solid var(--border-color); border-radius: 22px;
-      width: 100%; max-width: 440px; max-height: 88dvh; overflow-y: auto;
-      padding: 20px 20px 18px 20px; display: flex; flex-direction: column; gap: 14px;
-      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.38);
+      background: var(--bg-white); border: 1px solid var(--border-color); border-radius: 26px;
+      width: 100%; max-width: 400px; max-height: 92dvh; overflow-y: auto;
+      padding: 16px 16px 16px 16px; display: flex; flex-direction: column; gap: 12px;
+      box-shadow: 0 24px 64px rgba(0, 0, 0, 0.36);
+      touch-action: pan-y;
     }
-    .onboard-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
-    .onboard-kicker { font-size: 0.76rem; font-weight: 700; color: var(--ios-blue); margin-bottom: 3px; }
-    .onboard-title { font-size: 1.24rem; font-weight: 700; letter-spacing: -0.02em; line-height: 1.25; color: var(--text-main); text-wrap: balance; }
+    .onboard-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+    .onboard-step-counter {
+      font-size: 0.76rem; font-weight: 700; color: var(--text-sub);
+      font-variant-numeric: tabular-nums; letter-spacing: 0.02em; padding-left: 4px;
+    }
     .onboard-skip-btn {
-      background: var(--bg-surface); color: var(--text-sub); border: none; border-radius: 10px;
-      padding: 6px 12px; font-size: 0.78rem; font-weight: 600; cursor: pointer; flex-shrink: 0; white-space: nowrap;
+      background: var(--bg-surface); color: var(--text-sub); border: none; border-radius: 999px;
+      padding: 6px 13px; min-height: 32px; font-size: 0.78rem; font-weight: 600; cursor: pointer;
+      flex-shrink: 0; white-space: nowrap; transition: color 0.16s ease, background-color 0.16s ease;
     }
     .onboard-skip-btn:hover { color: var(--text-main); }
-    .onboard-stepper {
-      display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px;
-      background: var(--bg-surface); padding: 4px; border-radius: 12px;
+    .onboard-stage {
+      width: 100%; border-radius: 18px; overflow: hidden;
+      background: var(--bg-surface); border: 1px solid var(--border-color);
+      position: relative; user-select: none; -webkit-user-select: none;
     }
-    .onboard-step-tab {
-      border: none; background: transparent; color: var(--text-sub); border-radius: 9px;
-      padding: 8px 6px; font-size: 0.74rem; font-weight: 600; cursor: pointer;
-      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center;
-      transition: background-color 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
+    .onboard-stage svg { display: block; width: 100%; height: auto; }
+    @keyframes onboardTapPulse {
+      0%, 100% { opacity: 0.25; transform: scale(1); }
+      50% { opacity: 0.65; transform: scale(1.16); }
     }
-    .onboard-step-tab.active {
-      background: var(--bg-white); color: var(--text-main);
-      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.10);
+    .ob-pulse-ring {
+      transform-box: fill-box; transform-origin: center;
+      animation: onboardTapPulse 1.9s cubic-bezier(0.16, 1, 0.3, 1) infinite;
     }
-    .onboard-body { display: flex; flex-direction: column; gap: 10px; min-height: 148px; }
-    .onboard-step-heading { font-size: 1.02rem; font-weight: 700; color: var(--text-main); line-height: 1.3; }
-    .onboard-step-desc { font-size: 0.85rem; line-height: 1.55; color: var(--text-sub); }
-    .onboard-step-points {
-      display: flex; flex-direction: column; gap: 6px;
-      background: var(--bg-surface); border-radius: 14px; padding: 11px 13px;
-      font-size: 0.80rem; line-height: 1.45; color: var(--text-main);
+    @media (prefers-reduced-motion: reduce) {
+      .ob-pulse-ring { animation: none; opacity: 0.4; }
     }
+    .onboard-caption {
+      display: flex; flex-direction: column; align-items: center; text-align: center;
+      gap: 4px; padding: 2px 8px 0 8px;
+    }
+    .onboard-step-heading {
+      font-size: 1.12rem; font-weight: 800; color: var(--text-main);
+      letter-spacing: -0.02em; line-height: 1.25; text-wrap: balance;
+    }
+    .onboard-step-cue {
+      font-size: 0.84rem; font-weight: 600; color: var(--text-sub);
+      line-height: 1.35;
+    }
+    .onboard-quick-action-row {
+      display: flex; justify-content: center; gap: 8px; min-height: 0; margin-top: 2px;
+    }
+    .onboard-dots {
+      display: flex; align-items: center; justify-content: center; gap: 7px; padding: 2px 0;
+    }
+    .onboard-dot {
+      width: 8px; height: 8px; border-radius: 999px; border: none; padding: 0;
+      background: var(--border-color); cursor: pointer;
+      transition: width 0.2s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.2s ease;
+    }
+    .onboard-dot.active { width: 22px; background: var(--ios-blue); }
     .onboard-foot {
       display: flex; align-items: center; justify-content: space-between; gap: 10px;
-      padding-top: 6px; border-top: 1px solid var(--border-color);
+      padding-top: 8px; border-top: 1px solid var(--border-color);
     }
     .onboard-back-link {
       background: transparent; border: none; color: var(--text-sub);
-      font-size: 0.82rem; font-weight: 600; padding: 8px 4px; cursor: pointer; white-space: nowrap;
+      font-size: 0.84rem; font-weight: 600; min-height: 44px; padding: 0 8px;
+      cursor: pointer; white-space: nowrap; display: inline-flex; align-items: center;
     }
     .onboard-back-link:hover { color: var(--text-main); }
     .onboard-cta-group { display: flex; align-items: center; gap: 8px; }
     .onboard-secondary-btn {
       background: rgba(0, 122, 255, 0.12); color: var(--ios-blue); border: none; border-radius: 12px;
-      padding: 9px 13px; font-size: 0.81rem; font-weight: 700; cursor: pointer; white-space: nowrap;
+      min-height: 36px; padding: 7px 13px; font-size: 0.80rem; font-weight: 700; cursor: pointer; white-space: nowrap;
     }
     .onboard-primary-btn {
-      background: var(--ios-blue); color: #FFFFFF; border: none; border-radius: 12px;
-      padding: 9px 16px; font-size: 0.82rem; font-weight: 700; cursor: pointer; white-space: nowrap;
+      background: var(--ios-blue); color: #FFFFFF; border: none; border-radius: 13px;
+      min-height: 44px; padding: 0 20px; font-size: 0.86rem; font-weight: 700; cursor: pointer;
+      white-space: nowrap; display: inline-flex; align-items: center; justify-content: center;
     }
     .onboard-primary-btn.finish-dark { background: #1C1C1E; color: #FFFFFF; }
     html:not(.light-mode) .onboard-primary-btn.finish-dark { background: #FFFFFF; color: #1C1C1E; }
@@ -1468,8 +1493,8 @@
       <span class="settings-val-pill" id="settingValWorkHub">Set Stop ›</span>
     </div>
     <div class="settings-row" onclick="closeSettingsModal(); openTutorialModal();">
-      <span id="settingRowLblTutorial">📖 Tutorial</span>
-      <span class="settings-val-pill" id="settingValTutorial">Read ›</span>
+      <span id="settingRowLblTutorial">🖼️ Visual Guide</span>
+      <span class="settings-val-pill" id="settingValTutorial">View ›</span>
     </div>
     <div class="settings-row" id="pwaInstallRow" onclick="triggerPwaInstall()">
       <span id="settingRowLblInstall">📲 Install</span>
@@ -1509,24 +1534,22 @@
   </div>
 </div>
 
-<!-- INTERACTIVE 3-STEP ONBOARDING & TUTORIAL MODAL -->
-<div id="tutorialModal" style="display:none; position:fixed; inset:0; z-index:5100; background:rgba(0,0,0,0.55); backdrop-filter:blur(6px); align-items:center; justify-content:center; padding:16px;" onclick="if(event.target===this)closeTutorialModal()">
-  <div class="onboard-card" role="dialog" aria-modal="true" aria-labelledby="tutorialModalTitle">
+<!-- VISUAL PICTURE-FIRST ONBOARDING CAROUSEL (MTR MOBILE STYLE) -->
+<div id="tutorialModal" style="display:none; position:fixed; inset:0; z-index:5100; background:rgba(0,0,0,0.58); backdrop-filter:blur(6px); align-items:center; justify-content:center; padding:16px;" onclick="if(event.target===this)closeTutorialModal()">
+  <div class="onboard-card" id="tutorialModalCard" role="dialog" aria-modal="true" aria-labelledby="tutorialSlideTitle">
     <div class="onboard-head">
-      <div>
-        <div class="onboard-kicker" id="tutorialModalKicker">Welcome to Transit HK</div>
-        <div class="onboard-title" id="tutorialModalTitle">How Real-Time HK Transit Works</div>
-      </div>
+      <div class="onboard-step-counter" id="tutorialStepCounter">1 / 5</div>
       <button type="button" class="onboard-skip-btn" id="tutorialCloseBtn" onclick="closeTutorialModal()">Skip</button>
     </div>
-    <div class="onboard-stepper" id="tutorialStepper" role="tablist">
-      <button type="button" class="onboard-step-tab active" data-step="0" onclick="setTutorialStep(0)" id="tutorialTab0">1. Live Radar</button>
-      <button type="button" class="onboard-step-tab" data-step="1" onclick="setTutorialStep(1)" id="tutorialTab1">2. Planner</button>
-      <button type="button" class="onboard-step-tab" data-step="2" onclick="setTutorialStep(2)" id="tutorialTab2">3. Commute</button>
+    <div id="tutorialVisualStage" class="onboard-stage"></div>
+    <div class="onboard-caption">
+      <div class="onboard-step-heading" id="tutorialSlideTitle"></div>
+      <div class="onboard-step-cue" id="tutorialSlideCue"></div>
+      <div class="onboard-quick-action-row" id="tutorialQuickActionRow"></div>
     </div>
-    <div id="tutorialModalBody" class="onboard-body"></div>
+    <div class="onboard-dots" id="tutorialDots" role="tablist" aria-label="Guide slides"></div>
     <div class="onboard-foot" id="tutorialModalFoot">
-      <button type="button" class="onboard-back-link" id="tutorialBackBtn" onclick="onTutorialBackClick()">Skip Tutorial</button>
+      <button type="button" class="onboard-back-link" id="tutorialBackBtn" onclick="onTutorialBackClick()">Skip</button>
       <div class="onboard-cta-group" id="tutorialCtaGroup"></div>
     </div>
   </div>
@@ -1564,9 +1587,20 @@ window.QUICK_LRT_LINES = [];
 window.QUICK_FERRY_LINES = [];
 
 document.addEventListener('keydown', e => {
+  const tut = document.getElementById('tutorialModal');
+  const tutOpen = Boolean(tut && tut.style.display === 'flex');
+  if (tutOpen && e.key === 'ArrowRight' && typeof setTutorialStep === 'function') {
+    e.preventDefault();
+    setTutorialStep(activeTutorialStep + 1);
+    return;
+  }
+  if (tutOpen && e.key === 'ArrowLeft' && typeof setTutorialStep === 'function') {
+    e.preventDefault();
+    setTutorialStep(activeTutorialStep - 1);
+    return;
+  }
   if (e.key === 'Escape') {
-    const tut = document.getElementById('tutorialModal');
-    if (tut && tut.style.display === 'flex' && typeof closeTutorialModal === 'function') {
+    if (tutOpen && typeof closeTutorialModal === 'function') {
       closeTutorialModal();
     }
     ['builtInStatusModal','tutorialModal','settingsModal','commutePickerModal'].forEach(id => {
@@ -2181,8 +2215,23 @@ let activeAppMode = location.hostname.includes('hk-rail') ? 'MTR' : (location.ho
 let currentView = 'main', currentNearestStopKey = null, lastRenderedCenterStopKey = null;
 let stopDirectionFilterMode = 'BOTH';
 
+function detectClientDeviceLang(navObj) {
+  try {
+    const n = navObj || (typeof navigator !== 'undefined' ? navigator : {});
+    const primary = (Array.isArray(n.languages) && n.languages.length > 0 && n.languages[0])
+      || n.language
+      || n.userLanguage
+      || (typeof Intl !== 'undefined' && Intl.DateTimeFormat ? Intl.DateTimeFormat().resolvedOptions().locale : '')
+      || 'en';
+    const norm = String(primary || '').trim().toLowerCase();
+    return /^(zh|yue)\b/.test(norm) ? 'zh' : 'en';
+  } catch (e) {
+    return 'en';
+  }
+}
+
 let userLangPref = SafeStorage.getItem('transit_lang_pref_v2') || 'auto';
-let currentLang = userLangPref === 'auto' ? (String(navigator.language || '').toLowerCase().startsWith('zh') ? 'zh' : 'en') : userLangPref;
+let currentLang = userLangPref === 'auto' ? detectClientDeviceLang() : userLangPref;
 let userThemePref = SafeStorage.getItem('transit_theme_pref_v4') || 'light';
 
 const navHistoryStack = [];
@@ -5267,8 +5316,8 @@ function syncSettingsModalLabels() {
     ? `${isZh ? (hubs.work.nameTc || hubs.work.nameEn) : hubs.work.nameEn} ›`
     : (isZh ? '設定車站 ›' : 'Set Stop ›'));
 
-  setV('settingRowLblTutorial', isZh ? '📖 教學' : '📖 Tutorial');
-  setV('settingValTutorial', isZh ? '閱讀 ›' : 'Read ›');
+  setV('settingRowLblTutorial', isZh ? '🖼️ 圖解教學' : '🖼️ Visual Guide');
+  setV('settingValTutorial', isZh ? '圖解 ›' : 'View ›');
   setV('settingRowLblInstall', isZh ? '📲 安裝' : '📲 Install');
   setV('settingRowLblLang', isZh ? '🌐 語言 (Language)' : '🌐 Language');
   setV('settingRowLblTheme', isZh ? '🌓 顯示主題' : '🌓 Theme');
@@ -5296,7 +5345,7 @@ function cycleLanguagePreference() {
   if (userLangPref === 'auto') userLangPref = 'zh';
   else if (userLangPref === 'zh') userLangPref = 'en';
   else userLangPref = 'auto';
-  currentLang = userLangPref === 'auto' ? (String(navigator.language || '').toLowerCase().startsWith('zh') ? 'zh' : 'en') : userLangPref;
+  currentLang = userLangPref === 'auto' ? detectClientDeviceLang() : userLangPref;
   SafeStorage.setItem('transit_lang_pref_v2', userLangPref);
   if (typeof clearAllActiveBrowseMarkers === 'function') clearAllActiveBrowseMarkers();
   applyLanguage();
@@ -5328,119 +5377,368 @@ function cycleTextSize() {
 let activeTutorialStep = 0;
 let tutorialOpenedFromSettings = false;
 const ONBOARDING_SEEN_KEY = 'transit_onboarding_seen_v1';
+const TUTORIAL_SLIDE_COUNT = 5;
+
+function buildTutorialSlideSvg(stepIdx, isZh) {
+  const font = "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'PingFang HK', sans-serif";
+  if (stepIdx === 0) {
+    // Slide 1: Bookmark / Add App to Home Screen
+    const addLbl = isZh ? '加入主畫面' : 'Add to Home Screen';
+    const shareLbl = isZh ? '分享' : 'Share';
+    const appLbl = isZh ? '香港交通' : 'Transit HK';
+    return `<svg viewBox="0 0 340 244" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${addLbl}">
+      <defs>
+        <linearGradient id="obBg0" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#007AFF" stop-opacity="0.11"/>
+          <stop offset="100%" stop-color="#34C759" stop-opacity="0.06"/>
+        </linearGradient>
+      </defs>
+      <rect width="340" height="244" fill="url(#obBg0)"/>
+      <!-- Step 1: Browser bottom bar with Share icon -->
+      <rect x="20" y="16" width="300" height="58" rx="14" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
+      <rect x="34" y="24" width="272" height="18" rx="9" fill="var(--bg-surface)"/>
+      <text x="170" y="36.5" text-anchor="middle" font-family="${font}" font-size="9.5" font-weight="600" fill="var(--text-sub)">hk-fleet.pages.dev</text>
+      <!-- Browser toolbar icons -->
+      <path d="M58 59 l-6 -4 l6 -4" fill="none" stroke="var(--text-sub)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>
+      <path d="M98 51 l6 4 l-6 4" fill="none" stroke="var(--text-sub)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>
+      <!-- Highlighted Share button -->
+      <circle cx="170" cy="57" r="17" fill="#007AFF" opacity="0.18" class="ob-pulse-ring"/>
+      <circle cx="170" cy="57" r="12" fill="#007AFF"/>
+      <path d="M170 50 v10 M166 54 l4 -4 l4 4 M165 57 v4 h10 v-4" fill="none" stroke="#FFFFFF" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="191" y="61" font-family="${font}" font-size="9.5" font-weight="700" fill="#007AFF">${shareLbl}</text>
+      <!-- Pointer arrow down -->
+      <path d="M170 76 v16 M165 87 l5 5 l5 -5" fill="none" stroke="#007AFF" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+      <!-- Step 2: Action Sheet row -->
+      <rect x="36" y="96" width="268" height="46" rx="14" fill="var(--bg-white)" stroke="#007AFF" stroke-width="1.8"/>
+      <rect x="49" y="108" width="22" height="22" rx="6" fill="rgba(0,122,255,0.14)"/>
+      <path d="M60 113 v12 M54 119 h12" stroke="#007AFF" stroke-width="2.1" stroke-linecap="round"/>
+      <text x="82" y="123" font-family="${font}" font-size="13" font-weight="700" fill="var(--text-main)">${addLbl}</text>
+      <circle cx="282" cy="119" r="12" fill="#007AFF" opacity="0.16" class="ob-pulse-ring"/>
+      <circle cx="282" cy="119" r="5" fill="#007AFF"/>
+      <!-- Pointer arrow to Home Screen App Icon -->
+      <path d="M170 146 v15 M165 156 l5 5 l5 -5" fill="none" stroke="#007AFF" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+      <!-- Step 3: Home Screen dock preview -->
+      <rect x="64" y="166" width="212" height="64" rx="16" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
+      <rect x="86" y="177" width="34" height="34" rx="9" fill="var(--bg-surface)" opacity="0.85"/>
+      <!-- Transit HK App Icon -->
+      <rect x="150" y="174" width="40" height="40" rx="11" fill="#E53935"/>
+      <rect x="159" y="182" width="22" height="17" rx="4" fill="#FFFFFF"/>
+      <rect x="162" y="185" width="16" height="8" rx="1.5" fill="#E53935"/>
+      <circle cx="164" cy="196" r="1.6" fill="#E53935"/>
+      <circle cx="176" cy="196" r="1.6" fill="#E53935"/>
+      <circle cx="187" cy="177" r="7" fill="#34C759"/>
+      <path d="M184 177 l2 2 l4 -4" fill="none" stroke="#FFFFFF" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="170" y="224" text-anchor="middle" font-family="${font}" font-size="9.5" font-weight="700" fill="var(--text-main)">${appLbl}</text>
+      <rect x="220" y="177" width="34" height="34" rx="9" fill="var(--bg-surface)" opacity="0.85"/>
+    </svg>`;
+  }
+
+  if (stepIdx === 1) {
+    // Slide 2: Bookmark / Star Stops
+    const hdr = isZh ? '往 梅窩碼頭' : 'To Mui Wo Pier';
+    const s1 = isZh ? '東涌站巴士總站' : 'Tung Chung Station';
+    const s2 = isZh ? '羅屋村' : 'Lo Uk Tsuen';
+    const s3 = isZh ? '貝澳油站' : 'Pui O Petrol Stn';
+    const savedBadge = isZh ? '★ 已收藏車站' : '★ Stop Saved';
+    return `<svg viewBox="0 0 340 244" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${savedBadge}">
+      <defs>
+        <linearGradient id="obBg1" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#FF9500" stop-opacity="0.12"/>
+          <stop offset="100%" stop-color="#E53935" stop-opacity="0.06"/>
+        </linearGradient>
+      </defs>
+      <rect width="340" height="244" fill="url(#obBg1)"/>
+      <rect x="20" y="14" width="300" height="216" rx="18" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
+      <!-- Mini route bar -->
+      <rect x="34" y="26" width="38" height="22" rx="7" fill="#E53935"/>
+      <text x="53" y="41" text-anchor="middle" font-family="${font}" font-size="11.5" font-weight="800" fill="#FFFFFF">3M</text>
+      <text x="80" y="41" font-family="${font}" font-size="12" font-weight="700" fill="var(--text-main)">${hdr}</text>
+      <line x1="34" y1="58" x2="306" y2="58" stroke="var(--border-color)" stroke-width="1"/>
+      <!-- Route vertical line -->
+      <line x1="48" y1="76" x2="48" y2="176" stroke="#E53935" stroke-width="3" stroke-linecap="round" opacity="0.35"/>
+      <!-- Stop 1 -->
+      <circle cx="48" cy="78" r="5" fill="var(--bg-white)" stroke="#E53935" stroke-width="2.2"/>
+      <text x="64" y="82" font-family="${font}" font-size="11.5" font-weight="600" fill="var(--text-sub)">${s1}</text>
+      <text x="284" y="83" text-anchor="middle" font-family="${font}" font-size="15" fill="var(--text-sub)" opacity="0.45">☆</text>
+      <!-- Highlighted Stop 2 -->
+      <rect x="30" y="101" width="280" height="52" rx="13" fill="rgba(255,149,0,0.11)" stroke="#FF9500" stroke-width="1.5"/>
+      <circle cx="48" cy="127" r="6" fill="#FF9500"/>
+      <text x="64" y="123" font-family="${font}" font-size="12.5" font-weight="800" fill="var(--text-main)">${s2}</text>
+      <text x="64" y="140" font-family="${font}" font-size="10.5" font-weight="700" fill="#34C759">4m · 18m</text>
+      <!-- Orange Star Button with Tap Ripple -->
+      <circle cx="284" cy="127" r="20" fill="#FF9500" opacity="0.22" class="ob-pulse-ring"/>
+      <circle cx="284" cy="127" r="14" fill="#FF9500"/>
+      <text x="284" y="132" text-anchor="middle" font-family="${font}" font-size="15" font-weight="700" fill="#FFFFFF">★</text>
+      <!-- Stop 3 -->
+      <circle cx="48" cy="176" r="5" fill="var(--bg-white)" stroke="#E53935" stroke-width="2.2"/>
+      <text x="64" y="180" font-family="${font}" font-size="11.5" font-weight="600" fill="var(--text-sub)">${s3}</text>
+      <text x="284" y="181" text-anchor="middle" font-family="${font}" font-size="15" fill="var(--text-sub)" opacity="0.45">☆</text>
+      <!-- Saved toast pill -->
+      <rect x="112" y="198" width="116" height="24" rx="12" fill="#FF9500"/>
+      <text x="170" y="213.5" text-anchor="middle" font-family="${font}" font-size="10.5" font-weight="700" fill="#FFFFFF">${savedBadge}</text>
+    </svg>`;
+  }
+
+  if (stepIdx === 2) {
+    // Slide 3: Find Saved Stops in Favorites Tab
+    const busT = isZh ? '巴士' : 'Bus';
+    const railT = isZh ? '港鐵' : 'Rail';
+    const planT = isZh ? '規劃' : 'Plan';
+    const favHdr = isZh ? '已收藏車站' : 'Saved Stops';
+    const st1 = isZh ? '羅屋村' : 'Lo Uk Tsuen';
+    const st2 = isZh ? '東涌站' : 'Tung Chung Stn';
+    const st3 = isZh ? '中環6號碼頭' : 'Central Pier 6';
+    return `<svg viewBox="0 0 340 244" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${favHdr}">
+      <defs>
+        <linearGradient id="obBg2" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#007AFF" stop-opacity="0.11"/>
+          <stop offset="100%" stop-color="#FF9500" stop-opacity="0.08"/>
+        </linearGradient>
+      </defs>
+      <rect width="340" height="244" fill="url(#obBg2)"/>
+      <rect x="18" y="14" width="304" height="216" rx="18" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
+      <!-- Mini Top Nav Bar mirroring real app -->
+      <rect x="28" y="26" width="46" height="24" rx="12" fill="var(--bg-surface)"/>
+      <text x="51" y="41.5" text-anchor="middle" font-family="${font}" font-size="10" font-weight="700" fill="var(--text-sub)">${busT}</text>
+      <rect x="80" y="26" width="46" height="24" rx="12" fill="var(--bg-surface)"/>
+      <text x="103" y="41.5" text-anchor="middle" font-family="${font}" font-size="10" font-weight="700" fill="var(--text-sub)">${railT}</text>
+      <rect x="132" y="26" width="52" height="24" rx="12" fill="rgba(0,122,255,0.12)"/>
+      <text x="158" y="41.5" text-anchor="middle" font-family="${font}" font-size="10" font-weight="700" fill="#007AFF">${planT}</text>
+      <!-- Map icon muted -->
+      <rect x="206" y="26" width="24" height="24" rx="12" fill="var(--bg-surface)"/>
+      <path d="M213 33 l3 -1.5 l4 1.5 l3 -1.5 v9 l-3 1.5 l-4 -1.5 l-3 1.5 z" fill="none" stroke="var(--text-sub)" stroke-width="1.3" opacity="0.7"/>
+      <!-- SPOTLIGHTED BOOKMARK / SAVED ICON -->
+      <circle cx="256" cy="38" r="20" fill="#007AFF" opacity="0.22" class="ob-pulse-ring"/>
+      <circle cx="256" cy="38" r="14" fill="#007AFF"/>
+      <path d="M261 44 l-5 -3.5 l-5 3.5 v-12 a1.5 1.5 0 0 1 1.5 -1.5 h7 a1.5 1.5 0 0 1 1.5 1.5 z" fill="#FFFFFF"/>
+      <!-- Gear icon muted -->
+      <circle cx="292" cy="38" r="12" fill="var(--bg-surface)"/>
+      <circle cx="292" cy="38" r="3.5" fill="none" stroke="var(--text-sub)" stroke-width="1.5" opacity="0.7"/>
+      <line x1="28" y1="60" x2="312" y2="60" stroke="var(--border-color)" stroke-width="1"/>
+      <!-- Downward connector arrow from Bookmark icon -->
+      <path d="M256 54 v14 M251.5 64 l4.5 4.5 l4.5 -4.5" fill="none" stroke="#007AFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="34" y="77" font-family="${font}" font-size="10.5" font-weight="700" fill="#007AFF">${favHdr}</text>
+      <!-- Saved Card 1 -->
+      <rect x="30" y="86" width="280" height="40" rx="12" fill="var(--bg-surface)"/>
+      <text x="44" y="110" font-family="${font}" font-size="13" fill="#FF9500">★</text>
+      <rect x="60" y="96" width="34" height="20" rx="6" fill="#E53935"/>
+      <text x="77" y="109.5" text-anchor="middle" font-family="${font}" font-size="10" font-weight="800" fill="#FFFFFF">3M</text>
+      <text x="103" y="110" font-family="${font}" font-size="12" font-weight="700" fill="var(--text-main)">${st1}</text>
+      <text x="296" y="110" text-anchor="end" font-family="${font}" font-size="12" font-weight="800" fill="#34C759">4m</text>
+      <!-- Saved Card 2 -->
+      <rect x="30" y="133" width="280" height="40" rx="12" fill="var(--bg-surface)"/>
+      <text x="44" y="157" font-family="${font}" font-size="13" fill="#FF9500">★</text>
+      <rect x="60" y="143" width="34" height="20" rx="6" fill="#F39800"/>
+      <text x="77" y="156.5" text-anchor="middle" font-family="${font}" font-size="9.5" font-weight="800" fill="#FFFFFF">TCL</text>
+      <text x="103" y="157" font-family="${font}" font-size="12" font-weight="700" fill="var(--text-main)">${st2}</text>
+      <text x="296" y="157" text-anchor="end" font-family="${font}" font-size="12" font-weight="800" fill="#34C759">2m</text>
+      <!-- Saved Card 3 -->
+      <rect x="30" y="180" width="280" height="40" rx="12" fill="var(--bg-surface)"/>
+      <text x="44" y="204" font-family="${font}" font-size="13" fill="#FF9500">★</text>
+      <rect x="60" y="190" width="34" height="20" rx="6" fill="#0288D1"/>
+      <text x="77" y="203.5" text-anchor="middle" font-family="${font}" font-size="8.5" font-weight="800" fill="#FFFFFF">FERRY</text>
+      <text x="103" y="204" font-family="${font}" font-size="12" font-weight="700" fill="var(--text-main)">${st3}</text>
+      <text x="296" y="204" text-anchor="end" font-family="${font}" font-size="12" font-weight="800" fill="#34C759">11m</text>
+    </svg>`;
+  }
+
+  if (stepIdx === 3) {
+    // Slide 4: Where to Walk To (Route Planner + Walk Path + MTR Exit)
+    const planT = isZh ? '規劃' : 'Plan';
+    const youT = isZh ? '你' : 'You';
+    const walkTag = isZh ? '步行 3分 · 180m' : 'Walk 3m · 180m';
+    const exitTag = isZh ? '東涌站 B出口' : 'Exit B · MTR';
+    const destTag = isZh ? '目的地' : 'Dest';
+    const walkShort = isZh ? '步3m' : '3m';
+    return `<svg viewBox="0 0 340 244" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${walkTag}">
+      <rect width="340" height="244" fill="var(--bg-surface)"/>
+      <rect x="18" y="14" width="304" height="216" rx="18" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
+      <!-- Top Bar with Plan active -->
+      <rect x="116" y="24" width="76" height="25" rx="12.5" fill="#007AFF" opacity="0.18" class="ob-pulse-ring"/>
+      <rect x="122" y="26" width="64" height="21" rx="10.5" fill="#007AFF"/>
+      <text x="154" y="40" text-anchor="middle" font-family="${font}" font-size="10.5" font-weight="800" fill="#FFFFFF">${planT}</text>
+      <!-- Mini Map Frame -->
+      <rect x="28" y="56" width="284" height="122" rx="14" fill="#EAF2F8" stroke="var(--border-color)" stroke-width="1"/>
+      <!-- Subtle map blocks & park -->
+      <rect x="38" y="66" width="64" height="36" rx="6" fill="#D5E8D4" opacity="0.85"/>
+      <rect x="114" y="66" width="76" height="28" rx="5" fill="#FFFFFF" opacity="0.72"/>
+      <rect x="202" y="128" width="98" height="38" rx="6" fill="#FFFFFF" opacity="0.72"/>
+      <path d="M28 118 H312 M138 56 V178 M236 56 V178" stroke="#FFFFFF" stroke-width="4.5" opacity="0.85"/>
+      <!-- Transit polyline from Exit B to Destination -->
+      <path d="M186 106 C216 106, 232 90, 274 90" fill="none" stroke="#F39800" stroke-width="5" stroke-linecap="round"/>
+      <!-- Dashed Walking Path from User GPS to Exit B -->
+      <path d="M64 148 Q112 146 138 124 T182 108" fill="none" stroke="#007AFF" stroke-width="4" stroke-dasharray="6 5" stroke-linecap="round"/>
+      <!-- User GPS Dot -->
+      <circle cx="64" cy="148" r="15" fill="#007AFF" opacity="0.22" class="ob-pulse-ring"/>
+      <circle cx="64" cy="148" r="7" fill="#007AFF" stroke="#FFFFFF" stroke-width="2.5"/>
+      <rect x="44" y="159" width="40" height="15" rx="7.5" fill="#1C1C1E"/>
+      <text x="64" y="169.5" text-anchor="middle" font-family="${font}" font-size="8.5" font-weight="700" fill="#FFFFFF">${youT}</text>
+      <!-- Walk duration floating tag (crisp vector dot + text) -->
+      <rect x="52" y="95" width="102" height="21" rx="10.5" fill="#007AFF"/>
+      <circle cx="64" cy="105.5" r="2.5" fill="#FFFFFF"/>
+      <text x="107" y="109" text-anchor="middle" font-family="${font}" font-size="9.5" font-weight="700" fill="#FFFFFF">${walkTag}</text>
+      <!-- Exact MTR Exit Pin -->
+      <circle cx="186" cy="106" r="7.5" fill="#1C1C1E" stroke="#FFFFFF" stroke-width="2.5"/>
+      <rect x="148" y="69" width="78" height="22" rx="8" fill="#1C1C1E"/>
+      <text x="187" y="83.5" text-anchor="middle" font-family="${font}" font-size="9.5" font-weight="700" fill="#FFFFFF">${exitTag}</text>
+      <!-- Destination Pin -->
+      <circle cx="276" cy="90" r="8" fill="#FF3B30" stroke="#FFFFFF" stroke-width="2.5"/>
+      <rect x="252" y="103" width="48" height="17" rx="8.5" fill="#FF3B30"/>
+      <text x="276" y="114.5" text-anchor="middle" font-family="${font}" font-size="8.5" font-weight="700" fill="#FFFFFF">${destTag}</text>
+      <!-- Bottom compact itinerary strip -->
+      <rect x="28" y="186" width="284" height="34" rx="11" fill="var(--bg-surface)"/>
+      <rect x="38" y="194" width="38" height="18" rx="9" fill="rgba(0,122,255,0.14)"/>
+      <text x="57" y="206.5" text-anchor="middle" font-family="${font}" font-size="9.5" font-weight="800" fill="#007AFF">${walkShort}</text>
+      <text x="83" y="207" font-family="${font}" font-size="10" fill="var(--text-sub)">→</text>
+      <rect x="96" y="194" width="32" height="18" rx="5" fill="#F39800"/>
+      <text x="112" y="206.5" text-anchor="middle" font-family="${font}" font-size="9.5" font-weight="800" fill="#FFFFFF">TCL</text>
+      <text x="135" y="207" font-family="${font}" font-size="10" fill="var(--text-sub)">→</text>
+      <rect x="148" y="194" width="30" height="18" rx="5" fill="#E53935"/>
+      <text x="163" y="206.5" text-anchor="middle" font-family="${font}" font-size="9.5" font-weight="800" fill="#FFFFFF">8X</text>
+      <text x="298" y="207" text-anchor="end" font-family="${font}" font-size="11.5" font-weight="800" fill="var(--text-main)">28m · $18.5</text>
+    </svg>`;
+  }
+
+  // Slide 5: Change Language (Settings -> Language)
+  const settingsT = isZh ? '設定' : 'Settings';
+  const homeRow = isZh ? '屋企車站' : 'Home Stop';
+  const langRow = isZh ? '語言 (Language)' : 'Language';
+  const autoPill = isZh ? '自動' : 'Auto';
+  return `<svg viewBox="0 0 340 244" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${langRow}">
+    <defs>
+      <linearGradient id="obBg4" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="#5856D6" stop-opacity="0.11"/>
+        <stop offset="100%" stop-color="#007AFF" stop-opacity="0.08"/>
+      </linearGradient>
+    </defs>
+    <rect width="340" height="244" fill="url(#obBg4)"/>
+    <rect x="18" y="14" width="304" height="216" rx="18" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
+    <!-- Mini Top Bar with Gear spotlighted -->
+    <rect x="30" y="27" width="44" height="22" rx="11" fill="var(--bg-surface)"/>
+    <rect x="80" y="27" width="44" height="22" rx="11" fill="var(--bg-surface)"/>
+    <rect x="130" y="27" width="44" height="22" rx="11" fill="var(--bg-surface)"/>
+    <circle cx="290" cy="38" r="20" fill="#007AFF" opacity="0.22" class="ob-pulse-ring"/>
+    <circle cx="290" cy="38" r="14" fill="#007AFF"/>
+    <!-- Crisp gear SVG inside blue circle -->
+    <circle cx="290" cy="38" r="3.2" fill="none" stroke="#FFFFFF" stroke-width="1.8"/>
+    <path d="M290 30 v2.2 M290 43.8 v2.2 M282 38 h2.2 M295.8 38 h2.2 M284.3 32.3 l1.6 1.6 M294.1 42.1 l1.6 1.6 M295.7 32.3 l-1.6 1.6 M285.9 42.1 l-1.6 1.6" stroke="#FFFFFF" stroke-width="1.7" stroke-linecap="round"/>
+    <!-- Curved arrow from Gear to Settings sheet -->
+    <path d="M290 54 v15 M285.5 65 l4.5 4.5 l4.5 -4.5" fill="none" stroke="#007AFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <!-- Mini Settings Sheet -->
+    <rect x="30" y="74" width="280" height="144" rx="14" fill="var(--bg-surface)"/>
+    <text x="44" y="94" font-family="${font}" font-size="11.5" font-weight="800" fill="var(--text-main)">${settingsT}</text>
+    <!-- Muted row -->
+    <text x="44" y="114" font-family="${font}" font-size="10.5" font-weight="600" fill="var(--text-sub)" opacity="0.6">${homeRow}</text>
+    <!-- Highlighted Language Row -->
+    <rect x="38" y="124" width="264" height="42" rx="11" fill="var(--bg-white)" stroke="#007AFF" stroke-width="1.8"/>
+    <!-- Crisp vector globe icon -->
+    <circle cx="57" cy="145" r="8" fill="none" stroke="#007AFF" stroke-width="1.6"/>
+    <ellipse cx="57" cy="145" rx="3.8" ry="8" fill="none" stroke="#007AFF" stroke-width="1.3"/>
+    <line x1="49" y1="145" x2="65" y2="145" stroke="#007AFF" stroke-width="1.3"/>
+    <text x="72" y="149" font-family="${font}" font-size="12" font-weight="700" fill="var(--text-main)">${langRow}</text>
+    <rect x="220" y="133" width="72" height="24" rx="12" fill="#007AFF"/>
+    <text x="256" y="148.5" text-anchor="middle" font-family="${font}" font-size="10.5" font-weight="700" fill="#FFFFFF">${isZh ? '繁體中文' : 'English'}</text>
+    <!-- 3-Way Language Switcher Preview -->
+    <rect x="46" y="178" width="76" height="28" rx="14" fill="${userLangPref === 'auto' ? '#007AFF' : 'var(--bg-white)'}" stroke="var(--border-color)" stroke-width="1"/>
+    <text x="84" y="195.5" text-anchor="middle" font-family="${font}" font-size="10.5" font-weight="700" fill="${userLangPref === 'auto' ? '#FFFFFF' : 'var(--text-sub)'}">${autoPill}</text>
+    <rect x="132" y="178" width="76" height="28" rx="14" fill="${userLangPref === 'zh' ? '#007AFF' : 'var(--bg-white)'}" stroke="var(--border-color)" stroke-width="1"/>
+    <text x="170" y="195.5" text-anchor="middle" font-family="${font}" font-size="10.5" font-weight="700" fill="${userLangPref === 'zh' ? '#FFFFFF' : 'var(--text-sub)'}">繁體中文</text>
+    <rect x="218" y="178" width="76" height="28" rx="14" fill="${userLangPref === 'en' ? '#007AFF' : 'var(--bg-white)'}" stroke="var(--border-color)" stroke-width="1"/>
+    <text x="256" y="195.5" text-anchor="middle" font-family="${font}" font-size="10.5" font-weight="700" fill="${userLangPref === 'en' ? '#FFFFFF' : 'var(--text-sub)'}">English</text>
+  </svg>`;
+}
 
 function renderTutorialStep() {
   const isZh = (currentLang === 'zh');
   const setV = (id, v) => { const el = document.getElementById(id); if (el) el.innerText = v; };
-  setV('tutorialModalKicker', isZh ? '歡迎使用 Transit HK' : 'Welcome to Transit HK');
-  setV('tutorialModalTitle', isZh ? '3 步上手實時香港交通雷達' : 'How Real-Time HK Transit Works');
+  setV('tutorialStepCounter', `${activeTutorialStep + 1} / ${TUTORIAL_SLIDE_COUNT}`);
   setV('tutorialCloseBtn', isZh ? '略過' : 'Skip');
-  setV('tutorialTab0', isZh ? '1. 實時雷達' : '1. Live Radar');
-  setV('tutorialTab1', isZh ? '2. 路線規劃' : '2. Planner');
-  setV('tutorialTab2', isZh ? '3. 常用車站' : '3. Commute');
 
-  document.querySelectorAll('#tutorialStepper .onboard-step-tab').forEach((btn, idx) => {
-    btn.classList.toggle('active', idx === activeTutorialStep);
-  });
-
-  const steps = isZh ? [
-    {
-      heading: 'GPS 即時鎖定附近巴士、港鐵及渡輪',
-      desc: '打開即顯示最近車站的實時到站時間（KMB、城巴、嶼巴、專線小巴、港鐵、輕鐵及渡輪），並按班距與時段推算實時載客率（有位／企位／擠迫）。',
-      points: [
-        '• 頂部切換 <strong>巴士 / 港鐵 / 渡輪</strong>，同區對面線車站已自動合併免混淆。',
-        '• 點按路線可查看沿途實時分段車資（含嶼巴 3M/1 通知車長分段及城巴落車拍卡回贈）。'
-      ],
-      nextLabel: '下一步：路線規劃 →'
-    },
-    {
-      heading: '點選頂部「規劃」串連跨交通實時轉乘',
-      desc: '內置香港多模式轉乘引擎，結合實時 GPS 班次、港鐵精準出口步行、運輸署幹道車速與天文台天氣，計算真實最慳時或最平路線。',
-      points: [
-        '• 自由切換 <strong>最穩陣 / 最快 / 少行 / 最平</strong>，亦可開啟 <strong>🚲 單車接駁</strong>（已計入 LocoBike 約 $5/30 分鐘車資）。',
-        '• 支援全港街道地址、大廈、車站與碼頭搜尋，一鍵複製或分享行程摘要。'
-      ],
-      nextLabel: '下一步：常用車站 →',
-      showOpenPlanner: true
-    },
-    {
-      heading: '本機儲存屋企／公司車站 + 智能回程',
-      desc: '在「設定」錨定常用的公共巴士站、港鐵站或碼頭（100% 只存於本機裝置），日後一按即開規劃，停留外區 45 分鐘後更會自動置頂回程班次。',
-      points: [
-        '• 點擊地圖圖示可瀏覽全港車站，或於「收藏」釘選每日必搭路線。',
-        '• 隨時可於「設定 ➔ 教學」再次查看此指南。'
-      ],
-      isFinal: true,
-      showOpenPlanner: true
-    }
+  const slides = isZh ? [
+    { title: '加入主畫面', cue: '分享 ↑  ➔  加入主畫面' },
+    { title: '收藏常用車站', cue: '點按車站旁的 ☆ 即可收藏' },
+    { title: '隨時查看已收藏', cue: '點按右上角書籤圖示' },
+    { title: '路線及步行出口', cue: '按「規劃」看步行路線與港鐵出口', showOpenPlanner: true },
+    { title: '隨時切換語言', cue: '點按右上角設定  ➔  語言', showLangTryBtn: true, isFinal: true }
   ] : [
-    {
-      heading: 'Instant GPS Radar for Bus, Rail & Ferry',
-      desc: 'Live arrival times across KMB, Citybus, NLB, Green Minibus, MTR, Light Rail, and Ferries — paired with time-calibrated crowding estimates (Seats / Standing / Packed).',
-      points: [
-        '• Switch <strong>Bus / Rail / Ferry</strong> at the top — opposite-side stops are merged cleanly into one hub.',
-        '• Tap any route for exact HK two-way sectional fares (NLB 3M/1 driver override, KMB & Citybus tap-off rebates).'
-      ],
-      nextLabel: 'Next: Route Planner →'
-    },
-    {
-      heading: 'Tap "Plan" at the Top for Live Multi-Modal Routing',
-      desc: 'Chains live GPS buses, MTR (snapped to the nearest physical station exit), ferries, and shared bikes using live TD highway speeds and HKO weather alerts.',
-      points: [
-        '• Switch <strong>Best / Fastest / Less Walk / Cheapest</strong> and toggle <strong>🚲 Bike</strong> (factors in LocoBike ~$5.0/30m pricing).',
-        '• Search any HK street address, building, MTR station, or pier — and share trip cards in one tap.'
-      ],
-      nextLabel: 'Next: Commute →',
-      showOpenPlanner: true
-    },
-    {
-      heading: 'On-Device Home/Work Hubs & Quick Return',
-      desc: 'Anchor your public Home or Work stop in Settings (stored 100% locally on your device) for one-tap trip planning and automatic Quick Return cards after 45+ mins away.',
-      points: [
-        '• Use <strong>Map</strong> to inspect any stop across Hong Kong, or star daily stops in <strong>Saved</strong>.',
-        '• Replay this walkthrough anytime under <strong>Settings ➔ Tutorial</strong>.'
-      ],
-      isFinal: true,
-      showOpenPlanner: true
-    }
+    { title: 'Bookmark This App', cue: 'Share ↑  →  Add to Home Screen' },
+    { title: 'Star Daily Stops', cue: 'Tap ☆ beside any stop to save' },
+    { title: 'Find in Saved', cue: 'Tap the bookmark icon at top-right' },
+    { title: 'Where to Walk To', cue: 'Tap Plan for walk paths & MTR exits', showOpenPlanner: true },
+    { title: 'Switch Language', cue: 'Tap Settings gear  →  Language', showLangTryBtn: true, isFinal: true }
   ];
 
-  const st = steps[activeTutorialStep] || steps[0];
-  const body = document.getElementById('tutorialModalBody');
-  if (body) {
-    body.innerHTML = `
-      <div class="onboard-step-heading">${escapeHtml(st.heading)}</div>
-      <div class="onboard-step-desc">${escapeHtml(st.desc)}</div>
-      <div class="onboard-step-points">${st.points.map(p => `<div>${p}</div>`).join('')}</div>
-    `;
+  const st = slides[activeTutorialStep] || slides[0];
+  const stage = document.getElementById('tutorialVisualStage');
+  if (stage) stage.innerHTML = buildTutorialSlideSvg(activeTutorialStep, isZh);
+
+  setV('tutorialSlideTitle', st.title);
+  setV('tutorialSlideCue', st.cue);
+
+  const quickRow = document.getElementById('tutorialQuickActionRow');
+  if (quickRow) {
+    if (st.showOpenPlanner) {
+      quickRow.innerHTML = `<button type="button" class="onboard-secondary-btn" onclick="openPlannerFromTutorial()">${isZh ? '立即試用規劃 ›' : 'Try Planner ›'}</button>`;
+    } else if (st.showLangTryBtn) {
+      quickRow.innerHTML = `<button type="button" class="onboard-secondary-btn" onclick="cycleLanguagePreference()">${isZh ? '切換 English / 自動' : 'Switch 繁體中文 / Auto'}</button>`;
+    } else {
+      quickRow.innerHTML = '';
+    }
+  }
+
+  const dotsEl = document.getElementById('tutorialDots');
+  if (dotsEl) {
+    dotsEl.innerHTML = slides.map((s, idx) =>
+      `<button type="button" class="onboard-dot ${idx === activeTutorialStep ? 'active' : ''}" role="tab" aria-selected="${idx === activeTutorialStep ? 'true' : 'false'}" aria-label="${escapeHtml(s.title)}" onclick="setTutorialStep(${idx})"></button>`
+    ).join('');
   }
 
   const backBtn = document.getElementById('tutorialBackBtn');
   if (backBtn) {
-    if (activeTutorialStep === 0) {
-      backBtn.innerText = tutorialOpenedFromSettings
-        ? (isZh ? '← 返回設定' : '← Settings')
-        : (isZh ? '略過教學' : 'Skip Tutorial');
+    if (activeTutorialStep === 0 && !tutorialOpenedFromSettings) {
+      backBtn.style.visibility = 'hidden';
+      backBtn.innerText = isZh ? '‹ 上一張' : '‹ Back';
     } else {
-      backBtn.innerText = isZh ? '← 上一步' : '← Back';
+      backBtn.style.visibility = 'visible';
+      backBtn.innerText = (activeTutorialStep === 0 && tutorialOpenedFromSettings)
+        ? (isZh ? '‹ 返回設定' : '‹ Settings')
+        : (isZh ? '‹ 上一張' : '‹ Back');
     }
   }
 
   const ctaGroup = document.getElementById('tutorialCtaGroup');
   if (ctaGroup) {
-    const planBtnHtml = st.showOpenPlanner
-      ? `<button type="button" class="onboard-secondary-btn" onclick="openPlannerFromTutorial()">${isZh ? '立即用規劃' : 'Open Planner'}</button>`
-      : '';
-    const mainBtnHtml = st.isFinal
-      ? `<button type="button" class="onboard-primary-btn finish-dark" onclick="closeTutorialModal()">${isZh ? '開始使用 →' : 'Start Exploring →'}</button>`
-      : `<button type="button" class="onboard-primary-btn" onclick="setTutorialStep(${activeTutorialStep + 1})">${escapeHtml(st.nextLabel)}</button>`;
-    ctaGroup.innerHTML = planBtnHtml + mainBtnHtml;
+    ctaGroup.innerHTML = st.isFinal
+      ? `<button type="button" class="onboard-primary-btn finish-dark" onclick="closeTutorialModal()">${isZh ? '開始使用' : 'Get Started'}</button>`
+      : `<button type="button" class="onboard-primary-btn" onclick="setTutorialStep(${activeTutorialStep + 1})">${isZh ? '下一張 ›' : 'Next ›'}</button>`;
   }
 }
 
+(function attachTutorialSwipeGestures() {
+  const card = document.getElementById('tutorialModalCard');
+  if (!card) return;
+  let startX = 0, startY = 0;
+  card.addEventListener('touchstart', (e) => {
+    const t0 = e.changedTouches?.[0];
+    if (!t0) return;
+    startX = t0.clientX;
+    startY = t0.clientY;
+  }, { passive: true });
+  card.addEventListener('touchend', (e) => {
+    const t1 = e.changedTouches?.[0];
+    if (!t1) return;
+    const dx = t1.clientX - startX;
+    const dy = t1.clientY - startY;
+    if (Math.abs(dx) >= 38 && Math.abs(dx) > Math.abs(dy) * 1.2) {
+      if (dx < 0 && activeTutorialStep < TUTORIAL_SLIDE_COUNT - 1) setTutorialStep(activeTutorialStep + 1);
+      else if (dx > 0 && activeTutorialStep > 0) setTutorialStep(activeTutorialStep - 1);
+    }
+  }, { passive: true });
+})();
+
 function setTutorialStep(idx) {
   triggerHaptic(8);
-  activeTutorialStep = Math.max(0, Math.min(2, Number(idx) || 0));
+  activeTutorialStep = Math.max(0, Math.min(TUTORIAL_SLIDE_COUNT - 1, Number(idx) || 0));
   renderTutorialStep();
 }
 
@@ -5475,7 +5773,8 @@ function closeTutorialModal() {
 }
 
 function maybeShowFirstVisitOnboarding(hasDeepLink = false) {
-  if (hasDeepLink) return;
+  const params = new URLSearchParams(window.location.search || '');
+  if (hasDeepLink || params.get('autostart') === '1') return;
   if (SafeStorage.getItem(ONBOARDING_SEEN_KEY)) return;
   if (document.getElementById('settingsModal')?.style.display === 'flex') return;
   openTutorialModal(false);
@@ -5801,6 +6100,9 @@ async function runLiveTruthProbe() {
 }
 
 function applyLanguage() {
+  if (document.documentElement) {
+    document.documentElement.lang = (currentLang === 'zh') ? 'zh-Hant-HK' : 'en';
+  }
   document.title = t('docTitle');
   document.querySelectorAll('[data-i18n]').forEach(el => {
     const k = el.getAttribute('data-i18n');
@@ -5815,6 +6117,9 @@ function applyLanguage() {
   updateTopBackButtonVisibility();
   updateCommuteBarUI();
   updateMainStopHeaderDisplay();
+  if (document.getElementById('tutorialModal')?.style.display === 'flex' && typeof renderTutorialStep === 'function') {
+    renderTutorialStep();
+  }
 
   if (currentView === 'main') renderMainNearby(false);
   else if (currentView === 'detail' && detailRouteGroup) {

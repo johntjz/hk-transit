@@ -15,8 +15,73 @@
   <meta property="og:type" content="website">
   <link id="appleTouchIconLink" rel="apple-touch-icon" sizes="180x180" href="icon.png">
   <link id="faviconLink" rel="icon" type="image/png" href="icon.png">
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+  <script>
+    (function setupAsyncLeafletLoader() {
+      const LEAFLET_CDNS = [
+        {
+          css: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css',
+          js: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js'
+        },
+        {
+          css: 'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.min.css',
+          js: 'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.min.js'
+        },
+        {
+          css: 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css',
+          js: 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'
+        }
+      ];
+      let _leafletPromise = null;
+      let _leafletCssInjected = false;
+      function loadCssOnce(href) {
+        if (_leafletCssInjected) return;
+        const link = document.createElement('link');
+        link.rel = 'stylesheet';
+        link.href = href;
+        link.crossOrigin = 'anonymous';
+        document.head.appendChild(link);
+        _leafletCssInjected = true;
+      }
+      function loadScriptWithTimeout(src, ms) {
+        return new Promise((resolve) => {
+          const s = document.createElement('script');
+          let done = false;
+          const finish = (ok) => {
+            if (done) return;
+            done = true;
+            clearTimeout(tid);
+            resolve(ok);
+          };
+          const tid = setTimeout(() => {
+            try { s.remove(); } catch (e) {}
+            finish(false);
+          }, ms);
+          s.src = src;
+          s.async = true;
+          s.crossOrigin = 'anonymous';
+          s.onload = () => finish(typeof window.L !== 'undefined');
+          s.onerror = () => { try { s.remove(); } catch (e) {} finish(false); };
+          document.head.appendChild(s);
+        });
+      }
+      window.ensureLeafletLoaded = function() {
+        if (typeof window.L !== 'undefined') return Promise.resolve(true);
+        if (_leafletPromise) return _leafletPromise;
+        _leafletPromise = (async () => {
+          for (const cdn of LEAFLET_CDNS) {
+            loadCssOnce(cdn.css);
+            const ok = await loadScriptWithTimeout(cdn.js, 4200);
+            if (ok && typeof window.L !== 'undefined') return true;
+          }
+          _leafletPromise = null;
+          return typeof window.L !== 'undefined';
+        })();
+        return _leafletPromise;
+      };
+    })();
+  </script>
   <script src="hardcode.js"></script>
   <script src="map.js"></script>
   <script src="planner.js"></script>
@@ -247,15 +312,35 @@
     };
 
     window.__EARLY_INDEX_PROMISE__ = (async () => {
-      const cached = await window.__TRANSIT_IDB__.get('bus_index_data');
-      const cachedMeta = await window.__TRANSIT_IDB__.get('bus_index_meta');
+      const withTimeout = (promise, ms, fallback = null) => new Promise((resolve) => {
+        let settled = false;
+        const tid = setTimeout(() => { if (!settled) { settled = true; resolve(fallback); } }, ms);
+        Promise.resolve(promise).then((val) => {
+          if (!settled) { settled = true; clearTimeout(tid); resolve(val); }
+        }).catch(() => {
+          if (!settled) { settled = true; clearTimeout(tid); resolve(fallback); }
+        });
+      });
+      const fetchWithTimeout = async (url, opts = {}, ms = 6000) => {
+        const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+        const tid = ctrl ? setTimeout(() => ctrl.abort(), ms) : null;
+        try {
+          return await fetch(url, ctrl ? { ...opts, signal: ctrl.signal } : opts);
+        } finally {
+          if (tid) clearTimeout(tid);
+        }
+      };
+      const [cached, cachedMeta] = await Promise.all([
+        withTimeout(window.__TRANSIT_IDB__.get('bus_index_data'), 1500, null),
+        withTimeout(window.__TRANSIT_IDB__.get('bus_index_meta'), 1500, null)
+      ]);
       if (cached && cachedMeta && cachedMeta.schemaVersion === window.__TRANSIT_SCHEMA_VERSION__) {
         setTimeout(async () => {
           try {
-            const vr = await fetch(`version.json?t=${Date.now()}`, { cache: 'no-store' });
+            const vr = await fetchWithTimeout(`version.json?t=${Date.now()}`, { cache: 'no-store' }, 2500);
             const vj = vr.ok ? await vr.json() : null;
             if (vj?.lastUpdated && vj.lastUpdated !== cachedMeta.lastUpdated) {
-              const nr = await fetch(`bus_index.min.json?v=${encodeURIComponent(vj.lastUpdated)}`);
+              const nr = await fetchWithTimeout(`bus_index.min.json?v=${encodeURIComponent(vj.lastUpdated)}`, {}, 10000);
               if (nr.ok) {
                 const rawJson = await nr.json();
                 await window.__TRANSIT_IDB__.set('bus_index_data', rawJson);
@@ -273,21 +358,21 @@
       try {
         let verParam = Date.now();
         try {
-          const vr = await fetch(`version.json?t=${verParam}`, { cache: 'no-store' });
+          const vr = await fetchWithTimeout(`version.json?t=${verParam}`, { cache: 'no-store' }, 1800);
           if (vr.ok) {
             const vj = await vr.json();
             if (vj?.lastUpdated) verParam = encodeURIComponent(vj.lastUpdated);
           }
         } catch (e) {}
-        const r = await fetch(`bus_index.min.json?v=${verParam}`);
-        if (!r.ok) return null;
+        const r = await fetchWithTimeout(`bus_index.min.json?v=${verParam}`, {}, 9000);
+        if (!r.ok) return cached ? { source: 'idb-fallback', data: window.__UNPACK_TRANSIT_DB__(cached), meta: cachedMeta || {} } : null;
         const rawJson = await r.json();
-        await window.__TRANSIT_IDB__.set('bus_index_data', rawJson);
-        await window.__TRANSIT_IDB__.set('bus_index_meta', {
+        window.__TRANSIT_IDB__.set('bus_index_data', rawJson).catch(() => {});
+        window.__TRANSIT_IDB__.set('bus_index_meta', {
           schemaVersion: window.__TRANSIT_SCHEMA_VERSION__,
           lastUpdated: rawJson.lastUpdated || '',
           tdLastUpdated: rawJson.tdLastUpdated || ''
-        });
+        }).catch(() => {});
         return { source: 'network', data: window.__UNPACK_TRANSIT_DB__(rawJson), meta: { lastUpdated: rawJson.lastUpdated || '' } };
       } catch (e) {
         return cached ? { source: 'idb-fallback', data: window.__UNPACK_TRANSIT_DB__(cached), meta: cachedMeta || {} } : null;
@@ -503,6 +588,63 @@
       box-shadow: 0 3px 10px rgba(0, 0, 0, 0.16);
     }
     .map-traffic-chip-btn.active { border-color: rgba(22, 163, 74, 0.55); color: var(--ios-green); }
+    .traffic-modal-card {
+      width: 100%; max-width: 440px; max-height: 86dvh; overflow-y: auto; -webkit-overflow-scrolling: touch;
+      background: var(--bg-white); border-radius: 20px; border: 1px solid var(--border-color);
+      box-shadow: 0 22px 54px rgba(0, 0, 0, 0.34); padding: 14px 16px 16px 16px;
+      display: flex; flex-direction: column; gap: 11px;
+    }
+    .traffic-verdict-banner {
+      border-radius: 13px; padding: 11px 13px; border: 1px solid var(--border-color);
+      border-left: 4px solid #16A34A; background: var(--bg-surface);
+      display: flex; flex-direction: column; gap: 4px;
+    }
+    .traffic-verdict-banner.tone-slow { border-left-color: #D97706; background: rgba(245, 158, 11, 0.10); }
+    .traffic-verdict-banner.tone-jammed { border-left-color: #DC2626; background: rgba(220, 38, 38, 0.10); }
+    .traffic-verdict-title { font-size: 0.94rem; font-weight: 800; color: var(--text-main); line-height: 1.25; }
+    .traffic-verdict-tip { font-size: 0.78rem; font-weight: 600; color: var(--text-sub); line-height: 1.35; }
+    .traffic-metrics-grid {
+      display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px;
+    }
+    .traffic-metric-box {
+      background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 11px;
+      padding: 8px 9px; text-align: center;
+    }
+    .traffic-metric-val { font-size: 0.92rem; font-weight: 800; color: var(--text-main); font-variant-numeric: tabular-nums; }
+    .traffic-metric-lbl { font-size: 0.66rem; font-weight: 600; color: var(--text-sub); margin-top: 2px; }
+    .traffic-cam-frame {
+      position: relative; width: 100%; aspect-ratio: 4 / 3; border-radius: 12px; overflow: hidden;
+      background: #0F172A; border: 1px solid var(--border-color);
+      display: flex; align-items: center; justify-content: center;
+    }
+    .traffic-cam-frame img {
+      width: 100%; height: 100%; object-fit: contain; display: block;
+    }
+    .traffic-cam-caption {
+      display: flex; align-items: center; justify-content: space-between; gap: 8px;
+      font-size: 0.70rem; color: var(--text-sub); font-variant-numeric: tabular-nums;
+    }
+    .traffic-modal-actions {
+      display: flex; gap: 8px; padding-top: 2px;
+    }
+    .traffic-modal-btn {
+      flex: 1; border: 1px solid var(--border-color); border-radius: 11px; padding: 10px 12px;
+      font-size: 0.80rem; font-weight: 700; cursor: pointer; background: var(--bg-surface); color: var(--text-main);
+    }
+    .traffic-modal-btn.primary {
+      background: var(--ios-blue); border-color: var(--ios-blue); color: #FFFFFF;
+    }
+    .gps-search-pin-card {
+      margin: 0 12px 12px 12px; padding: 12px 14px; border-radius: 16px;
+      background: var(--bg-white); border: 1.5px solid rgba(0, 122, 255, 0.35);
+      box-shadow: var(--card-shadow); display: flex; flex-direction: column; gap: 10px;
+    }
+    .gps-search-pin-actions { display: flex; gap: 8px; }
+    .gps-search-pin-btn {
+      flex: 1; border-radius: 11px; padding: 9px 10px; font-size: 0.78rem; font-weight: 700;
+      cursor: pointer; border: 1px solid var(--border-color); background: var(--bg-surface); color: var(--text-main);
+    }
+    .gps-search-pin-btn.primary { background: var(--ios-blue); border-color: var(--ios-blue); color: #FFFFFF; }
     .stop-hub-pill {
       display: inline-flex; align-items: center; justify-content: center; gap: 3px;
       padding: 7px 9px; border-radius: 999px; font-size: 0.72rem; font-weight: 600;
@@ -1593,7 +1735,6 @@
       <div class="about-hero-sub" id="aboutAppDesc">Real-time Hong Kong Bus, MTR, Light Rail &amp; Ferry ETAs and multi-modal route planner powered by open HKSAR data.</div>
       <div class="about-meta-row">
         <span class="about-version-tag" id="aboutAppVersionBadge">v2026-11</span>
-        <button type="button" class="about-mini-btn" id="aboutResetGuideBtn" onclick="resetOnboardingAutoPopupFromAbout()">🖼️ Show guide on launch</button>
       </div>
     </div>
     <div class="settings-section-divider" id="aboutSecCompanion">Useful HK Companion Apps</div>
@@ -1640,12 +1781,26 @@
     <div class="onboard-dots" id="tutorialDots" role="tablist" aria-label="Guide slides"></div>
     <label class="onboard-dont-show-row" id="tutorialDontShowRow">
       <input type="checkbox" id="tutorialDontShowCheckbox" onchange="onTutorialDontShowToggle(this.checked)">
-      <span id="tutorialDontShowLabel">Don't show again (saved across updates)</span>
+      <span id="tutorialDontShowLabel">Don't show again until guide updates</span>
     </label>
     <div class="onboard-foot" id="tutorialModalFoot">
       <button type="button" class="onboard-back-link" id="tutorialBackBtn" onclick="onTutorialBackClick()">Skip</button>
       <div class="onboard-cta-group" id="tutorialCtaGroup"></div>
     </div>
+  </div>
+</div>
+
+<!-- TRAFFIC DECISION & FULL UNCROPPED ROAD CAM MODAL -->
+<div id="trafficDecisionModal" style="display:none; position:fixed; inset:0; z-index:5200; background:rgba(0,0,0,0.62); backdrop-filter:blur(6px); align-items:center; justify-content:center; padding:14px;" onclick="if(event.target===this)closeTrafficDecisionModal()">
+  <div class="traffic-modal-card" role="dialog" aria-modal="true" aria-labelledby="trafficModalTitle">
+    <div class="settings-top-bar" style="margin-bottom:0;">
+      <div style="min-width:0; flex:1;">
+        <div style="font-weight:800; font-size:0.93rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" id="trafficModalTitle">Live Road Traffic</div>
+        <div style="font-size:0.72rem; color:var(--text-sub); margin-top:2px;" id="trafficModalSub"></div>
+      </div>
+      <button type="button" class="settings-close-btn" id="trafficModalCloseBtn" onclick="closeTrafficDecisionModal()">✕ Close</button>
+    </div>
+    <div id="trafficModalBody" style="display:flex; flex-direction:column; gap:10px;"></div>
   </div>
 </div>
 
@@ -2271,8 +2426,66 @@ function findNearestStopIdx(stops, pos) {
 
 const SafeStorage = {
   _mem: {},
-  getItem(k) { try { const v = localStorage.getItem(k); return v !== null ? v : (this._mem[k] ?? null); } catch (e) { return this._mem[k] ?? null; } },
-  setItem(k, v) { const s = String(v); this._mem[k] = s; try { localStorage.setItem(k, s); } catch (e) {} }
+  _cookieMirrorKeys: new Set([
+    'transit_saved_hubs_v1',
+    'transit_lang_pref_v2',
+    'transit_theme_pref_v4',
+    'transit_text_size',
+    'transit_onboarding_never_show_v1',
+    'transit_onboarding_seen_v2'
+  ]),
+  _readCookieVal(k) {
+    try {
+      const prefix = `ts_${k}=`;
+      const parts = String(document.cookie || '').split(';');
+      for (const p of parts) {
+        const t = p.trim();
+        if (t.startsWith(prefix)) return decodeURIComponent(t.slice(prefix.length));
+      }
+    } catch (e) {}
+    return null;
+  },
+  _writeCookieVal(k, v) {
+    try {
+      if (!this._cookieMirrorKeys.has(k)) return;
+      const enc = encodeURIComponent(String(v));
+      if (enc.length > 3500) return;
+      document.cookie = `ts_${k}=${enc}; max-age=315360000; path=/; SameSite=Lax`;
+    } catch (e) {}
+  },
+  _clearCookieVal(k) {
+    try {
+      if (!this._cookieMirrorKeys.has(k)) return;
+      document.cookie = `ts_${k}=; max-age=0; path=/; SameSite=Lax`;
+    } catch (e) {}
+  },
+  getItem(k) {
+    try {
+      const v = localStorage.getItem(k);
+      if (v !== null) return v;
+    } catch (e) {}
+    if (this._mem[k] !== undefined) return this._mem[k];
+    if (this._cookieMirrorKeys.has(k)) {
+      const cv = this._readCookieVal(k);
+      if (cv !== null) {
+        this._mem[k] = cv;
+        try { localStorage.setItem(k, cv); } catch (e) {}
+        return cv;
+      }
+    }
+    return null;
+  },
+  setItem(k, v) {
+    const s = String(v);
+    this._mem[k] = s;
+    try { localStorage.setItem(k, s); } catch (e) {}
+    this._writeCookieVal(k, s);
+  },
+  removeItem(k) {
+    delete this._mem[k];
+    try { localStorage.removeItem(k); } catch (e) {}
+    this._clearCookieVal(k);
+  }
 };
 
 function escapeHtml(s) {
@@ -2283,7 +2496,7 @@ function escapeJsAttr(s) {
   return String(s ?? '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
 }
 
-function triggerHaptic(ms = 10) { try { navigator.vibrate?.(ms); } catch (e) {} }
+function triggerHaptic(ms = 10) { try { if (!navigator.userActivation || navigator.userActivation.hasBeenActive) navigator.vibrate?.(ms); } catch (e) {} }
 
 function getHongKongNow(targetEpochMs = null) {
   const dObj = Number.isFinite(targetEpochMs) ? new Date(targetEpochMs) : new Date();
@@ -3563,16 +3776,17 @@ function generateExpandedETAsHtml(arrs, group, stopKey, stopIdx) {
 
   let roadTrafficBannerHtml = '';
   if ((!group?.mode || group?.mode === 'BUS') && Array.isArray(window.__LIVE_TRAFFIC_DETECTORS__) && window.__LIVE_TRAFFIC_DETECTORS__.length && typeof getDirectionalRoadSummary === 'function') {
-    const roadSum = getDirectionalRoadSummary(stops, stopIdx, window.__LIVE_TRAFFIC_DETECTORS__, isZh, 14);
+    const roadSum = getDirectionalRoadSummary(stops, stopIdx, window.__LIVE_TRAFFIC_DETECTORS__, isZh, 8);
     if (roadSum && roadSum.headline) {
       const fDet = roadSum.focusDet;
-      const focusCall = fDet
-        ? `event.stopPropagation(); if(typeof focusTrafficDetectorOnDetailMap==='function')focusTrafficDetectorOnDetailMap(${fDet.lat}, ${fDet.lon}, '${escapeJsAttr(fDet.id)}');`
+      const oppDet = roadSum.oppDet;
+      const openCall = fDet
+        ? `event.stopPropagation(); openTrafficDecisionModal('${escapeJsAttr(fDet.id)}', '${escapeJsAttr(oppDet?.id || '')}');`
         : 'event.stopPropagation();';
-      const camIcon = fDet?.camKey ? (isZh ? '📷 睇路況 ›' : '📷 Map/Cam ›') : (isZh ? '🗺️ 地圖 ›' : 'Map ›');
+      const camIcon = fDet?.camKey ? (isZh ? '📷 詳情/實拍 ›' : '📷 Verdict & Cam ›') : (isZh ? '詳情 ›' : 'Details ›');
       const toneDot = roadSum.tone === 'jammed' ? '🔴' : (roadSum.tone === 'slow' ? '🟠' : '🟢');
       roadTrafficBannerHtml = `
-        <button type="button" class="traffic-road-status-bar tone-${roadSum.tone}" onclick="${focusCall}">
+        <button type="button" class="traffic-road-status-bar tone-${roadSum.tone}" onclick="${openCall}">
           <span class="traffic-road-main">
             <span class="traffic-road-headline">${toneDot} ${escapeHtml(roadSum.headline)}</span>
             ${roadSum.detail ? `<span class="traffic-road-sub">${escapeHtml(roadSum.detail)}</span>` : ''}
@@ -4759,6 +4973,65 @@ function onStopSearchInput() {
         </div>`;
     }).join('') + `</div>`;
   } else {
+    const parsedGps = typeof parseHkGpsCoordinates === 'function' ? parseHkGpsCoordinates(inp.value) : null;
+    if (parsedGps) {
+      const gpsLat = parsedGps.lat;
+      const gpsLon = parsedGps.lon;
+      const gpsCoordLabel = `${gpsLat.toFixed(5)}, ${gpsLon.toFixed(5)}`;
+      const gpsDistTag = getStopDistrictTag({ latitude: gpsLat, longitude: gpsLon });
+      html += `
+        <div class="section-bar"><span>${isZh ? '📍 GPS 座標定位' : '📍 GPS Coordinate Pin'}</span></div>
+        <div class="gps-search-pin-card" data-testid="gps-search-pin-card">
+          <div>
+            <div style="font-weight:800; font-size:0.92rem; color:var(--text-main);">
+              📍 ${escapeHtml(gpsCoordLabel)} ${gpsDistTag ? `<span class="district-tag">${escapeHtml(gpsDistTag)}</span>` : ''}
+            </div>
+            <div style="font-size:0.74rem; color:var(--text-sub); margin-top:3px;">
+              ${isZh ? '已識別香港座標 · 可直接規劃路線或查看附近車站' : 'Hong Kong GPS coordinate recognized · Plan directly or inspect nearby stops below'}
+            </div>
+          </div>
+          <div class="gps-search-pin-actions">
+            <button type="button" class="gps-search-pin-btn primary" onclick="planToGpsCoordinate(${gpsLat}, ${gpsLon})">🧭 ${isZh ? '規劃前往此座標' : 'Plan to this spot'}</button>
+            <button type="button" class="gps-search-pin-btn" onclick="showGpsCoordinateOnMap(${gpsLat}, ${gpsLon})">🗺️ ${isZh ? '地圖查看' : 'Show on Map'}</button>
+          </div>
+        </div>`;
+
+      const nearbyGpsRaw = allStops
+        .map(s => ({
+          ...s,
+          _distKm: calculateDistanceKm(gpsLat, gpsLon, parseFloat(s.latitude), parseFloat(s.longitude))
+        }))
+        .filter(s => Number.isFinite(s._distKm) && s._distKm <= 3.5)
+        .sort((a, b) => a._distKm - b._distKm)
+        .slice(0, 48);
+      const dedupGpsStops = (typeof deduplicatePlannerAutocompleteStops === 'function'
+        ? deduplicatePlannerAutocompleteStops(nearbyGpsRaw, gpsLat, gpsLon, '', 0.16)
+        : nearbyGpsRaw)
+        .sort((a, b) => (a._distKm ?? 999) - (b._distKm ?? 999))
+        .slice(0, 16);
+
+      if (dedupGpsStops.length) {
+        html += `<div class="section-bar"><span>${isZh ? '附近車站（按座標距離排序）' : 'Nearest Transit Stops to Pin'}</span></div>` +
+          `<div style="margin:0 12px 16px 12px;border-radius:16px;overflow:hidden;border:1px solid var(--border-color);background:var(--bg-white);box-shadow:var(--card-shadow);">` +
+          dedupGpsStops.map(s => {
+            const distTag = s._distTag || getStopDistrictTag(s);
+            const dStr = s._distKm < 1 ? `${Math.round(s._distKm * 1000)}m` : `${s._distKm.toFixed(1)}km`;
+            const rList = (s.mergedRouteNos && s.mergedRouteNos.length ? s.mergedRouteNos : Array.from(s.routeNos || [])).slice(0, 8);
+            const escKey = escapeJsAttr(s.stopKey);
+            return `
+              <div class="route-list-item" onclick="if(!isUserSelectingText())selectStopFromSearch('${escKey}')">
+                <div class="route-info-col">
+                  <div class="route-dest"><span>${escapeHtml(getStopName(s))}</span> ${distTag ? `<span class="district-tag">${escapeHtml(distTag)}</span>` : ''}</div>
+                  <div class="route-sub"><span>${escapeHtml(rList.join(', '))}</span></div>
+                </div>
+                <div class="route-eta-col"><span class="location-dist-pill">${escapeHtml(dStr)}</span></div>
+              </div>`;
+          }).join('') + `</div>`;
+      }
+      res.innerHTML = html;
+      return;
+    }
+
     const qTokens = q.split(/\s+/).filter(Boolean);
     const matchesAllTokens = (textStr) => {
       const low = String(textStr || '').toLowerCase();
@@ -4857,6 +5130,180 @@ function onStopSearchInput() {
   }
   res.innerHTML = html;
 }
+
+function planToGpsCoordinate(lat, lon) {
+  triggerHaptic(12);
+  const label = `${Number(lat).toFixed(5)}, ${Number(lon).toFixed(5)}`;
+  const destObj = {
+    stopKey: `GPS_${Number(lat).toFixed(5)}_${Number(lon).toFixed(5)}`,
+    stopName_e: `GPS Pin (${label})`,
+    name_tc: `GPS 座標 (${label})`,
+    lat: Number(lat),
+    lon: Number(lon),
+    nodeType: 'ADDRESS'
+  };
+  if (typeof userCommuteProfile !== 'undefined') {
+    if (!userCommuteProfile.home) {
+      const curSt = stopMapIndex.get(currentNearestStopKey) || nearbyStopsList[0];
+      if (curSt) {
+        userCommuteProfile.home = {
+          stopKey: curSt.stopKey,
+          stopName_e: curSt.stopName_e,
+          name_tc: curSt.name_tc || curSt.stopName_e,
+          lat: parseFloat(curSt.latitude),
+          lon: parseFloat(curSt.longitude)
+        };
+      }
+    }
+    userCommuteProfile.work = destObj;
+    if (typeof saveCommuteProfile === 'function') saveCommuteProfile();
+  }
+  clearStopSearchInput();
+  if (typeof openTransferPlannerFromTop === 'function') openTransferPlannerFromTop();
+}
+
+function showGpsCoordinateOnMap(lat, lon) {
+  triggerHaptic(12);
+  clearStopSearchInput();
+  switchView('map', true);
+  setTimeout(async () => {
+    if (typeof window.ensureLeafletLoaded === 'function') await window.ensureLeafletLoaded();
+    if (window.browseMapInstance && typeof L !== 'undefined') {
+      window.browseMapInstance.setView([lat, lon], 16, { animate: false });
+      if (typeof renderBrowseMapVisiblePins === 'function') renderBrowseMapVisiblePins();
+      if (browseMapClickedSpotMarker) {
+        try { window.browseMapInstance.removeLayer(browseMapClickedSpotMarker); } catch (e) {}
+      }
+      browseMapClickedSpotMarker = L.circleMarker([lat, lon], {
+        radius: 9, fillColor: '#FF9500', color: '#FFFFFF', weight: 2.5, fillOpacity: 0.95
+      }).addTo(window.browseMapInstance);
+      if (typeof buildBrowseMapActionPopupHtml === 'function') {
+        browseMapClickedSpotMarker.bindPopup(buildBrowseMapActionPopupHtml({
+          stopKey: `GPS_${Number(lat).toFixed(5)}_${Number(lon).toFixed(5)}`,
+          nameEn: `GPS Pin (${Number(lat).toFixed(4)}, ${Number(lon).toFixed(4)})`,
+          nameTc: `GPS 座標 (${Number(lat).toFixed(4)}, ${Number(lon).toFixed(4)})`,
+          lat: Number(lat), lon: Number(lon), nodeType: 'ADDRESS', hasStopRadar: false
+        }), { closeButton: true, offset: [0, -4] }).openPopup();
+      }
+    }
+  }, 120);
+}
+
+window.openTrafficDecisionModal = function(detId, oppDetId = '') {
+  triggerHaptic(10);
+  const modal = document.getElementById('trafficDecisionModal');
+  const bodyEl = document.getElementById('trafficModalBody');
+  if (!modal || !bodyEl) return;
+  const isZh = (currentLang === 'zh');
+  const list = Array.isArray(window.__LIVE_TRAFFIC_DETECTORS__) ? window.__LIVE_TRAFFIC_DETECTORS__ : [];
+  const det = list.find(d => d.id === detId);
+  const opp = oppDetId ? list.find(d => d.id === oppDetId) : null;
+  if (!det) return;
+
+  const roadName = isZh ? (det.roadTc || det.roadEn || '主要幹道') : (det.roadEn || det.roadTc || 'Major Road');
+  const sameGrp = {
+    status: det.tier || 'SMOOTH',
+    avgSpd: Number(det.spd) || 0,
+    minSpd: Number(det.spd) || 0,
+    maxOcc: Number(det.occ) || 0,
+    worstDet: det
+  };
+  const oppGrp = opp ? {
+    status: opp.tier || 'SMOOTH',
+    avgSpd: Number(opp.spd) || 0,
+    minSpd: Number(opp.spd) || 0,
+    maxOcc: Number(opp.occ) || 0,
+    worstDet: opp
+  } : null;
+  const rawDec = typeof synthesizeTrafficDecision === 'function'
+    ? synthesizeTrafficDecision(sameGrp, oppGrp, isZh)
+    : null;
+  const dec = rawDec ? {
+    tone: rawDec.tone || (det.tier === 'JAMMED' ? 'jammed' : (det.tier === 'SLOW' ? 'slow' : 'smooth')),
+    verdict: isZh ? (rawDec.verdictTc || rawDec.verdictEn) : (rawDec.verdictEn || rawDec.verdictTc),
+    actionTip: isZh ? (rawDec.actionTc || rawDec.actionEn || '') : (rawDec.actionEn || rawDec.actionTc || ''),
+    delayLabel: isZh ? (rawDec.delayLabelTc || rawDec.delayLabelEn || '0m') : (rawDec.delayLabelEn || rawDec.delayLabelTc || '0m'),
+    densityLabel: isZh ? (rawDec.densityTc || rawDec.densityEn || '車流密度') : (rawDec.densityEn || rawDec.densityTc || 'Lane Load')
+  } : {
+    tone: det.tier === 'JAMMED' ? 'jammed' : (det.tier === 'SLOW' ? 'slow' : 'smooth'),
+    verdict: det.tier === 'JAMMED' ? (isZh ? '前路擠塞 · 預計慢 10–18 分鐘' : 'Traffic jam · Expect +10–18m') : (isZh ? '前路暢順 · 預計無延誤' : 'Clear ahead · No delay'),
+    delayLabel: det.tier === 'JAMMED' ? '+10–18m' : (det.tier === 'SLOW' ? '+4–8m' : '0m'),
+    densityLabel: isZh ? `佔用率 ${Math.round(det.occ || 0)}%` : `${Math.round(det.occ || 0)}% load`,
+    actionTip: ''
+  };
+
+  const titleEl = document.getElementById('trafficModalTitle');
+  const subEl = document.getElementById('trafficModalSub');
+  const closeEl = document.getElementById('trafficModalCloseBtn');
+  if (titleEl) titleEl.innerText = roadName;
+  const dirLabel = det.dir ? `${det.dir}` : (Number.isFinite(det.rot) ? `${Math.round(det.rot)}°` : '');
+  const capAt = window.__LIVE_TRAFFIC_CAPTURED_AT__ || '';
+  if (subEl) subEl.innerText = [dirLabel, capAt].filter(Boolean).join(' · ');
+  if (closeEl) closeEl.innerText = isZh ? '✕ 關閉' : '✕ Close';
+
+  const toneDot = dec.tone === 'jammed' ? '🔴' : (dec.tone === 'slow' ? '🟠' : '🟢');
+  const oppHtml = opp
+    ? `<div style="font-size:0.74rem; color:var(--text-sub); padding:7px 10px; border-radius:10px; background:var(--bg-surface); border:1px solid var(--border-color);">
+         ${opp.tier === 'JAMMED'
+           ? (isZh ? `ℹ️ 對面線擠塞 (${Math.round(opp.spd)} km/h)，不影響你搭乘方向。` : `ℹ️ Opposite bound is jammed (${Math.round(opp.spd)} km/h) — does not affect your direction.`)
+           : (isZh ? `ℹ️ 對面線車速約 ${Math.round(opp.spd)} km/h。` : `ℹ️ Opposite carriageway moving at ~${Math.round(opp.spd)} km/h.`)}
+       </div>`
+    : '';
+
+  const camUrl = det.camKey ? `https://tdcctv.data.one.gov.hk/${encodeURIComponent(det.camKey)}.JPG?t=${Math.floor(Date.now() / 60000)}` : '';
+  const camHtml = camUrl
+    ? `<div class="traffic-cam-frame">
+         <img id="trafficDecisionCamImg" src="${camUrl}" alt="${escapeHtml(roadName)} TD live camera snapshot" loading="eager" onerror="this.parentElement.innerHTML='<div style=&quot;color:#CBD5E1;font-size:0.78rem;padding:16px;text-align:center;&quot;>${isZh ? '運輸署實拍圖暫時未能載入' : 'TD road snapshot temporarily unavailable'}</div>'">
+       </div>
+       <div class="traffic-cam-caption">
+         <span>📷 ${isZh ? '運輸署實時路況快拍' : 'HKSAR TD Live Road Snapshot'} (${escapeHtml(det.camKey)})</span>
+         <button type="button" style="border:none; background:none; color:var(--ios-blue); font-weight:700; font-size:0.72rem; cursor:pointer; padding:2px 4px;" onclick="refreshTrafficDecisionCam('${escapeJsAttr(det.camKey)}')">↻ ${isZh ? '更新圖片' : 'Refresh'}</button>
+       </div>`
+    : `<div style="font-size:0.76rem; color:var(--text-sub); text-align:center; padding:12px; border-radius:11px; background:var(--bg-surface);">
+         ${isZh ? '此路段感應器未配對運輸署鏡頭，以上為實時車速及佔用率數據。' : 'No TD camera paired at this sensor — verdict uses live road speed & occupancy telemetry.'}
+       </div>`;
+
+  const canJumpMap = currentView === 'detail' && typeof focusTrafficDetectorOnDetailMap === 'function';
+  bodyEl.innerHTML = `
+    <div class="traffic-verdict-banner tone-${dec.tone}">
+      <div class="traffic-verdict-title">${toneDot} ${escapeHtml(dec.verdict)}</div>
+      ${dec.actionTip ? `<div class="traffic-verdict-tip">${escapeHtml(dec.actionTip)}</div>` : ''}
+    </div>
+    <div class="traffic-metrics-grid">
+      <div class="traffic-metric-box">
+        <div class="traffic-metric-val">${Math.round(det.spd || 0)} km/h</div>
+        <div class="traffic-metric-lbl">${isZh ? '實時車速' : 'Live Speed'}</div>
+      </div>
+      <div class="traffic-metric-box">
+        <div class="traffic-metric-val">${escapeHtml(dec.delayLabel || '0m')}</div>
+        <div class="traffic-metric-lbl">${isZh ? '預計延誤' : 'Est. Delay'}</div>
+      </div>
+      <div class="traffic-metric-box">
+        <div class="traffic-metric-val">${Math.round(det.occ || 0)}%</div>
+        <div class="traffic-metric-lbl">${escapeHtml(dec.densityLabel || (isZh ? '車流密度' : 'Lane Load'))}</div>
+      </div>
+    </div>
+    ${oppHtml}
+    ${camHtml}
+    <div class="traffic-modal-actions">
+      ${canJumpMap ? `<button type="button" class="traffic-modal-btn" onclick="closeTrafficDecisionModal(); focusTrafficDetectorOnDetailMap(${det.lat}, ${det.lon}, '${escapeJsAttr(det.id)}');">🗺️ ${isZh ? '在地圖標示' : 'Show on Map'}</button>` : ''}
+      <button type="button" class="traffic-modal-btn primary" onclick="closeTrafficDecisionModal()">${isZh ? '知道了' : 'Got it'}</button>
+    </div>
+  `;
+  modal.style.display = 'flex';
+};
+
+window.refreshTrafficDecisionCam = function(camKey) {
+  const img = document.getElementById('trafficDecisionCamImg');
+  if (img && camKey) {
+    img.src = `https://tdcctv.data.one.gov.hk/${encodeURIComponent(camKey)}.JPG?t=${Date.now()}`;
+  }
+};
+
+window.closeTrafficDecisionModal = function() {
+  const modal = document.getElementById('trafficDecisionModal');
+  if (modal) modal.style.display = 'none';
+};
 
 function selectStopFromSearch(stopKey) {
   triggerHaptic(12);
@@ -5509,10 +5956,6 @@ function syncSettingsModalLabels() {
     ? '整合九巴、城巴、嶼巴、小巴、港鐵、輕鐵及渡輪實時到站及多式聯運轉乘規劃，採用政府開放數據。'
     : 'Real-time Hong Kong Bus, MTR, Light Rail & Ferry ETAs and multi-modal route planner powered by open HKSAR data.');
   setV('aboutAppVersionBadge', `Build ${APP_VERSION}`);
-  const dismissedGuide = typeof hasOnboardingDismissedCookie === 'function' && hasOnboardingDismissedCookie();
-  setV('aboutResetGuideBtn', dismissedGuide
-    ? (isZh ? '🖼️ 重開啟動圖解教學' : '🖼️ Re-enable startup guide')
-    : (isZh ? '🖼️ 查看圖解教學' : '🖼️ Open Visual Guide'));
   setV('aboutSecCompanion', isZh ? '同系列香港實用網站' : 'Useful HK Companion Apps');
   setV('settingRowLblProp', isZh ? '🏠 香港樓市・租買及宜居數碼分身' : '🏠 Rent, Buy & Livability Twin');
   setV('settingRowSubProp', isZh ? '全港18區 · 1,164+ 屋苑租金買樓估值、Near Work 及零地產廣告' : '18 HK regions · 1,164+ homes, Rent/Buy/Near Work & zero agent ads');
@@ -5566,17 +6009,18 @@ function cycleTextSize() {
 
 let activeTutorialStep = 0;
 let tutorialOpenedFromSettings = false;
+const TUTORIAL_CONTENT_VERSION = '2026-11-24';
 const ONBOARDING_SEEN_KEY = 'transit_onboarding_seen_v2';
 const ONBOARDING_COOKIE_NAME = 'transit_onboarding_dismissed';
 const ONBOARDING_NEVER_SHOW_KEY = 'transit_onboarding_never_show_v1';
 const TUTORIAL_SLIDE_COUNT = 7;
 
-function setOnboardingDismissedCookie(enable) {
+function setOnboardingDismissedCookie(enable, ver = TUTORIAL_CONTENT_VERSION) {
   try {
     if (enable) {
-      const maxAgeSec = 60 * 60 * 24 * 365 * 10; // 10 years — persists across app version bumps
-      document.cookie = `${ONBOARDING_COOKIE_NAME}=1; max-age=${maxAgeSec}; path=/; SameSite=Lax`;
-      SafeStorage.setItem(ONBOARDING_NEVER_SHOW_KEY, '1');
+      const maxAgeSec = 60 * 60 * 24 * 365 * 10; // 10 years — persists until TUTORIAL_CONTENT_VERSION changes
+      document.cookie = `${ONBOARDING_COOKIE_NAME}=${encodeURIComponent(ver)}; max-age=${maxAgeSec}; path=/; SameSite=Lax`;
+      SafeStorage.setItem(ONBOARDING_NEVER_SHOW_KEY, ver);
     } else {
       document.cookie = `${ONBOARDING_COOKIE_NAME}=; max-age=0; path=/; SameSite=Lax`;
       SafeStorage.removeItem(ONBOARDING_NEVER_SHOW_KEY);
@@ -5584,10 +6028,11 @@ function setOnboardingDismissedCookie(enable) {
   } catch (e) {}
 }
 
-function hasOnboardingDismissedCookie() {
+function hasOnboardingDismissedCookie(ver = TUTORIAL_CONTENT_VERSION) {
   try {
-    if (SafeStorage.getItem(ONBOARDING_NEVER_SHOW_KEY) === '1') return true;
-    return String(document.cookie || '').split(';').some(c => c.trim().startsWith(`${ONBOARDING_COOKIE_NAME}=1`));
+    if (SafeStorage.getItem(ONBOARDING_NEVER_SHOW_KEY) === ver) return true;
+    const target = `${ONBOARDING_COOKIE_NAME}=${encodeURIComponent(ver)}`;
+    return String(document.cookie || '').split(';').some(c => c.trim() === target);
   } catch (e) {
     return false;
   }
@@ -5739,7 +6184,7 @@ function buildTutorialSlideSvg(stepIdx, isZh) {
     const bestT = isZh ? '最佳路線' : 'Best';
     const walkTag = isZh ? '金鐘 B出口 · 2分' : 'Walk 2m · Exit B';
     const btnLbl = isZh ? '站點班次 ›' : 'Stops & ETA ›';
-    const liveLbl = isZh ? '● 實時到站 · 🟢 前路暢順' : '● Live ETA · 🟢 Smooth';
+    const liveLbl = isZh ? '● 實時 · 🟢 前路暢順' : '● Real-time · 🟢 Clear';
     return `<svg viewBox="0 0 340 276" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${walkTag}">
       <rect width="340" height="276" fill="var(--bg-surface)"/>
       <rect x="14" y="10" width="312" height="256" rx="18" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
@@ -6102,8 +6547,8 @@ function renderTutorialStep() {
   const dontShowLbl = document.getElementById('tutorialDontShowLabel');
   if (dontShowLbl) {
     dontShowLbl.innerText = isZh
-      ? '不再自動顯示（更新後亦會保留設定）'
-      : "Don't show again (saved across updates)";
+      ? '不再自動顯示（教學更新時會再次提示）'
+      : "Don't show again until guide updates";
   }
   const dontShowCb = document.getElementById('tutorialDontShowCheckbox');
   if (dontShowCb) {
@@ -6181,10 +6626,10 @@ function openTutorialModal(fromSettings = true) {
 }
 
 function closeTutorialModal() {
-  SafeStorage.setItem(ONBOARDING_SEEN_KEY, '1');
+  SafeStorage.setItem(ONBOARDING_SEEN_KEY, TUTORIAL_CONTENT_VERSION);
   const dontShowCb = document.getElementById('tutorialDontShowCheckbox');
   if (dontShowCb && dontShowCb.checked) {
-    setOnboardingDismissedCookie(true);
+    setOnboardingDismissedCookie(true, TUTORIAL_CONTENT_VERSION);
   }
   const modal = document.getElementById('tutorialModal');
   if (modal) modal.style.display = 'none';
@@ -6193,8 +6638,8 @@ function closeTutorialModal() {
 function maybeShowFirstVisitOnboarding(hasDeepLink = false) {
   const params = new URLSearchParams(window.location.search || '');
   if (hasDeepLink || params.get('autostart') === '1') return;
-  if (hasOnboardingDismissedCookie()) return;
-  if (SafeStorage.getItem(ONBOARDING_SEEN_KEY)) return;
+  if (hasOnboardingDismissedCookie(TUTORIAL_CONTENT_VERSION)) return;
+  if (SafeStorage.getItem(ONBOARDING_SEEN_KEY) === TUTORIAL_CONTENT_VERSION) return;
   if (document.getElementById('settingsModal')?.style.display === 'flex') return;
   openTutorialModal(false);
 }
@@ -6750,6 +7195,23 @@ window.openCompanionAppAtCurrentStop = function(target) {
 
 (async function boot() {
   applyLanguage();
+
+  // Recover Home & Work stops from IndexedDB backup if localStorage & cookie were both cleared
+  if (typeof SavedHubsManager !== 'undefined' && window.__TRANSIT_IDB__?.get) {
+    const curHubs = SavedHubsManager.getHubs();
+    if (!curHubs.home && !curHubs.work) {
+      window.__TRANSIT_IDB__.get('transit_saved_hubs_v1').then((idbHubs) => {
+        if (idbHubs && (idbHubs.home || idbHubs.work)) {
+          if (idbHubs.home) SavedHubsManager.setHub('home', idbHubs.home);
+          if (idbHubs.work) SavedHubsManager.setHub('work', idbHubs.work);
+          if (typeof syncSettingsModalLabels === 'function') syncSettingsModalLabels();
+          if (typeof renderCommuteShortcutChips === 'function') renderCommuteShortcutChips();
+        }
+      }).catch(() => {});
+    }
+  }
+  // Pre-warm Leaflet asynchronously after initial paint (never blocks boot)
+  setTimeout(() => { if (typeof window.ensureLeafletLoaded === 'function') window.ensureLeafletLoaded(); }, 180);
 
   if (!liveFerryApiCache.data) {
     liveFerryApiCache.data = { liveEtas: {}, csvSchedules: {}, keyTs: {} };

@@ -49,34 +49,36 @@ function buildTrafficDetectorPopupHtml(det, isZh) {
   const tierCol = det.tier === 'JAMMED' ? '#DC2626' : (det.tier === 'SLOW' ? '#D97706' : '#16A34A');
   const tierLbl = det.tier === 'JAMMED'
     ? (isZh ? '交通擠塞' : 'Jammed')
-    : (det.tier === 'SLOW' ? (isZh ? '車多緩慢' : 'Slow') : (isZh ? '交通暢順' : 'Smooth'));
+    : (det.tier === 'SLOW' ? (isZh ? '車多緩慢' : 'Slow') : (isZh ? '暢順無延誤' : 'Clear'));
   const dirTxt = det.dir ? ` · ${escapeHtml(det.dir)}` : '';
-  const updTxt = window.__LIVE_TRAFFIC_CAPTURED_AT__
-    ? `<div style="font-size:0.66rem; color:#64748B; margin-top:4px; font-variant-numeric:tabular-nums;">TD ${escapeHtml(window.__LIVE_TRAFFIC_CAPTURED_AT__)}</div>`
-    : '';
-  const camUrl = det.camKey ? `https://tdcctv.data.one.gov.hk/${encodeURIComponent(det.camKey)}.JPG?t=${Math.floor(Date.now() / 60000)}` : '';
-  const camHtml = camUrl
-    ? `<div style="margin-top:8px; border-radius:8px; overflow:hidden; border:1px solid rgba(0,0,0,0.12); background:#0F172A;">
-         <img src="${camUrl}" alt="${escapeHtml(roadName)}" loading="lazy"
-              style="display:block; width:100%; height:112px; object-fit:cover;"
-              onerror="this.parentElement.style.display='none'">
-         <div style="padding:3px 7px; font-size:0.64rem; color:#CBD5E1; font-weight:600;">📷 ${isZh ? '運輸署實時道路快照' : 'TD Live Road Snapshot'}</div>
-       </div>`
-    : '';
+  const dec = (typeof synthesizeTrafficDecision === 'function')
+    ? synthesizeTrafficDecision({ status: det.tier || 'SMOOTH', avgSpd: Number(det.spd) || 0, minSpd: Number(det.spd) || 0, maxOcc: Number(det.occ) || 0, worstDet: det }, null, isZh)
+    : null;
+  const verdictLine = dec
+    ? (isZh ? dec.verdictTc : dec.verdictEn)
+    : tierLbl;
+  const occVal = Number(det.occ) || 0;
+  const escId = escapeJsAttr(det.id || '');
+  const btnLbl = det.camKey
+    ? (isZh ? '📷 查看完整路況及實拍 ›' : '📷 Full Road Analysis & Cam ›')
+    : (isZh ? '📊 查看詳細路況 ›' : '📊 Full Road Analysis ›');
 
   return `
-    <div style="min-width:205px; max-width:240px; font-family:inherit; color:#1C1C1E;">
-      <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
-        <span style="font-weight:800; font-size:0.82rem; line-height:1.25;">${escapeHtml(roadName)}</span>
-        <span style="font-weight:800; font-size:0.72rem; color:${tierCol}; white-space:nowrap;">${escapeHtml(tierLbl)}</span>
+    <div style="min-width:195px; max-width:236px; font-family:inherit; color:#1C1C1E;">
+      <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:8px;">
+        <span style="font-weight:800; font-size:0.80rem; line-height:1.25;">${escapeHtml(roadName)}</span>
+        <span style="font-weight:800; font-size:0.70rem; color:${tierCol}; white-space:nowrap;">${escapeHtml(tierLbl)}</span>
       </div>
-      <div style="font-size:0.71rem; color:#475569; margin-top:2px;">${det.rot}°${dirTxt}</div>
-      <div style="display:flex; align-items:baseline; gap:10px; margin-top:6px; padding-top:6px; border-top:1px solid rgba(0,0,0,0.08); font-variant-numeric:tabular-nums;">
-        <span style="font-size:1.05rem; font-weight:800; color:${tierCol};">${Number(det.spd)} <span style="font-size:0.72rem; font-weight:600;">km/h</span></span>
-        <span style="font-size:0.73rem; font-weight:600; color:#475569;">${Number(det.occ) || 0}% ${isZh ? '佔用率' : 'occ'}</span>
+      <div style="font-size:0.72rem; font-weight:700; color:${tierCol}; margin-top:4px;">${escapeHtml(verdictLine)}</div>
+      <div style="display:flex; align-items:baseline; gap:10px; margin-top:5px; padding-top:5px; border-top:1px solid rgba(0,0,0,0.08); font-variant-numeric:tabular-nums;">
+        <span style="font-size:0.98rem; font-weight:800; color:${tierCol};">${Number(det.spd)} <span style="font-size:0.70rem; font-weight:600;">km/h</span></span>
+        <span style="font-size:0.71rem; font-weight:600; color:#475569;">${occVal}% ${isZh ? '佔用率' : 'occ'}${dirTxt}</span>
       </div>
-      ${camHtml}
-      ${updTxt}
+      <button type="button"
+        onclick="event.stopPropagation(); if(typeof window.openTrafficDecisionModal==='function')window.openTrafficDecisionModal('${escId}');"
+        style="margin-top:8px; width:100%; border:none; border-radius:8px; background:#0F172A; color:#FFFFFF; font-size:0.73rem; font-weight:700; padding:7px 10px; cursor:pointer; text-align:center;">
+        ${btnLbl}
+      </button>
     </div>
   `;
 }
@@ -673,7 +675,16 @@ function zoomMapIn() { window.mapInstance?.zoomIn(); }
 function zoomMapOut() { window.mapInstance?.zoomOut(); }
 
 function drawRouteOnMap(group, activeStopIdx = 0) {
-  if (typeof L === 'undefined') return;
+  if (typeof L === 'undefined') {
+    if (typeof window.ensureLeafletLoaded === 'function') {
+      window.ensureLeafletLoaded().then(() => {
+        if (typeof L !== 'undefined' && typeof currentView !== 'undefined' && currentView === 'detail' && detailRouteGroup === group) {
+          drawRouteOnMap(group, activeStopIdx);
+        }
+      });
+    }
+    return;
+  }
   const startLat = (typeof lastKnownPos !== 'undefined' && lastKnownPos?.lat) ? lastKnownPos.lat : 22.2855;
   const startLon = (typeof lastKnownPos !== 'undefined' && lastKnownPos?.lon) ? lastKnownPos.lon : 114.1577;
   if (!window.mapInstance) {
@@ -881,7 +892,16 @@ function clearAllActiveBrowseMarkers() {
 }
 
 function initAndRenderBrowseMap() {
-  if (typeof L === 'undefined') return;
+  if (typeof L === 'undefined') {
+    if (typeof window.ensureLeafletLoaded === 'function') {
+      window.ensureLeafletLoaded().then(() => {
+        if (typeof L !== 'undefined' && typeof currentView !== 'undefined' && currentView === 'map') {
+          initAndRenderBrowseMap();
+        }
+      });
+    }
+    return;
+  }
   const centerLat = lastKnownPos?.lat || 22.2855;
   const centerLon = lastKnownPos?.lon || 114.1577;
   if (!window.browseMapInstance) {
@@ -1226,7 +1246,19 @@ window.clearTransferPlannerMapLayers = clearTransferPlannerMapLayers;
 window.handleXferMapSpotClick = handleXferMapSpotClick;
 
 function ensureXferMapInitialized() {
-  if (typeof L === 'undefined') return null;
+  if (typeof L === 'undefined') {
+    if (typeof window.ensureLeafletLoaded === 'function') {
+      window.ensureLeafletLoaded().then(() => {
+        if (typeof L !== 'undefined' && typeof currentView !== 'undefined' && currentView === 'xfer') {
+          ensureXferMapInitialized();
+          if (typeof renderTransferPlannerView === 'function') {
+            try { fitTransferPlannerMapBounds(); } catch (e) {}
+          }
+        }
+      });
+    }
+    return null;
+  }
   initXferMapDragResize();
   if (!window.xferMapInstance) {
     const startLat = (typeof lastKnownPos !== 'undefined' && lastKnownPos?.lat) ? lastKnownPos.lat : 22.302;

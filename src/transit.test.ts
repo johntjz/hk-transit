@@ -141,6 +141,9 @@ function loadHardcodeAndPlannerSandbox(overrides: Record<string, any> = {}) {
       angularDiffDeg,
       inferDirectionalRoadTrafficForStops,
       getDirectionalRoadSummary,
+      synthesizeTrafficDecision,
+      parseHkGpsCoordinates,
+      SavedHubsManager,
       buildPlannerLegRoadTrafficTagHtml,
     });`,
     ctx
@@ -2068,15 +2071,19 @@ test('planner.js: keeps 3M (19m live) above 1 (59m sched) without false merge an
   const directNos = [...spec.directRoutes.map((d: any) => d.group.routeNo)].sort();
   assert.deepEqual(directNos, ['1', '3M'], 'Both NLB 1 and 3M must remain uncollapsed until live ETAs resolve');
 
-  // 5. Planner signal labels and action buttons distinguish "Live ETA" from "Stops & ETA ›"
+  // 5. Planner signal labels and action buttons distinguish "Real-time" (no-wrap) from "Stops & ETA ›"
   sb.ctx.currentLang = 'en';
-  assert.ok(sb.formatLegSignalTagHtml('LIVE').includes('Live ETA'));
+  const liveTagEn = sb.formatLegSignalTagHtml('LIVE');
+  assert.ok(liveTagEn.includes('Real-time') && liveTagEn.includes('white-space:nowrap'), `Expected non-wrapping Real-time tag, got: ${liveTagEn}`);
+  assert.ok(!liveTagEn.includes('Live ETA'), 'Jargon Live ETA must be replaced with Real-time');
   assert.ok(sb.formatLegSignalTagHtml('SCHED').includes('Scheduled'));
   sb.ctx.currentLang = 'zh';
-  assert.ok(sb.formatLegSignalTagHtml('LIVE').includes('實時到站'));
+  const liveTagZh = sb.formatLegSignalTagHtml('LIVE');
+  assert.ok(liveTagZh.includes('實時') && liveTagZh.includes('white-space:nowrap'), `Expected non-wrapping 實時 tag, got: ${liveTagZh}`);
   assert.ok(sb.formatLegSignalTagHtml('SCHED').includes('預計班次'));
 
   const plannerSrc = fs.readFileSync('public/planner.js', 'utf8');
+  assert.ok(!plannerSrc.includes('Live ETA'), 'public/planner.js must not contain Live ETA jargon');
   assert.ok(plannerSrc.includes("'Stops & ETA ›'") && plannerSrc.includes("'站點班次 ›'"), 'Planner leg button must say Stops & ETA ›');
   assert.ok(!plannerSrc.includes("'Live ›'") && !plannerSrc.includes("'實時 ›'"), 'Ambiguous Live › button label must be removed');
 });
@@ -2163,19 +2170,17 @@ test('hardcode.js: NLB 1 & NLB 3M two-way sectional fare badge & driver notice o
     );
   }
 
-  // 2. NLB 3M -> Tung Chung: Lo Uk Tsuen keeps it, Shek Mun Kap / San Shek Wan+ do not
+  // 2. NLB 3M -> Tung Chung: fares auto-reduce along the route, so NO stop (including Lo Uk Tsuen) needs 2-way driver notice
   const g3mToTc = findGroup('3M', /Tung Chung/i);
   assert.ok(g3mToTc, 'NLB 3M to Tung Chung must exist in bus_index.min.json');
   const s3mToTc = unpacked.routeStopsCache[g3mToTc.routeIds[0]];
   const loUk3mTcIdx = s3mToTc.findIndex((s: any) => /Lo Uk Tsuen/i.test(s.stopName_e));
-  const smkInIdx = s3mToTc.findIndex((s: any) => /Shek Mun Kap/i.test(s.stopName_e));
-  assert.ok(loUk3mTcIdx >= 0 && smkInIdx > loUk3mTcIdx);
-  assert.equal(hasStopTwoWaySectionalFare(g3mToTc, s3mToTc, loUk3mTcIdx, false), true, '3M -> Tung Chung at Lo Uk Tsuen needs driver notice');
-  for (let i = smkInIdx; i < s3mToTc.length; i++) {
+  assert.ok(loUk3mTcIdx >= 0, 'Lo Uk Tsuen must exist on 3M -> Tung Chung');
+  for (let i = 0; i < s3mToTc.length; i++) {
     assert.equal(
       hasStopTwoWaySectionalFare(g3mToTc, s3mToTc, i, false),
       false,
-      `3M -> Tung Chung stop ${i + 1}. ${s3mToTc[i].stopName_e} must NOT show driver notice`
+      `3M -> Tung Chung stop ${i + 1}. ${s3mToTc[i].stopName_e} must NOT show 2-way driver notice`
     );
   }
 
@@ -2296,20 +2301,19 @@ test('hardcode.js: Tuesday 08:04 AM South Lantau NLB 1 & NLB 4 to Mui Wo at Lo U
   assert.equal(load4Live.tier, 'LOW', `Tuesday 08:04 NLB 4 live must be Seats/LOW (got ${load4Live.pct}% ${load4Live.labelEn})`);
 });
 
-test("index.html: onboarding 'Don't show again' persistent cookie survives app updates while manual guide and reset work", () => {
+test("index.html: versioned onboarding 'Don't show again' persists for current guide version, re-pops on guide update, and removes duplicate About guide button", () => {
   const html = fs.readFileSync('index.html', 'utf8');
   assert.ok(html.includes('id="tutorialDontShowCheckbox"'), 'Tutorial modal must render Dont show again checkbox');
+  assert.ok(!html.includes('id="aboutResetGuideBtn"'), 'Duplicate Visual Guide button in About modal must be removed');
 
-  const mCookieConsts = html.match(/const ONBOARDING_SEEN_KEY = [\s\S]*?const TUTORIAL_SLIDE_COUNT = 7;/);
+  const mCookieConsts = html.match(/const TUTORIAL_CONTENT_VERSION = [\s\S]*?const TUTORIAL_SLIDE_COUNT = 7;/);
   const mFns = html.match(/function setOnboardingDismissedCookie[\s\S]*?function hasOnboardingDismissedCookie[\s\S]*?\}\n\}/);
   const mMaybe = html.match(/function maybeShowFirstVisitOnboarding[\s\S]*?\n\}/);
-  const mReset = html.match(/function resetOnboardingAutoPopupFromAbout[\s\S]*?\n\}/);
-  assert.ok(mCookieConsts && mFns && mMaybe && mReset, 'Onboarding cookie helpers must exist in index.html');
+  assert.ok(mCookieConsts && mFns && mMaybe, 'Versioned onboarding cookie helpers must exist in index.html');
 
   const store = new Map<string, string>();
   let cookieJar = '';
   let modalOpenedCount = 0;
-  let closedAbout = false;
   const sb: any = {
     URLSearchParams,
     window: { location: { search: '' } },
@@ -2330,33 +2334,28 @@ test("index.html: onboarding 'Don't show again' persistent cookie survives app u
       setItem: (k: string, v: string) => store.set(k, String(v)),
       removeItem: (k: string) => store.delete(k),
     },
-    triggerHaptic: () => {},
-    closeAboutModal: () => { closedAbout = true; },
     openTutorialModal: () => { modalOpenedCount += 1; },
   };
   vm.createContext(sb);
-  vm.runInContext(`${mCookieConsts[0]}\n${mFns[0]}\n${mMaybe[0]}\n${mReset[0]}`, sb);
+  vm.runInContext(`${mCookieConsts[0]}\n${mFns[0]}\n${mMaybe[0]}`, sb);
 
   // 1. Fresh user sees onboarding automatically once
   sb.maybeShowFirstVisitOnboarding(false);
   assert.equal(modalOpenedCount, 1);
 
-  // 2. User ticks "Don't show again" -> persistent cookie written
+  // 2. User ticks "Don't show again until guide updates" -> stores versioned cookie
   sb.setOnboardingDismissedCookie(true);
-  assert.ok(cookieJar.includes('transit_onboarding_dismissed=1'));
+  assert.ok(cookieJar.includes('transit_onboarding_dismissed='));
   assert.equal(sb.hasOnboardingDismissedCookie(), true);
 
-  // 3. Simulate app update clearing versioned ONBOARDING_SEEN_KEY (or cookie-only device): must NOT reopen
+  // 3. Clearing localStorage still honors cookie for the SAME guide version
   store.clear();
   assert.equal(sb.hasOnboardingDismissedCookie(), true);
   sb.maybeShowFirstVisitOnboarding(false);
-  assert.equal(modalOpenedCount, 1, 'Cookie must keep onboarding dismissed even if storage was cleared/bumped');
+  assert.equal(modalOpenedCount, 1, 'Cookie must keep onboarding dismissed for the same guide version');
 
-  // 4. Re-enable startup guide from About page clears cookie and opens tutorial
-  sb.resetOnboardingAutoPopupFromAbout();
-  assert.equal(closedAbout, true);
-  assert.equal(sb.hasOnboardingDismissedCookie(), false);
-  assert.equal(modalOpenedCount, 2);
+  // 4. When TUTORIAL_CONTENT_VERSION bumps to a new edition, hasOnboardingDismissedCookie(newVer) is false (re-pops once!)
+  assert.equal(sb.hasOnboardingDismissedCookie('2026-12-01'), false, 'Bumping tutorial version must re-show guide even if user dismissed old version');
 });
 
 test('worker.js: parses HKSAR strategic road CSV, valid-only speed XML lanes, UTF-16LE TD cameras, and traffic_live payload', async () => {
@@ -2483,12 +2482,12 @@ test('hardcode.js & planner.js: directional road inference distinguishes smooth 
   const sumEn = sb.getDirectionalRoadSummary(e36Stops, 0, detectors, false, 14);
   assert.ok(sumEn, 'Expected directional road summary');
   assert.equal(sumEn.tone, 'smooth', 'Same-direction traffic is smooth despite opposite-side jam');
-  assert.ok(sumEn.headline.includes('Your side smooth ahead (~68 km/h)'), `Unexpected EN headline: ${sumEn.headline}`);
-  assert.ok(sumEn.detail.includes('Opposite bound jammed (22 km/h'), `Unexpected EN detail: ${sumEn.detail}`);
+  assert.ok(sumEn.headline.includes('Clear your side · No delay'), `Unexpected EN headline: ${sumEn.headline}`);
+  assert.ok(sumEn.detail.includes('Opp. bound jammed (22 km/h)'), `Unexpected EN detail: ${sumEn.detail}`);
 
   const sumZh = sb.getDirectionalRoadSummary(e36Stops, 0, detectors, true, 14);
-  assert.ok(sumZh.headline.includes('你搭乘方向前路暢順 (~68 km/h)'), `Unexpected ZH headline: ${sumZh.headline}`);
-  assert.ok(sumZh.detail.includes('僅對面線擠塞 (22 km/h'), `Unexpected ZH detail: ${sumZh.detail}`);
+  assert.ok(sumZh.headline.includes('你方向暢通 · 無延誤'), `Unexpected ZH headline: ${sumZh.headline}`);
+  assert.ok(sumZh.detail.includes('僅對面線塞車 (22 km/h)'), `Unexpected ZH detail: ${sumZh.detail}`);
 
   // Opposite scenario: bus's OWN direction ahead is jammed (19 km/h)
   const jammedDetectors = [
@@ -2496,12 +2495,114 @@ test('hardcode.js & planner.js: directional road inference distinguishes smooth 
   ];
   const jammedSum = sb.getDirectionalRoadSummary(e36Stops, 0, jammedDetectors, false, 14);
   assert.equal(jammedSum.tone, 'jammed');
-  assert.ok(jammedSum.headline.includes('Traffic jam ahead · 19 km/h'));
+  assert.ok(jammedSum.headline.includes('Traffic jam · Expect +10–18m'), `Unexpected jammed headline: ${jammedSum.headline}`);
+  assert.ok(jammedSum.detail.includes('19 km/h'), `Unexpected jammed detail: ${jammedSum.detail}`);
 
   // Planner leg inline road badge when live detectors loaded
   sb.ctx.window.__LIVE_TRAFFIC_DETECTORS__ = detectors;
   const gE36 = { key: 'KMB_E36_O', mode: 'BUS', company: 'KMB', routeNo: 'E36', _stops: e36Stops };
   const legRoadHtml = sb.buildPlannerLegRoadTrafficTagHtml(gE36, e36Stops[0], e36Stops[2], false);
   assert.ok(legRoadHtml.includes('~68 km/h') && legRoadHtml.includes('planner-sig-road-smooth'), `Expected smooth road badge in planner leg, got: ${legRoadHtml}`);
+
+  // False expressway rejection: NLB 3M starting at Tung Chung Station -> Fu Tung Plaza -> Tung Chung Rd
+  // MUST NOT match nearby North Lantau Highway near Tung Chung (N)
+  const nlb3mLocalStops = [
+    { stopKey: 'NLB_TC', stopName_e: 'Tung Chung Station Bus Terminus', latitude: '22.2895', longitude: '113.9415' },
+    { stopKey: 'NLB_FT', stopName_e: 'Fu Tung Plaza', latitude: '22.2877', longitude: '113.9432' },
+    { stopKey: 'NLB_YT', stopName_e: 'Yu Tung Court', latitude: '22.2842', longitude: '113.9410' },
+    { stopKey: 'NLB_LM', stopName_e: 'Lung Tseng Tau', latitude: '22.2788', longitude: '113.9388' },
+  ];
+  const nlhDet = [
+    { id: 'AID_NLH_TC', lat: 22.2908, lon: 113.9438, rot: 120, spd: 100, occ: 1, tier: 'SMOOTH', roadEn: 'North Lantau Highway near Tung Chung (N) - Eastbound (2)', roadTc: '北大嶼山公路近東涌(北)', camKey: 'NLH01F' }
+  ];
+  const falseMatch = sb.getDirectionalRoadSummary(nlb3mLocalStops, 0, nlhDet, false, 8);
+  assert.equal(falseMatch, null, 'Local Tung Chung Rd bus (NLB 3M) must NEVER falsely attach North Lantau Highway expressway detector');
 });
+
+test('hardcode.js & planner.js: GPS coordinate paste (DMS & decimal), BULLETPROOF rail-vs-3-bus ranking, durable Home/Work cookies, and fast non-blocking boot', () => {
+  const sb = loadHardcodeAndPlannerSandbox();
+
+  // 1. GPS Coordinate parser (Google Maps DMS + Decimal + out-of-HK rejection)
+  const dms = sb.parseHkGpsCoordinates(`22°26'24.1"N 114°03'42.6"E`);
+  assert.ok(dms, 'Must parse Google Maps DMS coordinate string');
+  assert.ok(Math.abs(dms.lat - 22.440028) < 0.0005, `Unexpected DMS lat: ${dms.lat}`);
+  assert.ok(Math.abs(dms.lon - 114.061833) < 0.0005, `Unexpected DMS lon: ${dms.lon}`);
+
+  const dec = sb.parseHkGpsCoordinates('22.4400, 114.0618');
+  assert.ok(dec && Math.abs(dec.lat - 22.44) < 0.0001 && Math.abs(dec.lon - 114.0618) < 0.0001);
+  assert.equal(sb.parseHkGpsCoordinates('40.7128, -74.0060'), null, 'Out-of-HK coordinates must be rejected');
+  assert.equal(sb.parseHkGpsCoordinates('Kam Tin Rd'), null, 'Plain text must not parse as GPS');
+
+  // 2. BULLETPROOF (Best) ranking: 3M > TCL > TML > Walk 10m (99m) beats slower 3M > E36 > 72 (111m)
+  sb.ctx.xferSortPref = 'BULLETPROOF';
+  const railRouteScore = sb.computeDisruptionAdjustedScore(
+    99,
+    [
+      { group: { mode: 'BUS', company: 'NLB', routeNo: '3M', headwayMins: 15 }, stopsCount: 16 },
+      { group: { mode: 'MTR', company: 'MTR', routeNo: 'TCL', headwayMins: 5 }, stopsCount: 4 },
+      { group: { mode: 'MTR', company: 'MTR', routeNo: 'TML', headwayMins: 4 }, stopsCount: 3 },
+    ],
+    0,
+    600,
+    ['TUC', 'NAC'],
+    40.3,
+    [],
+    60,
+    { egressWalkDistM: 750, queryDate: new Date('2026-11-24T13:15:00+08:00') }
+  );
+  const threeBusScore = sb.computeDisruptionAdjustedScore(
+    111,
+    [
+      { group: { mode: 'BUS', company: 'NLB', routeNo: '3M', headwayMins: 15 }, stopsCount: 16 },
+      { group: { mode: 'BUS', company: 'KMB', routeNo: 'E36', headwayMins: 20 }, stopsCount: 14 },
+      { group: { mode: 'BUS', company: 'GMB', routeNo: '72', headwayMins: 8 }, stopsCount: 8 },
+    ],
+    0,
+    60,
+    [],
+    31.6,
+    [],
+    60,
+    { egressWalkDistM: 75, queryDate: new Date('2026-11-24T13:15:00+08:00') }
+  );
+  assert.ok(
+    railRouteScore < threeBusScore,
+    `Expected faster rail-core 3M>TCL>TML (score=${railRouteScore.toFixed(1)}) to outrank slower 3-bus 3M>E36>72 (score=${threeBusScore.toFixed(1)})`
+  );
+
+  // 3. SavedHubsManager durable cookie backup survives localStorage clear
+  let hubCookie = '';
+  const memStore = new Map<string, string>();
+  const sbHubs = loadHardcodeAndPlannerSandbox({
+    SafeStorage: {
+      getItem: (k: string) => memStore.get(k) ?? null,
+      setItem: (k: string, v: string) => memStore.set(k, String(v)),
+      removeItem: (k: string) => memStore.delete(k),
+    },
+    document: {
+      get cookie() { return hubCookie; },
+      set cookie(val: string) {
+        const kv = String(val).split(';')[0];
+        if (/max-age=0/i.test(val)) hubCookie = '';
+        else hubCookie = kv;
+      },
+      getElementById: () => null,
+      addEventListener: () => {},
+    },
+    stripPlatformCodeFromDisplay: (s: string) => String(s || ''),
+  });
+  sbHubs.SavedHubsManager.setHub('home', { stopKey: 'NLB_LOUK', stopName_e: 'Lo Uk Tsuen', name_tc: '羅屋村', lat: 22.2422, lon: 113.9721 });
+  assert.ok(hubCookie.includes('transit_hw_hubs_v1='), 'Setting Home stop must write durable transit_hw_hubs_v1 cookie');
+  memStore.clear();
+  const recovered = sbHubs.SavedHubsManager.getHubs();
+  assert.equal(recovered.home?.stopKey, 'NLB_LOUK', 'Home stop must recover cleanly from cookie when localStorage is wiped');
+
+  // 4. Fast PWA boot: no render-blocking unpkg Leaflet <link>/<script> in index.html, decision modal present
+  const html = fs.readFileSync('index.html', 'utf8');
+  assert.ok(!/<script[^>]+src=["']https:\/\/unpkg\.com\/leaflet/i.test(html), 'Must NOT have render-blocking unpkg.com Leaflet <script> in <head>');
+  assert.ok(!/<link[^>]+href=["']https:\/\/unpkg\.com\/leaflet/i.test(html), 'Must NOT have render-blocking unpkg.com Leaflet <link> in <head>');
+  assert.ok(html.includes('window.ensureLeafletLoaded'), 'Must define async multi-CDN ensureLeafletLoaded');
+  assert.ok(html.includes('id="trafficDecisionModal"') && html.includes('window.openTrafficDecisionModal'), 'Must include uncropped Traffic Decision & Road Cam modal');
+});
+
 

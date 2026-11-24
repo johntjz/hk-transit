@@ -2237,24 +2237,7 @@ const SECTIONAL_FARE_REGISTRY = {
           wk: 6.6, hol: 13.0
         }
       ],
-      I: [
-        {
-          maxBoardSeq: 10,
-          maxAlightSeq: 15,
-          excludeBoardRe: /pui\s*o|lo\s*uk|san\s*shek\s*wan|cheung\s*sha|shek\s*mun\s*kap|tung\s*chung|貝澳|羅屋村|散石灣|長沙|石門甲|東涌/i,
-          excludeAlightRe: /tung\s*chung|shek\s*mun\s*kap|mun\s*tung|cable\s*car|東涌|石門甲|滿東|纜車/i,
-          alightRe: /pui\s*o|lo\s*uk\s*tsuen|nam\s*shan|mui\s*wo|貝澳|羅屋村|南山|梅窩/i,
-          wk: 3.7, hol: 6.1
-        },
-        {
-          maxBoardSeq: 15,
-          maxAlightSeq: 22,
-          excludeBoardRe: /shek\s*mun\s*kap|tung\s*chung|石門甲|東涌/i,
-          excludeAlightRe: /tung\s*chung|shek\s*mun\s*kap|mun\s*tung|cable\s*car|東涌|石門甲|滿東|纜車/i,
-          alightRe: /san\s*shek\s*wan|cheung\s*sha|pak\s*kung\s*au|散石灣|長沙|伯公坳/i,
-          wk: 7.1, hol: 14.2
-        }
-      ]
+      I: []
     }
   },
   NLB_1: {
@@ -2457,16 +2440,20 @@ function hasStopTwoWaySectionalFare(group, stops, stopIdx, isHoliday = false) {
   const boardStop = stops[stopIdx];
   if (!boardStop) return false;
 
-  // Tail legs where drivers never need destination notification:
+  // Tail legs & auto-stepping directions where drivers never need destination notification:
   // 1) NLB 1 -> Mui Wo: from Lo Uk Tsuen onward (already on final leg into Mui Wo)
   if (co === 'NLB' && rNo === '1' && /mui\s*wo|梅窩/i.test(destStr)) {
     const loUkIdx = stops.findIndex(s => /lo\s*uk\s*tsuen|羅屋村/i.test(`${s?.stopName_e || ''} ${s?.name_tc || ''}`));
     if (loUkIdx >= 0 && stopIdx >= loUkIdx) return false;
   }
-  // 2) NLB 3M -> Tung Chung: from Shek Mun Kap Road onward (after Tung Chung Rd / Pak Kung Au)
+  // 2) NLB 3M -> Tung Chung: fares auto-reduce along the way — no driver notification needed in this direction
   if (co === 'NLB' && rNo === '3M' && /tung\s*chung|東涌/i.test(destStr)) {
+    return false;
+  }
+  // 3) NLB 3M -> Mui Wo: only from Tung Chung up to & including Shek Mun Kap (after Shek Mun Kap, auto one-way section)
+  if (co === 'NLB' && rNo === '3M' && /mui\s*wo|梅窩/i.test(destStr)) {
     const smkIdx = stops.findIndex(s => /shek\s*mun\s*kap|石門甲/i.test(`${s?.stopName_e || ''} ${s?.name_tc || ''}`));
-    if (smkIdx >= 0 && stopIdx >= smkIdx) return false;
+    if (smkIdx >= 0 && stopIdx > smkIdx) return false;
   }
 
   for (let j = stopIdx + 1; j < stops.length; j++) {
@@ -2535,12 +2522,102 @@ function angularDiffDeg(a, b) {
   return diff;
 }
 
+// Perpendicular distance (km) from point P to segment A->B using local equirectangular projection, plus projection parameter t.
+function pointToSegmentDistanceKm(pLat, pLon, aLat, aLon, bLat, bLon) {
+  const latRef = ((aLat + bLat) * 0.5) * Math.PI / 180;
+  const kx = 111.32 * Math.cos(latRef);
+  const ky = 110.574;
+  const ax = aLon * kx, ay = aLat * ky;
+  const bx = bLon * kx, by = bLat * ky;
+  const px = pLon * kx, py = pLat * ky;
+  const dx = bx - ax, dy = by - ay;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq <= 1e-9) {
+    return { distKm: Math.hypot(px - ax, py - ay), t: 0 };
+  }
+  const rawT = ((px - ax) * dx + (py - ay) * dy) / lenSq;
+  const t = Math.max(0, Math.min(1, rawT));
+  const projX = ax + t * dx;
+  const projY = ay + t * dy;
+  return { distKm: Math.hypot(px - projX, py - projY), t: rawT };
+}
+
+function isExpresswayOrTunnelDetector(det) {
+  const road = `${det?.roadEn || ''} ${det?.roadTc || ''}`;
+  return /highway|expressway|bypass|tunnel|bridge|corridor|trunk\s*road|tsing\s*ma|ting\s*kau|lantau\s*link|north\s*lantau|tuen\s*mun\s*rd|tuen\s*mun\s*road|tolo|fanling|san\s*tin|yuen\s*long\s*hwy|kong\s*sham|penny's\s*bay|tsing\s*sha|west\s*kowloon|island\s*eastern|tseung\s*kwan\s*o|route\s*\d|公路|幹線|繞道|隧道|大橋|走廊|青馬|汀九|北大嶼山|吐露港/i.test(road);
+}
+
+// Parse pasted Hong Kong GPS coordinates in DMS (e.g. 22°26'24.1"N 114°03'42.6"E), DDM, or decimal (22.4400, 114.0618).
+function parseHkGpsCoordinates(raw) {
+  const txt = String(raw || '').trim();
+  if (!txt || txt.length < 7 || txt.length > 96) return null;
+
+  let lat = NaN;
+  let lon = NaN;
+
+  // 1. DMS: 22°26'24.1"N 114°03'42.6"E (flexible symbols °/d, '/′, "/″, optional comma)
+  const dmsRe = /^\s*([NS])?\s*(\d{1,2})\s*[°dº]\s*(\d{1,2})\s*['′’m]\s*(\d{1,2}(?:\.\d+)?)\s*(?:["″”s])?\s*([NS])?\s*[,;\s]+\s*([EW])?\s*(\d{1,3})\s*[°dº]\s*(\d{1,2})\s*['′’m]\s*(\d{1,2}(?:\.\d+)?)\s*(?:["″”s])?\s*([EW])?\s*$/i;
+  const mDms = txt.match(dmsRe);
+  if (mDms) {
+    const latH = (mDms[1] || mDms[5] || 'N').toUpperCase();
+    const lonH = (mDms[6] || mDms[10] || 'E').toUpperCase();
+    const d1 = Number(mDms[2]), m1 = Number(mDms[3]), s1 = Number(mDms[4]);
+    const d2 = Number(mDms[7]), m2 = Number(mDms[8]), s2 = Number(mDms[9]);
+    if (m1 < 60 && s1 < 60 && m2 < 60 && s2 < 60) {
+      lat = (d1 + m1 / 60 + s1 / 3600) * (latH === 'S' ? -1 : 1);
+      lon = (d2 + m2 / 60 + s2 / 3600) * (lonH === 'W' ? -1 : 1);
+    }
+  }
+
+  // 2. DDM: 22°26.402'N 114°03.710'E
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+    const ddmRe = /^\s*([NS])?\s*(\d{1,2})\s*[°dº]\s*(\d{1,2}(?:\.\d+)?)\s*['′’m]?\s*([NS])?\s*[,;\s]+\s*([EW])?\s*(\d{1,3})\s*[°dº]\s*(\d{1,2}(?:\.\d+)?)\s*['′’m]?\s*([EW])?\s*$/i;
+    const mDdm = txt.match(ddmRe);
+    if (mDdm) {
+      const latH = (mDdm[1] || mDdm[4] || 'N').toUpperCase();
+      const lonH = (mDdm[5] || mDdm[8] || 'E').toUpperCase();
+      const d1 = Number(mDdm[2]), m1 = Number(mDdm[3]);
+      const d2 = Number(mDdm[6]), m2 = Number(mDdm[7]);
+      if (m1 < 60 && m2 < 60) {
+        lat = (d1 + m1 / 60) * (latH === 'S' ? -1 : 1);
+        lon = (d2 + m2 / 60) * (lonH === 'W' ? -1 : 1);
+      }
+    }
+  }
+
+  // 3. Decimal: 22.440028, 114.061833 or 22.4400N 114.0618E
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+    const decRe = /^\s*([+-]?\d{1,2}\.\d{3,})\s*°?\s*([NS])?\s*[,;\s]+\s*([+-]?\d{1,3}\.\d{3,})\s*°?\s*([EW])?\s*$/i;
+    const mDec = txt.match(decRe);
+    if (mDec) {
+      lat = Number(mDec[1]) * (String(mDec[2] || '').toUpperCase() === 'S' ? -1 : 1);
+      lon = Number(mDec[3]) * (String(mDec[4] || '').toUpperCase() === 'W' ? -1 : 1);
+    }
+  }
+
+  // Hong Kong bounding box check (reject unrelated numeric text or overseas coords)
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  if (lat < 22.10 || lat > 22.60 || lon < 113.80 || lon > 114.50) return null;
+
+  const latFixed = Number(lat.toFixed(6));
+  const lonFixed = Number(lon.toFixed(6));
+  const formatted = `${latFixed.toFixed(4)}, ${lonFixed.toFixed(4)}`;
+  return {
+    lat: latFixed,
+    lon: lonFixed,
+    formatted,
+    labelEn: `GPS Pin (${formatted})`,
+    labelTc: `GPS 座標 (${formatted})`
+  };
+}
+
 function summarizeDetectorBucket(hits) {
   if (!hits || !hits.length) return null;
   let spdSum = 0;
   let minSpd = Infinity;
   let maxOcc = 0;
   let worstDet = hits[0].det;
+  let worstHit = hits[0];
   let jamCount = 0;
   let slowCount = 0;
 
@@ -2552,8 +2629,10 @@ function summarizeDetectorBucket(hits) {
     if (Number.isFinite(spd) && spd < minSpd) {
       minSpd = spd;
       worstDet = d;
+      worstHit = h;
     } else if (Number.isFinite(spd) && spd === minSpd && occ > (Number(worstDet.occ) || 0)) {
       worstDet = d;
+      worstHit = h;
     }
     if (occ > maxOcc) maxOcc = occ;
     if (d.tier === 'JAMMED') jamCount++;
@@ -2569,6 +2648,7 @@ function summarizeDetectorBucket(hits) {
     status = 'SLOW';
   }
 
+  const repHit = status === 'SMOOTH' ? hits[0] : worstHit;
   return {
     count: hits.length,
     avgSpd,
@@ -2576,23 +2656,99 @@ function summarizeDetectorBucket(hits) {
     maxOcc: Math.round(maxOcc),
     status,
     worstDet,
-    representativeDet: (status === 'SMOOTH' ? hits[0].det : worstDet)
+    representativeDet: repHit.det,
+    aheadKm: Number((repHit.aheadKm || 0).toFixed(1))
+  };
+}
+
+// Synthesize human decision guidance directly from live TD detector speed & occupancy telemetry (zero cognitive counting of cars needed).
+function synthesizeTrafficDecision(same, opp = null, isZh = false) {
+  if (!same && !opp) return null;
+
+  if (same) {
+    const spd = Number(same.status === 'SMOOTH' ? same.avgSpd : same.minSpd) || 0;
+    const occ = Number(same.worstDet?.occ ?? same.maxOcc ?? 0);
+    const densityEn = occ >= 70 ? 'Bumper-to-bumper' : (occ >= 38 ? 'Heavy flow' : (occ >= 18 ? 'Moderate flow' : 'Light flow'));
+    const densityTc = occ >= 70 ? '車龍緩慢' : (occ >= 38 ? '車流擠迫' : (occ >= 18 ? '車流適中' : '車流稀疏'));
+
+    if (same.status === 'JAMMED') {
+      const severe = spd <= 15 || occ >= 75;
+      const delayEn = severe ? '+10–18m' : '+7–12m';
+      const delayTc = severe ? '慢 10–18 分鐘' : '慢 7–12 分鐘';
+      return {
+        tone: 'jammed',
+        verdictEn: `Traffic jam · Expect ${delayEn}`,
+        verdictTc: `前路擠塞 · 預計${delayTc}`,
+        actionEn: severe ? 'Consider MTR or allow extra buffer' : 'Allow extra travel time',
+        actionTc: severe ? '建議改乘港鐵或預留額外時間' : '請預留額外車程時間',
+        delayLabelEn: delayEn,
+        delayLabelTc: delayTc,
+        densityEn,
+        densityTc
+      };
+    }
+    if (same.status === 'SLOW') {
+      const delayEn = spd <= 30 ? '+4–8m' : '+2–5m';
+      const delayTc = spd <= 30 ? '慢 4–8 分鐘' : '慢 2–5 分鐘';
+      return {
+        tone: 'slow',
+        verdictEn: `Slow traffic · Expect ${delayEn}`,
+        verdictTc: `前路車多 · 預計${delayTc}`,
+        actionEn: 'Moving steadily with minor slowdowns',
+        actionTc: '行車稍慢，仍維持移動',
+        delayLabelEn: delayEn,
+        delayLabelTc: delayTc,
+        densityEn,
+        densityTc
+      };
+    }
+    const oppJam = opp && opp.status === 'JAMMED';
+    return {
+      tone: 'smooth',
+      verdictEn: oppJam ? 'Clear your side · No delay' : 'Clear ahead · No delay',
+      verdictTc: oppJam ? '你方向暢通 · 無延誤' : '前路暢通 · 無延誤',
+      actionEn: oppJam ? 'Jam is only on the opposite carriageway' : 'Normal travel time expected',
+      actionTc: oppJam ? '擠塞僅在對面行車線，不受影響' : '路面順暢，按正常車程出行',
+      delayLabelEn: 'No delay',
+      delayLabelTc: '無延誤',
+      densityEn,
+      densityTc
+    };
+  }
+
+  // Opposite carriageway only
+  const oppJam = opp.status === 'JAMMED';
+  return {
+    tone: 'smooth',
+    verdictEn: oppJam ? `Opposite bound jammed (${opp.minSpd} km/h)` : `Nearby road clear (~${opp.avgSpd} km/h)`,
+    verdictTc: oppJam ? `僅對面線擠塞 (${opp.minSpd} km/h)` : `鄰近路面暢通 (約 ${opp.avgSpd} km/h)`,
+    actionEn: oppJam ? 'Opposite carriageway congested; monitor return leg' : 'Nearby road flowing normally',
+    actionTc: oppJam ? '對面線擠塞，回程時請留意' : '鄰近路段交通暢順',
+    delayLabelEn: 'No delay',
+    delayLabelTc: '無延誤',
+    densityEn: 'Nearby road',
+    densityTc: '鄰近路段'
   };
 }
 
 // Compare bus route forward stop sequence against HKSAR live traffic detectors' compass Rotation.
-// Separates Same Carriageway Ahead (ang <= 62 deg) from Opposing Carriageway (ang >= 118 deg).
-function inferDirectionalRoadTrafficForStops(stops, startIdx = 0, detectors = [], lookaheadStops = 14) {
+// Uses true perpendicular distance to upcoming segments + expressway guard so local/Lantau buses (e.g. NLB 3M)
+// never falsely match an overhead/adjacent expressway (e.g. North Lantau Highway) they do not travel on.
+function inferDirectionalRoadTrafficForStops(stops, startIdx = 0, detectors = [], lookaheadStops = 8) {
   if (!Array.isArray(stops) || stops.length < 2 || !Array.isArray(detectors) || !detectors.length) {
     return { sameSide: null, oppSide: null, hasLive: false, capturedAt: '' };
   }
 
   const fromIdx = Math.max(0, Math.min(stops.length - 2, Number(startIdx) || 0));
-  const endIdx = Math.min(stops.length, fromIdx + Math.max(2, Number(lookaheadStops) || 14) + 1);
+  const effLookahead = Math.max(2, Math.min(12, Number(lookaheadStops) || 8));
+  const endIdx = Math.min(stops.length, fromIdx + effLookahead + 1);
   const slice = stops.slice(fromIdx, endIdx);
+
+  const bbiStopRe = /tunnel|toll\s*plaza|\bbbi\b|highway|interchange|tsing\s*ma|lantau\s*link|轉車站|隧道|收費廣場|公路/i;
 
   const segments = [];
   let minLat = 90, maxLat = -90, minLon = 180, maxLon = -180;
+  let cumKm = 0;
   for (let i = 0; i < slice.length - 1; i++) {
     const a = slice[i], b = slice[i + 1];
     const la1 = parseFloat(a?.latitude ?? a?.lat), lo1 = parseFloat(a?.longitude ?? a?.lon);
@@ -2600,25 +2756,35 @@ function inferDirectionalRoadTrafficForStops(stops, startIdx = 0, detectors = []
     if (!Number.isFinite(la1) || !Number.isFinite(lo1) || !Number.isFinite(la2) || !Number.isFinite(lo2)) continue;
     const hopKm = _haversineKm(la1, lo1, la2, lo2);
     if (hopKm < 0.04) continue;
+    // Stop scanning far beyond ~6.5km ahead (unless the very first segment is a long highway/tunnel span)
+    if (i > 0 && cumKm > 6.5) break;
     minLat = Math.min(minLat, la1, la2);
     maxLat = Math.max(maxLat, la1, la2);
     minLon = Math.min(minLon, lo1, lo2);
     maxLon = Math.max(maxLon, lo1, lo2);
+    const aName = `${a?.stopName_e || ''} ${a?.name_tc || ''}`;
+    const bName = `${b?.stopName_e || ''} ${b?.name_tc || ''}`;
+    const isBbiSeg = bbiStopRe.test(aName) || bbiStopRe.test(bName);
     segments.push({
+      segIdx: i,
       la1, lo1, la2, lo2,
-      midLat: (la1 + la2) / 2,
-      midLon: (lo1 + lo2) / 2,
       hopKm,
+      cumKm,
+      isBbiSeg,
       brg: computeBearingDeg(la1, lo1, la2, lo2)
     });
+    cumKm += hopKm;
   }
 
   if (!segments.length) {
     return { sameSide: null, oppSide: null, hasLive: false, capturedAt: '' };
   }
 
-  const latPad = 0.009;
-  const lonPad = 0.010;
+  // Determine whether the upcoming route actually traverses an expressway/highway corridor
+  const hasHighwaySpan = segments.some(s => s.hopKm >= 1.25 || s.isBbiSeg);
+
+  const latPad = 0.0045;
+  const lonPad = 0.0055;
   const sameHits = [];
   const oppHits = [];
 
@@ -2629,32 +2795,47 @@ function inferDirectionalRoadTrafficForStops(stops, startIdx = 0, detectors = []
       continue;
     }
 
+    const isExpDet = isExpresswayOrTunnelDetector(det);
+    if (isExpDet && !hasHighwaySpan) continue;
+
     let bestSeg = null;
     let bestDistKm = Infinity;
+    let bestAheadKm = 0;
     for (let j = 0; j < segments.length; j++) {
       const seg = segments[j];
-      const maxCorridorRadius = seg.hopKm > 1.2 ? 0.65 : 0.40;
-      const dMid = _haversineKm(det.lat, det.lon, seg.midLat, seg.midLon);
-      const dStart = _haversineKm(det.lat, det.lon, seg.la1, seg.lo1);
-      const dEnd = _haversineKm(det.lat, det.lon, seg.la2, seg.lo2);
-      const dMin = Math.min(dMid, dStart, dEnd);
-      if (dMin <= maxCorridorRadius && dMin < bestDistKm) {
-        bestDistKm = dMin;
+      // Expressway/tunnel detectors may ONLY match actual long highway spans or BBI/tunnel stops — never local short town hops
+      if (isExpDet && seg.hopKm < 1.25 && !seg.isBbiSeg) continue;
+
+      const proj = pointToSegmentDistanceKm(det.lat, det.lon, seg.la1, seg.lo1, seg.la2, seg.lo2);
+      // Require detector to project onto the segment itself (with small 12% margin at endpoints)
+      if (proj.t < -0.12 || proj.t > 1.12) continue;
+
+      const maxCorridorRadius = isExpDet
+        ? (seg.hopKm >= 2.0 ? 0.30 : 0.20)
+        : (seg.hopKm > 1.0 ? 0.22 : 0.14);
+
+      if (proj.distKm <= maxCorridorRadius && proj.distKm < bestDistKm) {
+        bestDistKm = proj.distKm;
         bestSeg = seg;
+        bestAheadKm = seg.cumKm + Math.max(0, Math.min(1, proj.t)) * seg.hopKm;
       }
     }
 
     if (!bestSeg) continue;
     const ang = angularDiffDeg(bestSeg.brg, det.rot);
-    if (ang <= 62) {
-      sameHits.push({ det, distKm: bestDistKm, ang });
-    } else if (ang >= 118) {
-      oppHits.push({ det, distKm: bestDistKm, ang });
+    const sameMaxAng = isExpDet ? 42 : 48;
+    const oppMinAng = 180 - sameMaxAng;
+    if (ang <= sameMaxAng) {
+      sameHits.push({ det, distKm: bestDistKm, aheadKm: bestAheadKm, ang });
+    } else if (ang >= oppMinAng) {
+      oppHits.push({ det, distKm: bestDistKm, aheadKm: bestAheadKm, ang });
     }
   }
 
-  sameHits.sort((a, b) => a.distKm - b.distKm);
-  oppHits.sort((a, b) => a.distKm - b.distKm);
+  // Prefer detectors closest along the upcoming path (near-term locality first, then tightest perpendicular fit)
+  const sortHits = (a, b) => (a.aheadKm + a.distKm * 3) - (b.aheadKm + b.distKm * 3);
+  sameHits.sort(sortHits);
+  oppHits.sort(sortHits);
 
   const sameSide = summarizeDetectorBucket(sameHits);
   const oppSide = summarizeDetectorBucket(oppHits);
@@ -2667,7 +2848,7 @@ function inferDirectionalRoadTrafficForStops(stops, startIdx = 0, detectors = []
   };
 }
 
-function getDirectionalRoadSummary(stops, startIdx, detectors, isZh = false, lookaheadStops = 14) {
+function getDirectionalRoadSummary(stops, startIdx, detectors, isZh = false, lookaheadStops = 8) {
   const res = inferDirectionalRoadTrafficForStops(stops, startIdx, detectors, lookaheadStops);
   if (!res.hasLive || (!res.sameSide && !res.oppSide)) return null;
 
@@ -2678,62 +2859,37 @@ function getDirectionalRoadSummary(stops, startIdx, detectors, isZh = false, loo
     ? same.worstDet
     : (opp?.status === 'JAMMED' ? opp.worstDet : (primary?.representativeDet || null));
 
+  const decision = synthesizeTrafficDecision(same, opp, isZh);
   const roadLabel = focusDet ? (isZh ? (focusDet.roadTc || focusDet.roadEn) : (focusDet.roadEn || focusDet.roadTc)) : '';
-  const tone = same
-    ? (same.status === 'JAMMED' ? 'jammed' : (same.status === 'SLOW' ? 'slow' : 'smooth'))
-    : 'smooth';
+  const aheadKm = Number(primary?.aheadKm || 0);
+  const aheadStr = aheadKm >= 0.4
+    ? (isZh ? `前方約 ${aheadKm.toFixed(1)} km` : `~${aheadKm.toFixed(1)} km ahead`)
+    : '';
 
-  let headline = '';
-  let detail = '';
-
+  const headline = isZh ? decision.verdictTc : decision.verdictEn;
+  const detailParts = [];
   if (same) {
-    if (same.status === 'JAMMED') {
-      headline = isZh
-        ? `前路擠塞 · ${same.minSpd} km/h`
-        : `Traffic jam ahead · ${same.minSpd} km/h`;
-      const parts = [];
-      if (roadLabel) parts.push(roadLabel);
-      if (same.worstDet?.occ > 0) parts.push(isZh ? `佔用率 ${same.worstDet.occ}%` : `${same.worstDet.occ}% occ`);
-      detail = parts.join(' · ');
-    } else if (same.status === 'SLOW') {
-      headline = isZh
-        ? `前路車多緩慢 · ${same.minSpd} km/h`
-        : `Slow traffic ahead · ${same.minSpd} km/h`;
-      const parts = [];
-      if (roadLabel) parts.push(roadLabel);
-      if (opp && opp.status === 'JAMMED') {
-        parts.push(isZh ? `對面線擠塞 (${opp.minSpd} km/h)` : `Opp. bound jammed (${opp.minSpd} km/h)`);
-      }
-      detail = parts.join(' · ');
-    } else {
-      headline = isZh
-        ? `你搭乘方向前路暢順 (~${same.avgSpd} km/h)`
-        : `Your side smooth ahead (~${same.avgSpd} km/h)`;
-      if (opp && opp.status === 'JAMMED') {
-        const oppRoad = isZh ? (opp.worstDet?.roadTc || opp.worstDet?.roadEn || '') : (opp.worstDet?.roadEn || opp.worstDet?.roadTc || '');
-        detail = isZh
-          ? `僅對面線擠塞 (${opp.minSpd} km/h${oppRoad ? ` · ${oppRoad}` : ''})`
-          : `Opposite bound jammed (${opp.minSpd} km/h${oppRoad ? ` · ${oppRoad}` : ''})`;
-      } else if (opp && opp.status === 'SLOW') {
-        detail = isZh
-          ? `對面線車多 (${opp.minSpd} km/h)`
-          : `Opposite bound slow (${opp.minSpd} km/h)`;
-      } else if (roadLabel) {
-        detail = roadLabel;
-      }
+    const spdDisp = same.status === 'SMOOTH' ? `~${same.avgSpd}` : `${same.minSpd}`;
+    detailParts.push(`${spdDisp} km/h`);
+    if (same.status !== 'SMOOTH' && same.worstDet?.occ > 0) {
+      detailParts.push(isZh ? `佔用率 ${same.worstDet.occ}%` : `${same.worstDet.occ}% occ`);
     }
-  } else if (opp) {
-    headline = opp.status === 'JAMMED'
-      ? (isZh ? `對面線擠塞 (${opp.minSpd} km/h)` : `Opposite bound jammed (${opp.minSpd} km/h)`)
-      : (isZh ? `鄰近道路約 ${opp.avgSpd} km/h` : `Nearby road ~${opp.avgSpd} km/h`);
-    detail = roadLabel;
+  }
+  if (roadLabel) detailParts.push(roadLabel);
+  if (aheadStr) detailParts.push(aheadStr);
+  if (same && same.status === 'SMOOTH' && opp && opp.status === 'JAMMED') {
+    detailParts.push(isZh ? `僅對面線塞車 (${opp.minSpd} km/h)` : `Opp. bound jammed (${opp.minSpd} km/h)`);
   }
 
   return {
     ...res,
-    tone,
+    tone: decision.tone,
     headline,
-    detail,
+    detail: detailParts.join(' · '),
+    actionTip: isZh ? decision.actionTc : decision.actionEn,
+    delayLabel: isZh ? decision.delayLabelTc : decision.delayLabelEn,
+    densityLabel: isZh ? decision.densityTc : decision.densityEn,
+    aheadKm,
     focusDet
   };
 }
@@ -2764,6 +2920,10 @@ if (typeof window !== 'undefined') {
   window.getFerryPierBerthLabel = getFerryPierBerthLabel;
   window.computeBearingDeg = computeBearingDeg;
   window.angularDiffDeg = angularDiffDeg;
+  window.pointToSegmentDistanceKm = pointToSegmentDistanceKm;
+  window.isExpresswayOrTunnelDetector = isExpresswayOrTunnelDetector;
+  window.parseHkGpsCoordinates = parseHkGpsCoordinates;
+  window.synthesizeTrafficDecision = synthesizeTrafficDecision;
   window.inferDirectionalRoadTrafficForStops = inferDirectionalRoadTrafficForStops;
   window.getDirectionalRoadSummary = getDirectionalRoadSummary;
   window.normName = normName;
@@ -2813,6 +2973,10 @@ if (typeof module !== 'undefined' && module.exports) {
     getFerryPierBerthLabel,
     computeBearingDeg,
     angularDiffDeg,
+    pointToSegmentDistanceKm,
+    isExpresswayOrTunnelDetector,
+    parseHkGpsCoordinates,
+    synthesizeTrafficDecision,
     inferDirectionalRoadTrafficForStops,
     getDirectionalRoadSummary,
     mergeOperatingWindows,

@@ -186,15 +186,72 @@ const SmartReturnManager = {
 
 const SavedHubsManager = {
   storageKey: 'transit_saved_hubs_v1',
+  cookieName: 'transit_hw_hubs_v1',
   manualOverrideMode: 'AUTO', // 'AUTO' | 'HOME' | 'WORK' | 'NEARBY'
+
+  _readHubsCookie() {
+    try {
+      if (typeof document === 'undefined' || !document.cookie) return null;
+      const prefix = `${this.cookieName}=`;
+      const hit = String(document.cookie).split(';').map(c => c.trim()).find(c => c.startsWith(prefix));
+      if (!hit) return null;
+      const raw = decodeURIComponent(hit.slice(prefix.length));
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        const unpack = (x) => {
+          if (!x || typeof x !== 'object') return null;
+          if (x.stopKey) return x;
+          if (x.k) {
+            return {
+              stopKey: x.k,
+              mode: x.m || 'BUS',
+              nameEn: x.e || '',
+              nameTc: x.t || x.e || '',
+              lat: Number(x.a),
+              lon: Number(x.o)
+            };
+          }
+          return null;
+        };
+        return { home: unpack(parsed.h || parsed.home), work: unpack(parsed.w || parsed.work) };
+      }
+    } catch (e) {}
+    return null;
+  },
+
+  _writeHubsCookie(hubs) {
+    try {
+      if (typeof document === 'undefined') return;
+      const pack = (x) => x ? ({
+        k: x.stopKey,
+        m: x.mode || 'BUS',
+        e: x.nameEn || '',
+        t: x.nameTc || x.nameEn || '',
+        a: Number(x.lat),
+        o: Number(x.lon)
+      }) : null;
+      if (!hubs?.home && !hubs?.work) {
+        document.cookie = `${this.cookieName}=; max-age=0; path=/; SameSite=Lax`;
+        return;
+      }
+      const payload = encodeURIComponent(JSON.stringify({ h: pack(hubs.home), w: pack(hubs.work) }));
+      const maxAgeSec = 60 * 60 * 24 * 365 * 10; // 10 years — survives PWA & web link updates
+      document.cookie = `${this.cookieName}=${payload}; max-age=${maxAgeSec}; path=/; SameSite=Lax`;
+    } catch (e) {}
+  },
 
   getHubs() {
     try {
       const raw = JSON.parse(SafeStorage.getItem(this.storageKey) || 'null');
-      if (raw && typeof raw === 'object') {
+      if (raw && typeof raw === 'object' && (raw.home || raw.work)) {
         return { home: raw.home || null, work: raw.work || null };
       }
     } catch (e) {}
+    const fromCookie = this._readHubsCookie();
+    if (fromCookie && (fromCookie.home || fromCookie.work)) {
+      try { SafeStorage.setItem(this.storageKey, JSON.stringify(fromCookie)); } catch (e) {}
+      return fromCookie;
+    }
     return { home: null, work: null };
   },
 
@@ -219,6 +276,10 @@ const SavedHubsManager = {
       };
     }
     SafeStorage.setItem(this.storageKey, JSON.stringify(hubs));
+    this._writeHubsCookie(hubs);
+    if (typeof window !== 'undefined' && window.__TRANSIT_IDB__?.set) {
+      window.__TRANSIT_IDB__.set(this.storageKey, hubs).catch(() => {});
+    }
     return hubs;
   },
 
@@ -227,6 +288,10 @@ const SavedHubsManager = {
     const hubs = this.getHubs();
     hubs[key] = null;
     SafeStorage.setItem(this.storageKey, JSON.stringify(hubs));
+    this._writeHubsCookie(hubs);
+    if (typeof window !== 'undefined' && window.__TRANSIT_IDB__?.set) {
+      window.__TRANSIT_IDB__.set(this.storageKey, hubs).catch(() => {});
+    }
     return hubs;
   },
 
@@ -1187,6 +1252,8 @@ function onPlannerInlineInput(slot) {
   renderPlannerInlineDropdown(q);
 
   clearTimeout(plannerInlineDebounce);
+  const parsedGps = (typeof parseHkGpsCoordinates === 'function') ? parseHkGpsCoordinates(q) : null;
+  if (parsedGps) return; // Instant 0ms local GPS pin — no need to query remote geocoder
   const hasCjk = /[\u4e00-\u9fa5]/.test(q);
   if ((!hasCjk && q.length < 2) || (hasCjk && q.length < 1)) return;
 
@@ -1573,6 +1640,25 @@ function renderPlannerInlineDropdown(rawQ = '') {
           ${renderDistBadge(distKmFromRef(r.lat, r.lon))}
         </button>`;
       }).join('');
+    }
+  } else if (typeof parseHkGpsCoordinates === 'function') {
+    const gpsPin = parseHkGpsCoordinates(rawQ);
+    if (gpsPin) {
+      const distTag = typeof getStopDistrictTag === 'function'
+        ? getStopDistrictTag({ stopName_e: '', latitude: gpsPin.lat, longitude: gpsPin.lon })
+        : '';
+      const pinKey = `GPS_PIN_${gpsPin.lat.toFixed(5)}_${gpsPin.lon.toFixed(5)}`;
+      const pinTitleEn = distTag ? `${distTag} (${gpsPin.formatted})` : gpsPin.labelEn;
+      const pinTitleTc = distTag ? `${distTag} (${gpsPin.formatted})` : gpsPin.labelTc;
+      html += `<div class="planner-ac-sec" data-ac-sec="GPS">${isZh ? 'GPS 座標位置' : 'GPS Coordinate'}</div>`;
+      html += `<button type="button" class="planner-ac-item planner-ac-gps" data-pick="1" onmousedown="event.preventDefault()" onclick="selectPlannerInlineOption('${slot}', '${escapeJsAttr(pinKey)}', '${escapeJsAttr(pinTitleEn)}', '${escapeJsAttr(pinTitleTc)}', ${gpsPin.lat}, ${gpsPin.lon}, 'ADDRESS')">
+        <span class="planner-ac-icon">📍</span>
+        <span class="planner-ac-body">
+          <span class="planner-ac-title">${escapeHtml(isZh ? pinTitleTc : pinTitleEn)}</span>
+          <span class="planner-ac-sub">${isZh ? '直接使用此座標規劃路線' : 'Use exact pasted GPS coordinate'}</span>
+        </span>
+        ${renderDistBadge(distKmFromRef(gpsPin.lat, gpsPin.lon))}
+      </button>`;
     }
   }
 
@@ -2448,28 +2534,34 @@ function computeDisruptionAdjustedScore(totalTravelMins, legs, accessWalkSec = 0
   const wx = window.__HKO_WEATHER__ || null;
   const weatherWalkMult = wx?.heavyRain ? 3.0 : (wx?.rainAdvisory ? 1.5 : 1.0);
 
-  const baseWalkW = mode === 'EASY' ? 2.40 : (mode === 'BULLETPROOF' ? 0.85 : (mode === 'CHEAPEST' ? 0.55 : 0.40));
+  const baseWalkW = mode === 'EASY' ? 2.40 : (mode === 'BULLETPROOF' ? 0.60 : (mode === 'CHEAPEST' ? 0.55 : 0.40));
   const W_walk = baseWalkW * weatherWalkMult;
-  const W_fare = mode === 'CHEAPEST' ? 1.55 : (mode === 'BULLETPROOF' ? 0.25 : (mode === 'EASY' ? 0.20 : 0.15));
+  const W_fare = mode === 'CHEAPEST' ? 1.55 : (mode === 'BULLETPROOF' ? 0.22 : (mode === 'EASY' ? 0.20 : 0.15));
   const fareCap = mode === 'CHEAPEST' ? 110.0 : 28.0;
 
   const totalWalkSec = accessWalkSec + egressWalkSec + transferWalkSec;
-  const longWalkOverhangMins = (!xferLocoBikeEnabled && totalWalkSec > 510)
-    ? ((totalWalkSec - 510) / 60) * (mode === 'EASY' ? 1.65 : 1.15) * weatherWalkMult
+  const overhangThresholdSec = mode === 'BULLETPROOF' ? 720 : 510;
+  const overhangWeight = mode === 'EASY' ? 1.65 : (mode === 'BULLETPROOF' ? 0.75 : 1.05);
+  const longWalkOverhangMins = (!xferLocoBikeEnabled && totalWalkSec > overhangThresholdSec)
+    ? ((totalWalkSec - overhangThresholdSec) / 60) * overhangWeight * weatherWalkMult
     : 0;
 
   let penaltyMins = (totalWalkSec / 60) * W_walk + longWalkOverhangMins;
 
-  // Prefer true door-to-door / direct terminus arrivals (<=120m final walk) over nearby stops requiring 300m-450m+ final walks
+  // Prefer true door-to-door / direct terminus arrivals (<=120m final walk) over nearby bus/GMB stops requiring 300m-450m+ walks,
+  // while keeping normal ~8-11m station egress walks from Heavy MTR competitive against slower multi-bus chains.
+  const lastLegGroup = legs && legs.length ? legs[legs.length - 1]?.group : null;
+  const lastLegIsHeavyMtr = Boolean(lastLegGroup?.mode === 'MTR' && lastLegGroup?.company === 'MTR');
   const finalEgressDistM = Number.isFinite(Number(ctx.egressWalkDistM))
     ? Number(ctx.egressWalkDistM)
     : Math.round((Number(egressWalkSec) || 0) * (ctx.egressByBike ? 4.16 : 1.25));
   if (!ctx.egressByBike) {
     if (finalEgressDistM <= 120) {
-      penaltyMins -= (mode === 'EASY' ? 5.0 : (mode === 'BULLETPROOF' ? 3.5 : (mode === 'CHEAPEST' ? 2.0 : 1.5)));
+      penaltyMins -= (mode === 'EASY' ? 5.0 : (mode === 'BULLETPROOF' ? 4.5 : (mode === 'CHEAPEST' ? 2.0 : 1.5)));
     } else if (finalEgressDistM >= 300) {
       const extra100m = (finalEgressDistM - 250) / 100;
-      const finalWalkW = mode === 'EASY' ? 2.8 : (mode === 'BULLETPROOF' ? 1.9 : (mode === 'CHEAPEST' ? 1.0 : 0.9));
+      const bpFinalW = lastLegIsHeavyMtr ? 0.65 : 1.25;
+      const finalWalkW = mode === 'EASY' ? 2.8 : (mode === 'BULLETPROOF' ? bpFinalW : (mode === 'CHEAPEST' ? 0.85 : 0.65));
       penaltyMins += extra100m * finalWalkW * weatherWalkMult;
     }
   }
@@ -2544,9 +2636,10 @@ function computeDisruptionAdjustedScore(totalTravelMins, legs, accessWalkSec = 0
       if (wx?.heavyRain && !rewardedMtrBonus) {
         penaltyMins -= 5.0;
       }
-      // Modest reliability preference for heavy rail trunk (>= 2 stops) without distorting real travel time
-      if (mode === 'BULLETPROOF' && hw <= 6 && mtrStopsRidden >= 2 && !rewardedMtrBonus) {
-        penaltyMins -= 3.0;
+      // Reliability preference for heavy rail trunk (>= 2 stops, stronger for multi-stop rail trunks that bypass road traffic)
+      const totalHeavyMtrStops = legs.reduce((acc, l) => acc + ((l.group?.mode === 'MTR' && l.group?.company === 'MTR') ? Math.max(1, Number(l.stopsCount) || 0) : 0), 0);
+      if (mode === 'BULLETPROOF' && hw <= 6 && (mtrStopsRidden >= 2 || totalHeavyMtrStops >= 3) && !rewardedMtrBonus) {
+        penaltyMins -= (totalHeavyMtrStops >= 4 ? 6.0 : 3.5);
         rewardedMtrBonus = true;
       } else if (mode === 'FASTEST' && hw <= 6 && mtrStopsRidden >= 2 && !rewardedMtrBonus) {
         penaltyMins -= 1.2;
@@ -2621,7 +2714,7 @@ function computeDisruptionAdjustedScore(totalTravelMins, legs, accessWalkSec = 0
         nonRailTransfers++;
         if (mode === 'BULLETPROOF') {
           const baseTx = isGoldenHub ? 5.0 : 7.5;
-          penaltyMins += baseTx * Math.pow(1.5, nonRailTransfers - 1) + (isLongWalkStn ? 4.0 : 0);
+          penaltyMins += baseTx * Math.pow(1.65, nonRailTransfers - 1) + (isLongWalkStn ? 4.0 : 0);
         } else if (mode === 'EASY') {
           penaltyMins += (isGoldenHub ? 7.0 : 10.0) * nonRailTransfers + (isLongWalkStn ? 6.0 : 0);
         } else if (mode === 'FASTEST') {
@@ -3878,7 +3971,7 @@ function formatLegSignalTagHtml(sigType, headwayMins = 0, isFreeFeeder = false, 
   const isZh = (currentLang === 'zh');
   const parts = [];
   if (sigType === 'LIVE') {
-    parts.push(`<span class="planner-sig-live">● ${isZh ? '實時到站' : 'Live ETA'}</span>`);
+    parts.push(`<span class="planner-sig-live" style="white-space:nowrap;">● ${isZh ? '實時' : 'Real-time'}</span>`);
   } else if (sigType === 'SCHED') {
     parts.push(`<span class="planner-sig-sched">${isZh ? '預計班次' : 'Scheduled'}</span>`);
   } else if (sigType === 'HEADWAY_PROJ') {
@@ -4372,9 +4465,11 @@ async function renderTransferPlannerView() {
         const metaParts = [
           waitMins >= 1 ? (isZh ? `${waitMins}分鐘後出發` : `Leave in ${waitMins}m`) : (isZh ? '立即出發' : 'Leave now'),
           `${isZh ? '抵達' : 'Arr'} ${arrClk}`,
-          walkTotalMins >= 1 ? (isZh ? `步行${walkTotalMins}分` : `${walkTotalMins}m walk`) : null,
-          dp.sigType1 === 'LIVE' ? (isZh ? '● 實時到站' : '● Live ETA') : null
+          walkTotalMins >= 1 ? (isZh ? `步行${walkTotalMins}分` : `${walkTotalMins}m walk`) : null
         ].filter(Boolean).join(' · ');
+        const liveMetaBadgeHtml = dp.sigType1 === 'LIVE'
+          ? ` · <span class="planner-sig-live" style="white-space:nowrap;">● ${isZh ? '實時' : 'Real-time'}</span>`
+          : '';
 
         const boardDisp = getLegStopDisplayName(dp.group, dp.boardStopObj);
         const alightDisp = getLegStopDisplayName(dp.group, dp.alightStopObj);
@@ -4408,7 +4503,7 @@ async function renderTransferPlannerView() {
               <div class="planner-card-left">
                 ${cardTag ? `<div class="xfer-badge-title">${escapeHtml(cardTag)}</div>` : ''}
                 <div class="planner-route-chain">${renderRouteChipHtml(dp.group)}${parallelHtml}${directEgressChip}</div>
-                <div class="planner-meta-line">${escapeHtml(metaParts)}</div>
+                <div class="planner-meta-line">${escapeHtml(metaParts)}${liveMetaBadgeHtml}</div>
               </div>
               <div class="planner-card-right">
                 <div class="planner-dur-big">${displayMins}<span class="planner-dur-unit">${t('minsUnit')}</span></div>
@@ -4473,9 +4568,11 @@ async function renderTransferPlannerView() {
         waitMins >= 1 ? (isZh ? `${waitMins}分鐘後出發` : `Leave in ${waitMins}m`) : (isZh ? '立即出發' : 'Leave now'),
         `${isZh ? '抵達' : 'Arr'} ${arrClk}`,
         isZh ? `${xferCount}次轉乘` : `${xferCount} ${xferCount === 1 ? 'transfer' : 'transfers'}`,
-        walkTotalMins >= 1 ? (isZh ? `步行${walkTotalMins}分` : `${walkTotalMins}m walk`) : null,
-        anyLive ? (isZh ? '● 實時到站' : '● Live ETA') : null
+        walkTotalMins >= 1 ? (isZh ? `步行${walkTotalMins}分` : `${walkTotalMins}m walk`) : null
       ].filter(Boolean).join(' · ');
+      const xferLiveBadgeHtml = anyLive
+        ? ` · <span class="planner-sig-live" style="white-space:nowrap;">● ${isZh ? '實時' : 'Real-time'}</span>`
+        : '';
 
       const cutoff1 = (xferTimeMode === 'NOW') ? getLegServiceCutoffWarning(cor.leg1Group, dep1Ms, isZh) : null;
       const cutoff2 = (xferTimeMode === 'NOW') ? getLegServiceCutoffWarning(cor.leg2Group, dep2Ms, isZh) : null;
@@ -4581,7 +4678,7 @@ async function renderTransferPlannerView() {
             <div class="planner-card-left">
               ${cardTag ? `<div class="xfer-badge-title">${escapeHtml(cardTag)}</div>` : ''}
               <div class="planner-route-chain">${chainChipsHtml}</div>
-              <div class="planner-meta-line">${escapeHtml(metaParts)}</div>
+              <div class="planner-meta-line">${escapeHtml(metaParts)}${xferLiveBadgeHtml}</div>
             </div>
             <div class="planner-card-right">
               <div class="planner-dur-big">${displayMins}<span class="planner-dur-unit">${t('minsUnit')}</span></div>

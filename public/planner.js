@@ -140,14 +140,26 @@ const SmartReturnManager = {
     if (distFromOriginKm < 0.70) return null;
     if (distFromDestKm > 1.20 && distFromOriginKm < 1.20) return null;
 
-    const oppGroups = groupedRoutes.filter(g =>
-      g.routeNo === trip.routeNo &&
-      g.company === trip.company &&
-      (g.mode || 'BUS') === trip.mode &&
-      g.key !== trip.groupKey &&
-      extractRouteBoundCode(g) !== trip.bound
-    );
-    const returnGroup = oppGroups.find(g => /_1$/.test(g.routeIds?.[0] || '')) || oppGroups[0];
+    const curTripGroup = groupedRoutes.find(g => g.key === trip.groupKey) || {
+      key: trip.groupKey,
+      routeNo: trip.routeNo,
+      company: trip.company,
+      mode: trip.mode,
+      routeIds: trip.bound === 'I' ? ['_I'] : []
+    };
+    let returnGroup = null;
+    if (typeof findOppositeDirectionGroup === 'function') {
+      returnGroup = findOppositeDirectionGroup(curTripGroup, groupedRoutes);
+    } else {
+      const oppGroups = groupedRoutes.filter(g =>
+        g.routeNo === trip.routeNo &&
+        g.company === trip.company &&
+        (g.mode || 'BUS') === trip.mode &&
+        g.key !== trip.groupKey &&
+        extractRouteBoundCode(g) !== trip.bound
+      );
+      returnGroup = oppGroups.find(g => /_1$/.test(g.routeIds?.[0] || '')) || oppGroups[0];
+    }
     if (!returnGroup) return null;
 
     const rStops = getStopsForGroup(returnGroup);

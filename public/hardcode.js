@@ -2611,6 +2611,104 @@ function parseHkGpsCoordinates(raw) {
   };
 }
 
+function _extractExplicitBoundCode(group) {
+  const rId = String(group?.routeIds?.[0] || '');
+  const k = String(group?.key || '');
+  if (rId.includes('_I') || k.endsWith('_I') || /_I_\d+$/.test(k)) return 'I';
+  if (rId.includes('_O') || k.endsWith('_O') || /_O_\d+$/.test(k)) return 'O';
+  const tdB = String(group?.tdBound || '').toUpperCase();
+  if (tdB === 'I' || tdB === 'O') return tdB;
+  return '';
+}
+
+function _stripStopPlatformSuffix(name) {
+  return String(name || '')
+    .replace(/\s*\([A-Z]{1,4}\d{2,4}\)\s*/g, '')
+    .replace(/\s*\(Platform\s*[^)]+\)\s*/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function _stopNameTokensOverlap(a, b) {
+  const cleanA = _stripStopPlatformSuffix(a).toLowerCase().replace(/\([^)]*\)/g, ' ');
+  const cleanB = _stripStopPlatformSuffix(b).toLowerCase().replace(/\([^)]*\)/g, ' ');
+  const normA = cleanA.replace(/[^a-z0-9\u4e00-\u9fa5]/g, '');
+  const normB = cleanB.replace(/[^a-z0-9\u4e00-\u9fa5]/g, '');
+  if (!normA || !normB) return false;
+  if (normA === normB || normA.includes(normB) || normB.includes(normA)) return true;
+  const ignore = new Set(['bus', 'terminus', 'station', 'ferry', 'pier', 'road', 'street', 'court', 'estate', 'public', 'transport', 'interchange', 'centre', 'center', 'plaza', 'from', 'via']);
+  const tokA = cleanA.split(/[^a-z0-9\u4e00-\u9fa5]+/).filter(w => w.length >= 2 && !ignore.has(w));
+  const tokB = new Set(cleanB.split(/[^a-z0-9\u4e00-\u9fa5]+/).filter(w => w.length >= 2 && !ignore.has(w)));
+  let hits = 0;
+  for (const w of tokA) {
+    if (tokB.has(w)) hits++;
+  }
+  return hits >= 1;
+}
+
+// Find the opposite-direction route group for Swap Direction & Smart Return Trip.
+// Handles both explicit _O/_I operators (KMB/CTB/LWB/GMB/MTR/Ferry) and destination-keyed operators (e.g. NLB 3M, 1, 2, 4, 11, 23).
+function findOppositeDirectionGroup(group, routesList = []) {
+  if (!group || !Array.isArray(routesList) || !routesList.length) return null;
+  const curMode = group.mode || 'BUS';
+  const sameRoute = routesList.filter(g =>
+    g &&
+    g.routeNo === group.routeNo &&
+    g.company === group.company &&
+    (g.mode || 'BUS') === curMode &&
+    g.key !== group.key
+  );
+  if (!sameRoute.length) return null;
+
+  const curBound = _extractExplicitBoundCode(group);
+  const curKeyBase = String(group.key || '').replace(/_(O|I)(_\d+)?$/, '');
+
+  // 1. Explicit _O / _I bound match (KMB, CTB, LWB, GMB, MTR, Ferry)
+  if (curBound) {
+    const diffBound = sameRoute.filter(g => {
+      const b = _extractExplicitBoundCode(g);
+      return b && b !== curBound;
+    });
+    if (diffBound.length) {
+      return (
+        diffBound.find(g => String(g.key || '').replace(/_(O|I)(_\d+)?$/, '') === curKeyBase && /_1$/.test(g.routeIds?.[0] || '')) ||
+        diffBound.find(g => String(g.key || '').replace(/_(O|I)(_\d+)?$/, '') === curKeyBase) ||
+        diffBound.find(g => /_1$/.test(g.routeIds?.[0] || '')) ||
+        diffBound[0]
+      );
+    }
+  }
+
+  // 2. Destination-based opposite match (NLB and any route whose routeIds don't encode _O/_I)
+  const curDestNorm = normName(_stripStopPlatformSuffix(group.dest_e || group.dest_tc || ''));
+  const curOrigStr = group.orig_e || group.orig_tc || '';
+  const curDestStr = group.dest_e || group.dest_tc || '';
+
+  const diffDest = sameRoute.filter(g => {
+    const dNorm = normName(_stripStopPlatformSuffix(g.dest_e || g.dest_tc || ''));
+    return dNorm && curDestNorm ? dNorm !== curDestNorm : true;
+  });
+  if (!diffDest.length) return null;
+
+  let best = null;
+  let bestScore = -Infinity;
+  for (const cand of diffDest) {
+    let score = 0;
+    const candDestStr = cand.dest_e || cand.dest_tc || '';
+    const candOrigStr = cand.orig_e || cand.orig_tc || '';
+    if (_stopNameTokensOverlap(candDestStr, curOrigStr)) score += 100;
+    if (_stopNameTokensOverlap(candOrigStr, curDestStr)) score += 60;
+    if (!/\(special|short|peak/i.test(candDestStr) && !/\(from\s+/i.test(candOrigStr)) score += 15;
+    if (/_1$/.test(cand.routeIds?.[0] || '')) score += 10;
+    if (Array.isArray(cand.routeIds) && cand.routeIds.length > 0) score += Math.min(5, cand.routeIds.length);
+    if (score > bestScore) {
+      bestScore = score;
+      best = cand;
+    }
+  }
+  return best;
+}
+
 function summarizeDetectorBucket(hits) {
   if (!hits || !hits.length) return null;
   let spdSum = 0;
@@ -2657,7 +2755,8 @@ function summarizeDetectorBucket(hits) {
     status,
     worstDet,
     representativeDet: repHit.det,
-    aheadKm: Number((repHit.aheadKm || 0).toFixed(1))
+    aheadKm: Number((repHit.aheadKm || 0).toFixed(1)),
+    betweenStops: repHit.betweenStops || null
   };
 }
 
@@ -2731,60 +2830,27 @@ function synthesizeTrafficDecision(same, opp = null, isZh = false) {
   };
 }
 
-// Compare bus route forward stop sequence against HKSAR live traffic detectors' compass Rotation.
-// Uses true perpendicular distance to upcoming segments + expressway guard so local/Lantau buses (e.g. NLB 3M)
-// never falsely match an overhead/adjacent expressway (e.g. North Lantau Highway) they do not travel on.
-function inferDirectionalRoadTrafficForStops(stops, startIdx = 0, detectors = [], lookaheadStops = 8) {
-  if (!Array.isArray(stops) || stops.length < 2 || !Array.isArray(detectors) || !detectors.length) {
-    return { sameSide: null, oppSide: null, hasLive: false, capturedAt: '' };
+function _matchDetectorsAlongSegments(segments, detectors) {
+  if (!segments.length || !Array.isArray(detectors) || !detectors.length) {
+    return { sameHits: [], oppHits: [] };
   }
 
-  const fromIdx = Math.max(0, Math.min(stops.length - 2, Number(startIdx) || 0));
-  const effLookahead = Math.max(2, Math.min(12, Number(lookaheadStops) || 8));
-  const endIdx = Math.min(stops.length, fromIdx + effLookahead + 1);
-  const slice = stops.slice(fromIdx, endIdx);
-
-  const bbiStopRe = /tunnel|toll\s*plaza|\bbbi\b|highway|interchange|tsing\s*ma|lantau\s*link|轉車站|隧道|收費廣場|公路/i;
-
-  const segments = [];
   let minLat = 90, maxLat = -90, minLon = 180, maxLon = -180;
-  let cumKm = 0;
-  for (let i = 0; i < slice.length - 1; i++) {
-    const a = slice[i], b = slice[i + 1];
-    const la1 = parseFloat(a?.latitude ?? a?.lat), lo1 = parseFloat(a?.longitude ?? a?.lon);
-    const la2 = parseFloat(b?.latitude ?? b?.lat), lo2 = parseFloat(b?.longitude ?? b?.lon);
-    if (!Number.isFinite(la1) || !Number.isFinite(lo1) || !Number.isFinite(la2) || !Number.isFinite(lo2)) continue;
-    const hopKm = _haversineKm(la1, lo1, la2, lo2);
-    if (hopKm < 0.04) continue;
-    // Stop scanning far beyond ~6.5km ahead (unless the very first segment is a long highway/tunnel span)
-    if (i > 0 && cumKm > 6.5) break;
-    minLat = Math.min(minLat, la1, la2);
-    maxLat = Math.max(maxLat, la1, la2);
-    minLon = Math.min(minLon, lo1, lo2);
-    maxLon = Math.max(maxLon, lo1, lo2);
-    const aName = `${a?.stopName_e || ''} ${a?.name_tc || ''}`;
-    const bName = `${b?.stopName_e || ''} ${b?.name_tc || ''}`;
-    const isBbiSeg = bbiStopRe.test(aName) || bbiStopRe.test(bName);
-    segments.push({
-      segIdx: i,
-      la1, lo1, la2, lo2,
-      hopKm,
-      cumKm,
-      isBbiSeg,
-      brg: computeBearingDeg(la1, lo1, la2, lo2)
-    });
-    cumKm += hopKm;
+  let maxSegHopKm = 0;
+  for (let i = 0; i < segments.length; i++) {
+    const s = segments[i];
+    minLat = Math.min(minLat, s.la1, s.la2);
+    maxLat = Math.max(maxLat, s.la1, s.la2);
+    minLon = Math.min(minLon, s.lo1, s.lo2);
+    maxLon = Math.max(maxLon, s.lo1, s.lo2);
+    if (s.hopKm > maxSegHopKm) maxSegHopKm = s.hopKm;
   }
 
-  if (!segments.length) {
-    return { sameSide: null, oppSide: null, hasLive: false, capturedAt: '' };
-  }
-
-  // Determine whether the upcoming route actually traverses an expressway/highway corridor
   const hasHighwaySpan = segments.some(s => s.hopKm >= 1.25 || s.isBbiSeg);
-
-  const latPad = 0.0045;
-  const lonPad = 0.0055;
+  // Curved long inter-stop highway spans (e.g. E36 Yuen Long Park <-> TM-CLK Tunnel BBI across Tuen Mun Rd / Wong Chu Rd)
+  // can curve 0.6–1.9 km off the straight chord between Stop A and Stop B.
+  const latPad = maxSegHopKm >= 2.0 ? 0.024 : 0.0045;
+  const lonPad = maxSegHopKm >= 2.0 ? 0.026 : 0.0055;
   const sameHits = [];
   const oppHits = [];
 
@@ -2803,16 +2869,20 @@ function inferDirectionalRoadTrafficForStops(stops, startIdx = 0, detectors = []
     let bestAheadKm = 0;
     for (let j = 0; j < segments.length; j++) {
       const seg = segments[j];
-      // Expressway/tunnel detectors may ONLY match actual long highway spans or BBI/tunnel stops — never local short town hops
+      // Expressway/tunnel detectors may ONLY match actual long highway spans or BBI/tunnel stops — never local short town hops (e.g. NLB 3M)
       if (isExpDet && seg.hopKm < 1.25 && !seg.isBbiSeg) continue;
 
       const proj = pointToSegmentDistanceKm(det.lat, det.lon, seg.la1, seg.lo1, seg.la2, seg.lo2);
-      // Require detector to project onto the segment itself (with small 12% margin at endpoints)
-      if (proj.t < -0.12 || proj.t > 1.12) continue;
+      const tMargin = seg.hopKm >= 2.0 ? 0.06 : 0.12;
+      if (proj.t < -tMargin || proj.t > 1 + tMargin) continue;
 
-      const maxCorridorRadius = isExpDet
-        ? (seg.hopKm >= 2.0 ? 0.30 : 0.20)
-        : (seg.hopKm > 1.0 ? 0.22 : 0.14);
+      let maxCorridorRadius;
+      if (seg.hopKm >= 2.0) {
+        // Scale corridor width gently for curved expressways between far-apart highway stops (capped at 2.0 km)
+        maxCorridorRadius = Math.min(2.0, Math.max(0.45, seg.hopKm * 0.22));
+      } else {
+        maxCorridorRadius = isExpDet ? 0.20 : (seg.hopKm > 1.0 ? 0.22 : 0.14);
+      }
 
       if (proj.distKm <= maxCorridorRadius && proj.distKm < bestDistKm) {
         bestDistKm = proj.distKm;
@@ -2823,37 +2893,173 @@ function inferDirectionalRoadTrafficForStops(stops, startIdx = 0, detectors = []
 
     if (!bestSeg) continue;
     const ang = angularDiffDeg(bestSeg.brg, det.rot);
-    const sameMaxAng = isExpDet ? 42 : 48;
+    // Allow wider bearing tolerance on curved long inter-stop highway spans (e.g. Wong Chu Rd / Lung Fu Rd bends)
+    // while keeping opposite carriageway strictly separated (>= 115 deg).
+    const sameMaxAng = bestSeg.hopKm >= 3.0 ? 65 : (isExpDet ? 42 : 48);
     const oppMinAng = 180 - sameMaxAng;
+    const hitObj = {
+      det,
+      distKm: bestDistKm,
+      aheadKm: bestAheadKm,
+      ang,
+      betweenStops: bestSeg.betweenStops
+    };
     if (ang <= sameMaxAng) {
-      sameHits.push({ det, distKm: bestDistKm, aheadKm: bestAheadKm, ang });
+      sameHits.push(hitObj);
     } else if (ang >= oppMinAng) {
-      oppHits.push({ det, distKm: bestDistKm, aheadKm: bestAheadKm, ang });
+      oppHits.push(hitObj);
     }
   }
 
-  // Prefer detectors closest along the upcoming path (near-term locality first, then tightest perpendicular fit)
-  const sortHits = (a, b) => (a.aheadKm + a.distKm * 3) - (b.aheadKm + b.distKm * 3);
+  const sortHits = (a, b) => (a.aheadKm + a.distKm * 2.5) - (b.aheadKm + b.distKm * 2.5);
   sameHits.sort(sortHits);
   oppHits.sort(sortHits);
+  return { sameHits, oppHits };
+}
 
+function _buildStopPairSegments(stops, startIdx, endIdxExclusive, maxCumKm = 6.5, allowLongHighwayUpToKm = 18.0) {
+  const bbiStopRe = /tunnel|toll\s*plaza|\bbbi\b|highway|interchange|tsing\s*ma|lantau\s*link|轉車站|隧道|收費廣場|公路/i;
+  const segments = [];
+  let cumKm = 0;
+  for (let idx = startIdx; idx < endIdxExclusive - 1; idx++) {
+    const a = stops[idx], b = stops[idx + 1];
+    const la1 = parseFloat(a?.latitude ?? a?.lat), lo1 = parseFloat(a?.longitude ?? a?.lon);
+    const la2 = parseFloat(b?.latitude ?? b?.lat), lo2 = parseFloat(b?.longitude ?? b?.lon);
+    if (!Number.isFinite(la1) || !Number.isFinite(lo1) || !Number.isFinite(la2) || !Number.isFinite(lo2)) continue;
+    const hopKm = _haversineKm(la1, lo1, la2, lo2);
+    if (hopKm < 0.04) continue;
+    const aName = `${a?.stopName_e || ''} ${a?.name_tc || ''}`;
+    const bName = `${b?.stopName_e || ''} ${b?.name_tc || ''}`;
+    const isBbiSeg = bbiStopRe.test(aName) || bbiStopRe.test(bName);
+    const effLimit = (hopKm >= 2.0 || isBbiSeg) ? allowLongHighwayUpToKm : maxCumKm;
+    if (segments.length > 0 && cumKm > effLimit) break;
+    segments.push({
+      segIdx: idx - startIdx,
+      la1, lo1, la2, lo2,
+      hopKm,
+      cumKm,
+      isBbiSeg,
+      brg: computeBearingDeg(la1, lo1, la2, lo2),
+      betweenStops: {
+        fromSeq: idx + 1,
+        toSeq: idx + 2,
+        fromNameEn: _stripStopPlatformSuffix(a?.stopName_e || a?.name_tc || ''),
+        fromNameTc: _stripStopPlatformSuffix(a?.name_tc || a?.stopName_e || ''),
+        toNameEn: _stripStopPlatformSuffix(b?.stopName_e || b?.name_tc || ''),
+        toNameTc: _stripStopPlatformSuffix(b?.name_tc || b?.stopName_e || ''),
+        hopKm: Number(hopKm.toFixed(1))
+      }
+    });
+    cumKm += hopKm;
+  }
+  return segments;
+}
+
+// Compare bus route forward stop sequence against HKSAR live traffic detectors' compass Rotation.
+// Uses true perpendicular distance to upcoming segments + expressway guard so local/Lantau buses (e.g. NLB 3M)
+// never falsely match an overhead/adjacent expressway (e.g. North Lantau Highway) they do not travel on,
+// while scaling corridor radius & bearing tolerance on curved long inter-stop highway legs (e.g. E36 through Tuen Mun)
+// and also checking the immediately upstream approaching segment for active jams/slowdowns.
+function inferDirectionalRoadTrafficForStops(stops, startIdx = 0, detectors = [], lookaheadStops = 8) {
+  if (!Array.isArray(stops) || stops.length < 2 || !Array.isArray(detectors) || !detectors.length) {
+    return { sameSide: null, oppSide: null, approaching: null, hasLive: false, capturedAt: '' };
+  }
+
+  const fromIdx = Math.max(0, Math.min(stops.length - 2, Number(startIdx) || 0));
+  const effLookahead = Math.max(2, Math.min(14, Number(lookaheadStops) || 8));
+  const endIdx = Math.min(stops.length, fromIdx + effLookahead + 1);
+
+  const aheadSegs = _buildStopPairSegments(stops, fromIdx, endIdx, 6.5, 18.0);
+  const { sameHits, oppHits } = _matchDetectorsAlongSegments(aheadSegs, detectors);
   const sameSide = summarizeDetectorBucket(sameHits);
   const oppSide = summarizeDetectorBucket(oppHits);
+
+  // Also check immediately upstream approaching segment(s) (e.g. passenger waiting at Stop 16 TM-CLK BBI
+  // while incoming bus is stuck in Tuen Mun Road / Wong Chu Road jam between Stop 15 and Stop 16).
+  // Only retain upstream alerts when actively JAMMED or SLOW (never show upstream SMOOTH noise).
+  let approaching = null;
+  if (fromIdx > 0) {
+    const upStart = Math.max(0, fromIdx - 2);
+    const upSegs = _buildStopPairSegments(stops, upStart, fromIdx + 1, 14.0, 18.0);
+    if (upSegs.length) {
+      const upMatched = _matchDetectorsAlongSegments(upSegs, detectors);
+      const upSummary = summarizeDetectorBucket(upMatched.sameHits);
+      if (upSummary && (upSummary.status === 'JAMMED' || upSummary.status === 'SLOW')) {
+        approaching = upSummary;
+      }
+    }
+  }
 
   return {
     sameSide,
     oppSide,
-    hasLive: Boolean(sameSide || oppSide),
+    approaching,
+    hasLive: Boolean(sameSide || oppSide || approaching),
     capturedAt: ''
   };
 }
 
+function _formatBetweenStopsLabel(betweenStops, isZh = false) {
+  if (!betweenStops || !betweenStops.fromNameEn || !betweenStops.toNameEn) return '';
+  if (isZh) {
+    const f = betweenStops.fromNameTc || betweenStops.fromNameEn;
+    const t = betweenStops.toNameTc || betweenStops.toNameEn;
+    return `${f} → ${t} 之間`;
+  }
+  return `Between ${betweenStops.fromNameEn} → ${betweenStops.toNameEn}`;
+}
+
 function getDirectionalRoadSummary(stops, startIdx, detectors, isZh = false, lookaheadStops = 8) {
   const res = inferDirectionalRoadTrafficForStops(stops, startIdx, detectors, lookaheadStops);
-  if (!res.hasLive || (!res.sameSide && !res.oppSide)) return null;
+  if (!res.hasLive || (!res.sameSide && !res.oppSide && !res.approaching)) return null;
 
   const same = res.sameSide;
   const opp = res.oppSide;
+  const approaching = res.approaching;
+
+  // If the road ahead is clear (or no ahead detector) BUT the incoming bus segment approaching the user's stop
+  // is actively JAMMED or SLOW (e.g. Tuen Mun jam between Stop 15 & Stop 16 while waiting at Stop 16), surface it!
+  const aheadConstrained = same && (same.status === 'JAMMED' || same.status === 'SLOW');
+  const useApproaching = Boolean(approaching && !aheadConstrained);
+
+  const oppDet = opp?.worstDet || opp?.representativeDet || null;
+
+  if (useApproaching) {
+    const appDecision = synthesizeTrafficDecision(approaching, null, isZh);
+    const focusDet = approaching.worstDet || approaching.representativeDet || null;
+    const roadLabel = focusDet ? (isZh ? (focusDet.roadTc || focusDet.roadEn) : (focusDet.roadEn || focusDet.roadTc)) : '';
+    const betweenLabel = _formatBetweenStopsLabel(approaching.betweenStops, isZh);
+    const isJam = approaching.status === 'JAMMED';
+    const headline = isZh
+      ? (isJam ? `來車路段擠塞 · 預計${appDecision.delayLabelTc}` : `來車路段車多 · 預計${appDecision.delayLabelTc}`)
+      : (isJam ? `Incoming bus in jam · Expect ${appDecision.delayLabelEn}` : `Incoming bus slowed · Expect ${appDecision.delayLabelEn}`);
+
+    const detailParts = [`${approaching.minSpd} km/h`];
+    if (focusDet?.occ > 0) {
+      detailParts.push(isZh ? `佔用率 ${focusDet.occ}%` : `${focusDet.occ}% occ`);
+    }
+    if (roadLabel) detailParts.push(roadLabel);
+    if (betweenLabel) detailParts.push(betweenLabel);
+    if (same && same.status === 'SMOOTH') {
+      detailParts.push(isZh ? `前路暢順 (~${same.avgSpd} km/h)` : `Ahead clear (~${same.avgSpd} km/h)`);
+    }
+
+    return {
+      ...res,
+      tone: appDecision.tone,
+      headline,
+      detail: detailParts.join(' · '),
+      actionTip: isZh ? '班次正途經擠塞路段前來，候車時間或會延長' : 'Incoming bus is passing through congestion before your stop — expect longer wait',
+      delayLabel: isZh ? appDecision.delayLabelTc : appDecision.delayLabelEn,
+      densityLabel: isZh ? appDecision.densityTc : appDecision.densityEn,
+      aheadKm: 0,
+      betweenLabel,
+      isApproaching: true,
+      focusDet,
+      oppDet
+    };
+  }
+
   const primary = same || opp;
   const focusDet = (same?.status === 'JAMMED' || same?.status === 'SLOW')
     ? same.worstDet
@@ -2862,7 +3068,10 @@ function getDirectionalRoadSummary(stops, startIdx, detectors, isZh = false, loo
   const decision = synthesizeTrafficDecision(same, opp, isZh);
   const roadLabel = focusDet ? (isZh ? (focusDet.roadTc || focusDet.roadEn) : (focusDet.roadEn || focusDet.roadTc)) : '';
   const aheadKm = Number(primary?.aheadKm || 0);
-  const aheadStr = aheadKm >= 0.4
+  const betweenStops = primary?.betweenStops || null;
+  const showBetween = Boolean(betweenStops && (same?.status !== 'SMOOTH' || (betweenStops.hopKm || 0) >= 1.8));
+  const betweenLabel = showBetween ? _formatBetweenStopsLabel(betweenStops, isZh) : '';
+  const aheadStr = (!betweenLabel && aheadKm >= 0.4)
     ? (isZh ? `前方約 ${aheadKm.toFixed(1)} km` : `~${aheadKm.toFixed(1)} km ahead`)
     : '';
 
@@ -2876,7 +3085,8 @@ function getDirectionalRoadSummary(stops, startIdx, detectors, isZh = false, loo
     }
   }
   if (roadLabel) detailParts.push(roadLabel);
-  if (aheadStr) detailParts.push(aheadStr);
+  if (betweenLabel) detailParts.push(betweenLabel);
+  else if (aheadStr) detailParts.push(aheadStr);
   if (same && same.status === 'SMOOTH' && opp && opp.status === 'JAMMED') {
     detailParts.push(isZh ? `僅對面線塞車 (${opp.minSpd} km/h)` : `Opp. bound jammed (${opp.minSpd} km/h)`);
   }
@@ -2890,7 +3100,10 @@ function getDirectionalRoadSummary(stops, startIdx, detectors, isZh = false, loo
     delayLabel: isZh ? decision.delayLabelTc : decision.delayLabelEn,
     densityLabel: isZh ? decision.densityTc : decision.densityEn,
     aheadKm,
-    focusDet
+    betweenLabel,
+    isApproaching: false,
+    focusDet,
+    oppDet
   };
 }
 
@@ -2923,6 +3136,7 @@ if (typeof window !== 'undefined') {
   window.pointToSegmentDistanceKm = pointToSegmentDistanceKm;
   window.isExpresswayOrTunnelDetector = isExpresswayOrTunnelDetector;
   window.parseHkGpsCoordinates = parseHkGpsCoordinates;
+  window.findOppositeDirectionGroup = findOppositeDirectionGroup;
   window.synthesizeTrafficDecision = synthesizeTrafficDecision;
   window.inferDirectionalRoadTrafficForStops = inferDirectionalRoadTrafficForStops;
   window.getDirectionalRoadSummary = getDirectionalRoadSummary;
@@ -2976,6 +3190,7 @@ if (typeof module !== 'undefined' && module.exports) {
     pointToSegmentDistanceKm,
     isExpresswayOrTunnelDetector,
     parseHkGpsCoordinates,
+    findOppositeDirectionGroup,
     synthesizeTrafficDecision,
     inferDirectionalRoadTrafficForStops,
     getDirectionalRoadSummary,

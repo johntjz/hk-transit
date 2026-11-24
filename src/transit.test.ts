@@ -143,6 +143,7 @@ function loadHardcodeAndPlannerSandbox(overrides: Record<string, any> = {}) {
       getDirectionalRoadSummary,
       synthesizeTrafficDecision,
       parseHkGpsCoordinates,
+      findOppositeDirectionGroup,
       SavedHubsManager,
       buildPlannerLegRoadTrafficTagHtml,
     });`,
@@ -2604,5 +2605,227 @@ test('hardcode.js & planner.js: GPS coordinate paste (DMS & decimal), BULLETPROO
   assert.ok(html.includes('window.ensureLeafletLoaded'), 'Must define async multi-CDN ensureLeafletLoaded');
   assert.ok(html.includes('id="trafficDecisionModal"') && html.includes('window.openTrafficDecisionModal'), 'Must include uncropped Traffic Decision & Road Cam modal');
 });
+
+test('hardcode.js: findOppositeDirectionGroup swaps NLB 3M, NLB 1, KMB, and LWB E36 both ways while rejecting single-direction routes', () => {
+  const sb = loadHardcodeAndPlannerSandbox();
+  const db = JSON.parse(fs.readFileSync('public/bus_index.min.json', 'utf8'));
+  const groups = db.groupedRoutes;
+  assert.ok(Array.isArray(groups) && groups.length > 500, 'bus_index.min.json must contain groupedRoutes');
+
+  // 1. NLB 3M: Mui Wo Ferry Pier <-> Tung Chung Station Bus Terminus (no _O/_I in routeIds!)
+  const nlb3mToMw = groups.find((g: any) => g.company === 'NLB' && g.routeNo === '3M' && /Mui Wo/i.test(g.dest_e));
+  const nlb3mToTc = groups.find((g: any) => g.company === 'NLB' && g.routeNo === '3M' && /Tung Chung/i.test(g.dest_e));
+  assert.ok(nlb3mToMw && nlb3mToTc, 'bus_index.min.json must contain both NLB 3M directions');
+
+  const swapFromMw = sb.findOppositeDirectionGroup(nlb3mToMw, groups);
+  assert.equal(swapFromMw?.key, nlb3mToTc.key, 'Swapping NLB 3M (To Mui Wo) must switch to Tung Chung Station Bus Terminus');
+
+  const swapFromTc = sb.findOppositeDirectionGroup(nlb3mToTc, groups);
+  assert.equal(swapFromTc?.key, nlb3mToMw.key, 'Swapping NLB 3M (To Tung Chung) must switch back to Mui Wo Ferry Pier');
+
+  // Also test destination-based fallback even when tdBound is stripped!
+  const strippedMw = { ...nlb3mToMw, tdBound: undefined };
+  const strippedTc = { ...nlb3mToTc, tdBound: undefined };
+  assert.equal(sb.findOppositeDirectionGroup(strippedMw, [strippedMw, strippedTc])?.key, strippedTc.key);
+  assert.equal(sb.findOppositeDirectionGroup(strippedTc, [strippedMw, strippedTc])?.key, strippedMw.key);
+
+  // 2. NLB 1: Mui Wo <-> Tai O
+  const nlb1ToTaiO = groups.find((g: any) => g.company === 'NLB' && g.routeNo === '1' && /Tai O/i.test(g.dest_e));
+  const nlb1ToMw = groups.find((g: any) => g.company === 'NLB' && g.routeNo === '1' && /Mui Wo/i.test(g.dest_e));
+  assert.ok(nlb1ToTaiO && nlb1ToMw, 'bus_index.min.json must contain both NLB 1 directions');
+  assert.equal(sb.findOppositeDirectionGroup(nlb1ToTaiO, groups)?.key, nlb1ToMw.key);
+  assert.equal(sb.findOppositeDirectionGroup(nlb1ToMw, groups)?.key, nlb1ToTaiO.key);
+
+  // 3. Explicit _O / _I route (LWB E36)
+  const e36Air = groups.find((g: any) => g.routeNo === 'E36' && /Airport/i.test(g.dest_e));
+  const e36Phr = groups.find((g: any) => g.routeNo === 'E36' && /Pat Heung/i.test(g.dest_e));
+  assert.ok(e36Air && e36Phr, 'bus_index.min.json must contain both E36 directions');
+  assert.equal(sb.findOppositeDirectionGroup(e36Air, groups)?.key, e36Phr.key);
+  assert.equal(sb.findOppositeDirectionGroup(e36Phr, groups)?.key, e36Air.key);
+
+  // 4. Genuine single-direction / circular route with only one group returns null
+  const circularOnly = { key: 'KMB_999C_O', mode: 'BUS', company: 'KMB', routeNo: '999C', orig_e: 'Central', dest_e: 'Central (Circular)', routeIds: ['KMB_999C_O_1'] };
+  assert.equal(sb.findOppositeDirectionGroup(circularOnly, [circularOnly]), null);
+});
+
+test('hardcode.js: detects curved Tuen Mun highway jams between two far-apart E36 stops and approaching jams upstream of Stop 16', () => {
+  const sb = loadHardcodeAndPlannerSandbox();
+  const db = JSON.parse(fs.readFileSync('public/bus_index.min.json', 'utf8'));
+
+  // Load real LWB E36 -> Airport stops from bus_index.min.json
+  const e36ToAirport = db.groupedRoutes.find((g: any) => g.routeNo === 'E36' && /Airport/i.test(g.dest_e));
+  assert.ok(e36ToAirport, 'bus_index.min.json must contain E36 To Airport');
+  const rawStops = db.routeStopsCache[e36ToAirport.routeIds[0]];
+  assert.ok(Array.isArray(rawStops) && rawStops.length > 16, 'Expected full E36 stop list');
+  const stops = rawStops.map((entry: any) => {
+    const idx = Array.isArray(entry) ? entry[0] : entry;
+    const s = db.stopsDict[idx];
+    return { stopKey: `S_${s[0]}`, stopName_e: s[1], name_tc: s[2], latitude: String(s[3]), longitude: String(s[4]) };
+  });
+
+  const ylParkIdx = stops.findIndex((s: any) => /Yuen Long Park/i.test(s.stopName_e));
+  const tmClkIdx = stops.findIndex((s: any) => /Tuen Mun.*Chek Lap Kok.*Tunnel/i.test(s.stopName_e));
+  assert.ok(ylParkIdx >= 0 && tmClkIdx === ylParkIdx + 1, `Expected Yuen Long Park immediately before TM-CLK Tunnel BBI (got ${ylParkIdx} -> ${tmClkIdx})`);
+
+  // Realistic TD detectors in Tuen Mun along E36's curved path between Stop 15 (Yuen Long Park) & Stop 16 (TM-CLK Tunnel BBI):
+  // - Wong Chu Road westbound (near Yau Oi, ~1.1 km off straight chord, heading 252 deg) -> JAMMED 18 km/h
+  // - Tuen Mun Road northbound opposite bound (heading 42 deg) -> SMOOTH 72 km/h
+  // - North Lantau Highway / TM-CLK ahead of Stop 16 (heading 186 deg) -> SMOOTH 90 km/h
+  const detectors = [
+    {
+      id: 'AID_TM_WCR_WB',
+      lat: 22.3852,
+      lon: 113.9722,
+      rot: 252,
+      spd: 18,
+      occ: 88,
+      tier: 'JAMMED',
+      roadEn: 'Wong Chu Road (Tuen Mun)',
+      roadTc: '皇珠路 (屯門)',
+      camKey: 'TM112F'
+    },
+    {
+      id: 'AID_TM_TMR_NB',
+      lat: 22.3925,
+      lon: 113.9768,
+      rot: 42,
+      spd: 72,
+      occ: 16,
+      tier: 'SMOOTH',
+      roadEn: 'Tuen Mun Road Northbound',
+      roadTc: '屯門公路北行',
+      camKey: 'TM105F'
+    },
+    {
+      id: 'AID_TMCLK_SB',
+      lat: 22.3270,
+      lon: 113.9445,
+      rot: 186,
+      spd: 90,
+      occ: 4,
+      tier: 'SMOOTH',
+      roadEn: 'Tuen Mun - Chek Lap Kok Tunnel',
+      roadTc: '屯門赤鱲角隧道',
+      camKey: 'TM120F'
+    }
+  ];
+
+  // 1. At Stop 15 (Yuen Long Park): detects the Tuen Mun jam BETWEEN Yuen Long Park -> TM-CLK Tunnel BBI
+  const sumAtYlParkEn = sb.getDirectionalRoadSummary(stops, ylParkIdx, detectors, false, 8);
+  assert.ok(sumAtYlParkEn, 'Expected traffic summary at Yuen Long Park');
+  assert.equal(sumAtYlParkEn.tone, 'jammed', 'Must catch curved Wong Chu Road jam between Stop 15 and Stop 16');
+  assert.equal(sumAtYlParkEn.isApproaching, false);
+  assert.equal(sumAtYlParkEn.focusDet?.id, 'AID_TM_WCR_WB');
+  assert.ok(sumAtYlParkEn.betweenLabel.includes('Yuen Long Park') && sumAtYlParkEn.betweenLabel.includes('Tuen Mun'), `Expected between-stops label, got: ${sumAtYlParkEn.betweenLabel}`);
+  assert.ok(sumAtYlParkEn.detail.includes('Wong Chu Road'), `Expected road name in detail, got: ${sumAtYlParkEn.detail}`);
+
+  const sumAtYlParkZh = sb.getDirectionalRoadSummary(stops, ylParkIdx, detectors, true, 8);
+  assert.ok(sumAtYlParkZh.betweenLabel.includes('之間'), `Expected Chinese between-stops label, got: ${sumAtYlParkZh.betweenLabel}`);
+
+  // 2. At Stop 16 (TM-CLK Tunnel BBI): even though the tunnel ahead is smooth (90 km/h),
+  // the waiting passenger MUST be warned that the incoming bus is stuck in the Tuen Mun jam between Stop 15 and Stop 16!
+  const sumAtBbiEn = sb.getDirectionalRoadSummary(stops, tmClkIdx, detectors, false, 8);
+  assert.ok(sumAtBbiEn, 'Expected approaching-jam summary at TM-CLK Tunnel BBI');
+  assert.equal(sumAtBbiEn.tone, 'jammed', 'Waiting at TM-CLK BBI must surface upstream Tuen Mun jam');
+  assert.equal(sumAtBbiEn.isApproaching, true);
+  assert.equal(sumAtBbiEn.focusDet?.id, 'AID_TM_WCR_WB');
+  assert.ok(sumAtBbiEn.headline.includes('Incoming bus in jam'), `Unexpected approaching headline: ${sumAtBbiEn.headline}`);
+  assert.ok(sumAtBbiEn.detail.includes('Ahead clear (~90 km/h)'), `Expected ahead-clear context alongside approaching jam: ${sumAtBbiEn.detail}`);
+
+  const sumAtBbiZh = sb.getDirectionalRoadSummary(stops, tmClkIdx, detectors, true, 8);
+  assert.ok(sumAtBbiZh.headline.includes('來車路段擠塞'), `Unexpected ZH approaching headline: ${sumAtBbiZh.headline}`);
+
+  // 3. Opposite-direction-only detector in Tuen Mun MUST NOT trigger a false same-direction jam
+  const oppOnlyDetectors = [
+    { id: 'AID_TM_OPP_JAM', lat: 22.3925, lon: 113.9768, rot: 42, spd: 14, occ: 95, tier: 'JAMMED', roadEn: 'Tuen Mun Road Northbound', roadTc: '屯門公路北行', camKey: 'TM105F' }
+  ];
+  const oppOnlySum = sb.getDirectionalRoadSummary(stops, ylParkIdx, oppOnlyDetectors, false, 8);
+  assert.ok(oppOnlySum, 'Expected opposite-bound info summary');
+  assert.equal(oppOnlySum.tone, 'smooth', 'Opposite-bound Tuen Mun jam must NOT be flagged as same-direction jam');
+  assert.ok(oppOnlySum.headline.includes('Opposite bound jammed'), `Unexpected opp-only headline: ${oppOnlySum.headline}`);
+});
+
+test('map.js: enlarges clickable traffic arrows (34x34), separates HK left-hand North/South lanes, and badges N/S/E/W bounds clearly', () => {
+  const mapCode = fs.readFileSync('public/map.js', 'utf8');
+  const addedPolylines: any[] = [];
+  const addedMarkers: any[] = [];
+  const fakeLayerGroup = {
+    addTo() { return this; },
+    clearLayers() { addedPolylines.length = 0; addedMarkers.length = 0; },
+    hasLayer() { return false; },
+  };
+  const ctx: any = {
+    window: { trafficLayerEnabled: true },
+    document: { getElementById: () => null },
+    currentLang: 'en',
+    escapeHtml: (s: string) => String(s ?? ''),
+    escapeJsAttr: (s: string) => String(s ?? ''),
+    L: {
+      layerGroup: () => fakeLayerGroup,
+      polyline: (latlngs: any, opts: any) => {
+        const obj = { latlngs, opts, popupFn: null as any, addTo() { addedPolylines.push(obj); return obj; }, bindTooltip() { return obj; }, bindPopup(fn: any) { obj.popupFn = fn; return obj; } };
+        return obj;
+      },
+      divIcon: (opts: any) => opts,
+      marker: (latlng: any, opts: any) => {
+        const obj = { latlng, opts, popupFn: null as any, addTo() { addedMarkers.push(obj); return obj; }, bindTooltip() { return obj; }, bindPopup(fn: any) { obj.popupFn = fn; return obj; } };
+        return obj;
+      },
+    },
+  };
+  vm.createContext(ctx);
+  vm.runInContext(mapCode, ctx);
+
+  // 1. Directional bound classifier cleanly distinguishes N, S, E, W in EN & ZH with distinct badge colors
+  const nb = ctx.window.classifyTrafficBoundMeta(12, '', false);
+  const sb = ctx.window.classifyTrafficBoundMeta(195, '', false);
+  const eb = ctx.window.classifyTrafficBoundMeta(92, '', true);
+  const wb = ctx.window.classifyTrafficBoundMeta(268, '', true);
+  assert.equal(nb.shortLabel, 'N');
+  assert.equal(nb.fullLabel, 'Northbound');
+  assert.equal(sb.shortLabel, 'S');
+  assert.equal(sb.fullLabel, 'Southbound');
+  assert.notEqual(nb.badgeBg, sb.badgeBg, 'Northbound and Southbound must have distinct badge colors');
+  assert.equal(eb.shortLabel, '東');
+  assert.equal(wb.shortLabel, '西');
+
+  // 2. Render opposing Northbound & Southbound detectors at the EXACT same coordinate
+  ctx.window.__LIVE_TRAFFIC_DETECTORS__ = [
+    { id: 'TMR_NB', lat: 22.3925, lon: 113.9768, rot: 15, spd: 72, occ: 16, tier: 'SMOOTH', roadEn: 'Tuen Mun Road', roadTc: '屯門公路', dir: 'Northbound', camKey: 'TM105F' },
+    { id: 'TMR_SB', lat: 22.3925, lon: 113.9768, rot: 195, spd: 18, occ: 88, tier: 'JAMMED', roadEn: 'Tuen Mun Road', roadTc: '屯門公路', dir: 'Southbound', camKey: 'TM105F' },
+  ];
+  const fakeMap = {
+    getBounds: () => ({ isValid: () => true, pad: () => ({ contains: () => true }) }),
+    getZoom: () => 14,
+  };
+  ctx.window.renderTrafficOverlayOnMap(fakeMap, true);
+
+  assert.equal(addedMarkers.length, 2, 'Both Northbound and Southbound detectors must render directional arrow markers at zoom 14');
+  const sbMarker = addedMarkers[0]; // JAMMED sorted first
+  const nbMarker = addedMarkers[1];
+
+  // Generous 34x34 clickable hit area (up from 14x14)
+  assert.deepEqual(Array.from(sbMarker.opts.icon.iconSize), [34, 34]);
+  assert.deepEqual(Array.from(nbMarker.opts.icon.iconSize), [34, 34]);
+  assert.ok(sbMarker.opts.icon.html.includes('>S<') && sbMarker.opts.icon.html.includes('#7C3AED'), 'Southbound arrow must display distinct S badge');
+  assert.ok(nbMarker.opts.icon.html.includes('>N<') && nbMarker.opts.icon.html.includes('#1D4ED8'), 'Northbound arrow must display distinct N badge');
+
+  // Physically offset opposite bounds onto left-hand HK carriageways so polylines & arrows do NOT stack identically
+  const sbLine = addedPolylines[1]; // flowLine for SB
+  const nbLine = addedPolylines[3]; // flowLine for NB
+  const sbMidLon = (sbLine.latlngs[0][1] + sbLine.latlngs[1][1]) / 2;
+  const nbMidLon = (nbLine.latlngs[0][1] + nbLine.latlngs[1][1]) / 2;
+  assert.ok(Math.abs(sbMidLon - nbMidLon) > 0.0004, `Expected opposite carriageways to be laterally separated on map (dMidLon=${Math.abs(sbMidLon - nbMidLon)})`);
+  const dMarkerLat = Math.abs(sbMarker.latlng[0] - nbMarker.latlng[0]);
+  assert.ok(dMarkerLat > 0.0015, `Expected N/S arrow tips to be well separated for easy tapping (dMarkerLat=${dMarkerLat})`);
+
+  // Popup displays crisp directional bound pill
+  const sbPopup = sbMarker.popupFn();
+  const nbPopup = nbMarker.popupFn();
+  assert.ok(sbPopup.includes('↓ Southbound') && sbPopup.includes('#7C3AED'), 'Southbound popup must show Southbound pill');
+  assert.ok(nbPopup.includes('↑ Northbound') && nbPopup.includes('#1D4ED8'), 'Northbound popup must show Northbound pill');
+});
+
+
 
 

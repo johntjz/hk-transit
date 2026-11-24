@@ -3780,8 +3780,10 @@ function generateExpandedETAsHtml(arrs, group, stopKey, stopIdx) {
     if (roadSum && roadSum.headline) {
       const fDet = roadSum.focusDet;
       const oppDet = roadSum.oppDet;
+      const segNote = roadSum.betweenLabel || '';
+      const isApp = roadSum.isApproaching ? 'true' : 'false';
       const openCall = fDet
-        ? `event.stopPropagation(); openTrafficDecisionModal('${escapeJsAttr(fDet.id)}', '${escapeJsAttr(oppDet?.id || '')}');`
+        ? `event.stopPropagation(); openTrafficDecisionModal('${escapeJsAttr(fDet.id)}', '${escapeJsAttr(oppDet?.id || '')}', '${escapeJsAttr(segNote)}', ${isApp});`
         : 'event.stopPropagation();';
       const camIcon = fDet?.camKey ? (isZh ? '📷 詳情/實拍 ›' : '📷 Verdict & Cam ›') : (isZh ? '詳情 ›' : 'Details ›');
       const toneDot = roadSum.tone === 'jammed' ? '🔴' : (roadSum.tone === 'slow' ? '🟠' : '🟢');
@@ -5189,7 +5191,7 @@ function showGpsCoordinateOnMap(lat, lon) {
   }, 120);
 }
 
-window.openTrafficDecisionModal = function(detId, oppDetId = '') {
+window.openTrafficDecisionModal = function(detId, oppDetId = '', segmentNote = '', isApproaching = false) {
   triggerHaptic(10);
   const modal = document.getElementById('trafficDecisionModal');
   const bodyEl = document.getElementById('trafficModalBody');
@@ -5231,6 +5233,15 @@ window.openTrafficDecisionModal = function(detId, oppDetId = '') {
     densityLabel: isZh ? `佔用率 ${Math.round(det.occ || 0)}%` : `${Math.round(det.occ || 0)}% load`,
     actionTip: ''
   };
+  if (isApproaching && (dec.tone === 'jammed' || dec.tone === 'slow')) {
+    const isJam = dec.tone === 'jammed';
+    dec.verdict = isZh
+      ? (isJam ? `來車路段擠塞 · 預計${dec.delayLabel}` : `來車路段車多 · 預計${dec.delayLabel}`)
+      : (isJam ? `Incoming bus in jam · Expect ${dec.delayLabel}` : `Incoming bus slowed · Expect ${dec.delayLabel}`);
+    dec.actionTip = isZh
+      ? '班次正途經擠塞路段前來，候車時間或會延長'
+      : 'Incoming bus is passing through congestion before your stop — expect longer wait';
+  }
 
   const titleEl = document.getElementById('trafficModalTitle');
   const subEl = document.getElementById('trafficModalSub');
@@ -5238,7 +5249,7 @@ window.openTrafficDecisionModal = function(detId, oppDetId = '') {
   if (titleEl) titleEl.innerText = roadName;
   const dirLabel = det.dir ? `${det.dir}` : (Number.isFinite(det.rot) ? `${Math.round(det.rot)}°` : '');
   const capAt = window.__LIVE_TRAFFIC_CAPTURED_AT__ || '';
-  if (subEl) subEl.innerText = [dirLabel, capAt].filter(Boolean).join(' · ');
+  if (subEl) subEl.innerText = [segmentNote, dirLabel, capAt].filter(Boolean).join(' · ');
   if (closeEl) closeEl.innerText = isZh ? '✕ 關閉' : '✕ Close';
 
   const toneDot = dec.tone === 'jammed' ? '🔴' : (dec.tone === 'slow' ? '🟠' : '🟢');
@@ -5263,10 +5274,14 @@ window.openTrafficDecisionModal = function(detId, oppDetId = '') {
          ${isZh ? '此路段感應器未配對運輸署鏡頭，以上為實時車速及佔用率數據。' : 'No TD camera paired at this sensor — verdict uses live road speed & occupancy telemetry.'}
        </div>`;
 
+  const segTagHtml = segmentNote
+    ? `<div style="font-size:0.73rem; font-weight:700; opacity:0.9; margin-top:3px;">📍 ${escapeHtml(segmentNote)}</div>`
+    : '';
   const canJumpMap = currentView === 'detail' && typeof focusTrafficDetectorOnDetailMap === 'function';
   bodyEl.innerHTML = `
     <div class="traffic-verdict-banner tone-${dec.tone}">
       <div class="traffic-verdict-title">${toneDot} ${escapeHtml(dec.verdict)}</div>
+      ${segTagHtml}
       ${dec.actionTip ? `<div class="traffic-verdict-tip">${escapeHtml(dec.actionTip)}</div>` : ''}
     </div>
     <div class="traffic-metrics-grid">
@@ -5787,21 +5802,24 @@ async function expandStop(idx, isSilent = false, autoScrolled = false, skipMapPa
 function reverseCurrentRouteDirection() {
   if (!detailRouteGroup) return;
   triggerHaptic(12);
-  const curBound = extractRouteBoundCode(detailRouteGroup);
-  const curKeyBase = String(detailRouteGroup.key || '').replace(/_(O|I)(_\d+)?$/, '');
-
-  const candidates = groupedRoutes.filter(g =>
-    g.routeNo === detailRouteGroup.routeNo &&
-    g.company === detailRouteGroup.company &&
-    g.key !== detailRouteGroup.key &&
-    extractRouteBoundCode(g) !== curBound
-  );
-
-  const opposite =
-    candidates.find(g => String(g.key || '').replace(/_(O|I)(_\d+)?$/, '') === curKeyBase && /_1$/.test(g.routeIds?.[0] || '')) ||
-    candidates.find(g => String(g.key || '').replace(/_(O|I)(_\d+)?$/, '') === curKeyBase) ||
-    candidates.find(g => /_1$/.test(g.routeIds?.[0] || '')) ||
-    candidates[0];
+  let opposite = null;
+  if (typeof findOppositeDirectionGroup === 'function') {
+    opposite = findOppositeDirectionGroup(detailRouteGroup, groupedRoutes);
+  } else {
+    const curBound = extractRouteBoundCode(detailRouteGroup);
+    const curKeyBase = String(detailRouteGroup.key || '').replace(/_(O|I)(_\d+)?$/, '');
+    const candidates = groupedRoutes.filter(g =>
+      g.routeNo === detailRouteGroup.routeNo &&
+      g.company === detailRouteGroup.company &&
+      g.key !== detailRouteGroup.key &&
+      extractRouteBoundCode(g) !== curBound
+    );
+    opposite =
+      candidates.find(g => String(g.key || '').replace(/_(O|I)(_\d+)?$/, '') === curKeyBase && /_1$/.test(g.routeIds?.[0] || '')) ||
+      candidates.find(g => String(g.key || '').replace(/_(O|I)(_\d+)?$/, '') === curKeyBase) ||
+      candidates.find(g => /_1$/.test(g.routeIds?.[0] || '')) ||
+      candidates[0];
+  }
 
   if (opposite) {
     const curStops = getStopsForGroup(detailRouteGroup, detailTargetStopKey);

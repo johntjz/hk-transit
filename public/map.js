@@ -44,13 +44,43 @@ function projectPointMeters(lat, lon, bearingDeg, meters) {
   return [lat + dLat, lon + dLon];
 }
 
+function classifyTrafficBoundMeta(rotDeg, dirStr = '', isZh = false) {
+  const dirTxt = String(dirStr || '').toLowerCase();
+  let boundKey = '';
+  if (/\bnorth\b|\bnb\b|北行/.test(dirTxt)) boundKey = 'N';
+  else if (/\bsouth\b|\bsb\b|南行/.test(dirTxt)) boundKey = 'S';
+  else if (/\beast\b|\beb\b|東行/.test(dirTxt)) boundKey = 'E';
+  else if (/\bwest\b|\bwb\b|西行/.test(dirTxt)) boundKey = 'W';
+
+  if (!boundKey) {
+    const r = ((Number(rotDeg) || 0) % 360 + 360) % 360;
+    if (r >= 315 || r < 45) boundKey = 'N';
+    else if (r >= 45 && r < 135) boundKey = 'E';
+    else if (r >= 135 && r < 225) boundKey = 'S';
+    else boundKey = 'W';
+  }
+
+  const table = {
+    N: { boundKey: 'N', shortEn: 'N', shortTc: '北', labelEn: 'Northbound', labelTc: '北行', arrowGlyph: '↑', badgeBg: '#1D4ED8' },
+    S: { boundKey: 'S', shortEn: 'S', shortTc: '南', labelEn: 'Southbound', labelTc: '南行', arrowGlyph: '↓', badgeBg: '#7C3AED' },
+    E: { boundKey: 'E', shortEn: 'E', shortTc: '東', labelEn: 'Eastbound', labelTc: '東行', arrowGlyph: '→', badgeBg: '#0F766E' },
+    W: { boundKey: 'W', shortEn: 'W', shortTc: '西', labelEn: 'Westbound', labelTc: '西行', arrowGlyph: '←', badgeBg: '#C2410C' }
+  };
+  const m = table[boundKey] || table.N;
+  return {
+    ...m,
+    shortLabel: isZh ? m.shortTc : m.shortEn,
+    fullLabel: isZh ? m.labelTc : m.labelEn
+  };
+}
+
 function buildTrafficDetectorPopupHtml(det, isZh) {
   const roadName = isZh ? (det.roadTc || det.roadEn || '主要幹道') : (det.roadEn || det.roadTc || 'Major Road');
   const tierCol = det.tier === 'JAMMED' ? '#DC2626' : (det.tier === 'SLOW' ? '#D97706' : '#16A34A');
   const tierLbl = det.tier === 'JAMMED'
     ? (isZh ? '交通擠塞' : 'Jammed')
     : (det.tier === 'SLOW' ? (isZh ? '車多緩慢' : 'Slow') : (isZh ? '暢順無延誤' : 'Clear'));
-  const dirTxt = det.dir ? ` · ${escapeHtml(det.dir)}` : '';
+  const boundMeta = classifyTrafficBoundMeta(det.rot, det.dir, isZh);
   const dec = (typeof synthesizeTrafficDecision === 'function')
     ? synthesizeTrafficDecision({ status: det.tier || 'SMOOTH', avgSpd: Number(det.spd) || 0, minSpd: Number(det.spd) || 0, maxOcc: Number(det.occ) || 0, worstDet: det }, null, isZh)
     : null;
@@ -64,19 +94,24 @@ function buildTrafficDetectorPopupHtml(det, isZh) {
     : (isZh ? '📊 查看詳細路況 ›' : '📊 Full Road Analysis ›');
 
   return `
-    <div style="min-width:195px; max-width:236px; font-family:inherit; color:#1C1C1E;">
+    <div style="min-width:205px; max-width:248px; font-family:inherit; color:#1C1C1E;">
       <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:8px;">
-        <span style="font-weight:800; font-size:0.80rem; line-height:1.25;">${escapeHtml(roadName)}</span>
+        <span style="font-weight:800; font-size:0.82rem; line-height:1.25;">${escapeHtml(roadName)}</span>
         <span style="font-weight:800; font-size:0.70rem; color:${tierCol}; white-space:nowrap;">${escapeHtml(tierLbl)}</span>
       </div>
-      <div style="font-size:0.72rem; font-weight:700; color:${tierCol}; margin-top:4px;">${escapeHtml(verdictLine)}</div>
-      <div style="display:flex; align-items:baseline; gap:10px; margin-top:5px; padding-top:5px; border-top:1px solid rgba(0,0,0,0.08); font-variant-numeric:tabular-nums;">
-        <span style="font-size:0.98rem; font-weight:800; color:${tierCol};">${Number(det.spd)} <span style="font-size:0.70rem; font-weight:600;">km/h</span></span>
-        <span style="font-size:0.71rem; font-weight:600; color:#475569;">${occVal}% ${isZh ? '佔用率' : 'occ'}${dirTxt}</span>
+      <div style="display:flex; align-items:center; gap:6px; margin-top:5px; flex-wrap:wrap;">
+        <span style="display:inline-flex; align-items:center; gap:3px; padding:2px 7px; border-radius:999px; background:${boundMeta.badgeBg}; color:#FFFFFF; font-size:0.68rem; font-weight:800; letter-spacing:0.01em;">
+          ${boundMeta.arrowGlyph} ${escapeHtml(boundMeta.fullLabel)}
+        </span>
+        <span style="font-size:0.72rem; font-weight:700; color:${tierCol};">${escapeHtml(verdictLine)}</span>
+      </div>
+      <div style="display:flex; align-items:baseline; gap:10px; margin-top:6px; padding-top:6px; border-top:1px solid rgba(0,0,0,0.08); font-variant-numeric:tabular-nums;">
+        <span style="font-size:1.02rem; font-weight:800; color:${tierCol};">${Number(det.spd)} <span style="font-size:0.70rem; font-weight:600;">km/h</span></span>
+        <span style="font-size:0.72rem; font-weight:600; color:#475569;">${occVal}% ${isZh ? '佔用率' : 'occ'} · ${Math.round(Number(det.rot) || 0)}°</span>
       </div>
       <button type="button"
         onclick="event.stopPropagation(); if(typeof window.openTrafficDecisionModal==='function')window.openTrafficDecisionModal('${escId}');"
-        style="margin-top:8px; width:100%; border:none; border-radius:8px; background:#0F172A; color:#FFFFFF; font-size:0.73rem; font-weight:700; padding:7px 10px; cursor:pointer; text-align:center;">
+        style="margin-top:8px; width:100%; border:none; border-radius:8px; background:#0F172A; color:#FFFFFF; font-size:0.74rem; font-weight:700; padding:8px 10px; cursor:pointer; text-align:center;">
         ${btnLbl}
       </button>
     </div>
@@ -125,46 +160,62 @@ function renderTrafficOverlayOnMap(targetMap, forceRedraw = false) {
   inView.sort((a, b) => prio(a.tier) - prio(b.tier));
 
   const maxDraw = zoom <= 11 ? 150 : (zoom <= 13 ? 250 : 380);
-  const segHalfMeters = zoom <= 12 ? 150 : (zoom <= 14 ? 105 : 75);
+  const segHalfMeters = zoom <= 12 ? 165 : (zoom <= 14 ? 115 : 80);
+  // Hong Kong drives on the LEFT: offset each carriageway slightly to the left of its heading
+  // so Northbound vs Southbound (and Eastbound vs Westbound) physically separate instead of overlapping.
+  const laneOffsetMeters = zoom >= 15 ? 14 : (zoom >= 13 ? 28 : 46);
   const selected = inView.slice(0, maxDraw);
 
   selected.forEach((d) => {
     const isJam = d.tier === 'JAMMED';
     const isSlow = d.tier === 'SLOW';
     const col = isJam ? '#DC2626' : (isSlow ? '#F59E0B' : '#16A34A');
-    const pStart = projectPointMeters(d.lat, d.lon, (d.rot + 180) % 360, segHalfMeters);
-    const pEnd = projectPointMeters(d.lat, d.lon, d.rot, segHalfMeters);
+    const boundMeta = classifyTrafficBoundMeta(d.rot, d.dir, isZh);
 
-    if (isJam || isSlow) {
-      L.polyline([pStart, pEnd], {
-        color: '#FFFFFF',
-        weight: isJam ? 8 : 7,
-        opacity: 0.86,
-        lineCap: 'round',
-        interactive: false
-      }).addTo(layerGroup);
-    }
+    // Offset center left-hand relative to travel bearing (rot - 90 deg)
+    const leftBearing = ((Number(d.rot) || 0) + 270) % 360;
+    const [cLat, cLon] = projectPointMeters(d.lat, d.lon, leftBearing, laneOffsetMeters);
+    const pStart = projectPointMeters(cLat, cLon, (d.rot + 180) % 360, segHalfMeters);
+    const pEnd = projectPointMeters(cLat, cLon, d.rot, segHalfMeters);
+
+    L.polyline([pStart, pEnd], {
+      color: '#FFFFFF',
+      weight: isJam ? 9.5 : (isSlow ? 8.2 : 5.6),
+      opacity: isJam || isSlow ? 0.90 : 0.72,
+      lineCap: 'round',
+      interactive: false
+    }).addTo(layerGroup);
 
     const flowLine = L.polyline([pStart, pEnd], {
       color: col,
-      weight: isJam ? 5.2 : (isSlow ? 4.4 : 3.2),
-      opacity: isJam ? 0.94 : (isSlow ? 0.88 : 0.62),
+      weight: isJam ? 5.8 : (isSlow ? 4.8 : 3.6),
+      opacity: isJam ? 0.96 : (isSlow ? 0.90 : 0.78),
       lineCap: 'round'
     }).addTo(layerGroup);
 
-    const tipTxt = `${isZh ? (d.roadTc || d.roadEn) : (d.roadEn || d.roadTc)} · ${d.spd} km/h${d.camKey ? ' 📷' : ''}`;
+    const tipTxt = `${isZh ? (d.roadTc || d.roadEn) : (d.roadEn || d.roadTc)} · ${boundMeta.arrowGlyph} ${boundMeta.fullLabel} · ${d.spd} km/h${d.camKey ? ' 📷' : ''}`;
     flowLine.bindTooltip(tipTxt, { sticky: true, className: 'kmb-map-stop-label' });
-    flowLine.bindPopup(() => buildTrafficDetectorPopupHtml(d, isZh), { closeButton: true, maxWidth: 260 });
+    flowLine.bindPopup(() => buildTrafficDetectorPopupHtml(d, isZh), { closeButton: true, maxWidth: 270 });
     detMarkerMap.set(d.id, flowLine);
 
-    if (isJam || isSlow || zoom >= 14) {
-      const arrowSvg = `<svg width="14" height="14" viewBox="0 0 16 16" style="transform:rotate(${d.rot}deg);display:block;filter:drop-shadow(0 1px 2px rgba(0,0,0,0.45));"><path d="M8 1 L13 13 L8 10 L3 13 Z" fill="${col}" stroke="#FFFFFF" stroke-width="1.3"/></svg>`;
+    // Larger, high-contrast directional arrow + upright N/S/E/W bound badge inside a generous 34x34 tap target
+    if (isJam || isSlow || zoom >= 13) {
+      const svgSize = isJam ? 24 : (isSlow ? 22 : 20);
+      const badgeSize = isJam ? 14 : 13;
+      const arrowHtml = `
+        <div class="traffic-dir-marker-hit" style="width:34px;height:34px;display:flex;align-items:center;justify-content:center;position:relative;cursor:pointer;">
+          <svg width="${svgSize}" height="${svgSize}" viewBox="0 0 24 24" style="transform:rotate(${d.rot}deg);display:block;filter:drop-shadow(0 1.5px 3px rgba(0,0,0,0.48));">
+            <circle cx="12" cy="12" r="10.5" fill="rgba(255,255,255,0.95)" stroke="${col}" stroke-width="1.8"/>
+            <path d="M12 4.2 L18.2 17.4 L12 14.2 L5.8 17.4 Z" fill="${col}" stroke="#FFFFFF" stroke-width="0.9" stroke-linejoin="round"/>
+          </svg>
+          <span style="position:absolute;right:0;bottom:0;min-width:${badgeSize}px;height:${badgeSize}px;padding:0 2.5px;border-radius:999px;background:${boundMeta.badgeBg};color:#FFFFFF;border:1.5px solid #FFFFFF;font-size:8.5px;font-weight:900;line-height:${badgeSize - 3}px;text-align:center;box-shadow:0 1px 2px rgba(0,0,0,0.4);pointer-events:none;">${escapeHtml(boundMeta.shortLabel)}</span>
+        </div>`;
       const arrowMarker = L.marker(pEnd, {
-        icon: L.divIcon({ className: '', html: arrowSvg, iconSize: [14, 14], iconAnchor: [7, 7] }),
-        zIndexOffset: isJam ? 460 : (isSlow ? 360 : 120)
+        icon: L.divIcon({ className: '', html: arrowHtml, iconSize: [34, 34], iconAnchor: [17, 17] }),
+        zIndexOffset: isJam ? 520 : (isSlow ? 400 : 180)
       }).addTo(layerGroup);
-      arrowMarker.bindTooltip(tipTxt, { direction: 'top', offset: [0, -6], className: 'kmb-map-stop-label' });
-      arrowMarker.bindPopup(() => buildTrafficDetectorPopupHtml(d, isZh), { closeButton: true, maxWidth: 260 });
+      arrowMarker.bindTooltip(tipTxt, { direction: 'top', offset: [0, -10], className: 'kmb-map-stop-label' });
+      arrowMarker.bindPopup(() => buildTrafficDetectorPopupHtml(d, isZh), { closeButton: true, maxWidth: 270 });
       detMarkerMap.set(`${d.id}_arrow`, arrowMarker);
     }
   });
@@ -238,6 +289,7 @@ function focusTrafficDetectorOnDetailMap(lat, lon, detId = '') {
   setTimeout(openTargetPopup, 260);
 }
 
+window.classifyTrafficBoundMeta = classifyTrafficBoundMeta;
 window.renderTrafficOverlayOnMap = renderTrafficOverlayOnMap;
 window.syncTrafficOverlaysAllMaps = syncTrafficOverlaysAllMaps;
 window.toggleTrafficLayerOverlay = toggleTrafficLayerOverlay;

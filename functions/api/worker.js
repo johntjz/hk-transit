@@ -707,6 +707,237 @@ async function syncTdStrategicTrafficCorridorsAndWeather() {
   return { highwayCorridors, weather };
 }
 
+function haversineKmWorker(lat1, lon1, lat2, lon2) {
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
+  return 6371 * 2 * Math.atan2(Math.sqrt(Math.max(0, a)), Math.sqrt(Math.max(0, 1 - a)));
+}
+
+function classifyDetectorCongestion(speedKmh, occPct) {
+  const spd = Number(speedKmh);
+  const occ = Number(occPct) || 0;
+  if (!Number.isFinite(spd)) return 'SMOOTH';
+  if (spd < 24 || (occ >= 60 && spd < 38)) return 'JAMMED';
+  if (spd < 46 || (occ >= 35 && spd < 56)) return 'SLOW';
+  return 'SMOOTH';
+}
+
+function parseStrategicDetectorCsv(csvText) {
+  const rows = parseCsv(csvText);
+  const out = new Map();
+  for (const r of rows) {
+    const id = String(r.AID_ID_Number || '').trim();
+    const lat = parseFloat(r.Latitude);
+    const lon = parseFloat(r.Longitude);
+    if (!id || !isValidHkCoord(lat, lon)) continue;
+    const rotRaw = parseFloat(r.Rotation);
+    const roadEn = String(r.Road_EN || '').replace(/\s*\[AID[^\]]*\]\s*/gi, '').trim();
+    const roadTc = String(r.Road_TC || '').replace(/\s*\[AID[^\]]*\]\s*/gi, '').trim();
+    out.set(id, {
+      id,
+      district: String(r.District || '').trim(),
+      roadEn,
+      roadTc: roadTc || roadEn,
+      lat: Number(lat.toFixed(6)),
+      lon: Number(lon.toFixed(6)),
+      dir: String(r.Direction || '').trim(),
+      rot: Number.isFinite(rotRaw) ? ((Math.round(rotRaw) % 360) + 360) % 360 : 0
+    });
+  }
+  return out;
+}
+
+function parseRawSpeedVolXml(xmlText) {
+  const liveMap = new Map();
+  const str = String(xmlText || '');
+  const dateM = str.match(/<date>([^<]+)<\/date>/);
+  const perM = str.match(/<period_to>([^<]+)<\/period_to>/);
+  const capturedAt = [dateM?.[1], perM?.[1]].filter(Boolean).join(' ').trim();
+
+  const detRe = /<detector>[\s\S]*?<detector_id>([^<]+)<\/detector_id>[\s\S]*?<lanes>([\s\S]*?)<\/lanes>[\s\S]*?<\/detector>/gi;
+  let m;
+  while ((m = detRe.exec(str)) !== null) {
+    const id = m[1].trim();
+    const lanesBlock = m[2];
+    const laneRe = /<lane>[\s\S]*?<speed>([^<]+)<\/speed>[\s\S]*?<occupancy>([^<]+)<\/occupancy>[\s\S]*?<volume>([^<]+)<\/volume>[\s\S]*?<valid>([^<]+)<\/valid>/gi;
+    let lm;
+    let sumSpd = 0, sumOcc = 0, sumVol = 0, cnt = 0;
+    while ((lm = laneRe.exec(lanesBlock)) !== null) {
+      if (lm[4].trim().toUpperCase() !== 'Y') continue;
+      const spd = parseFloat(lm[1]);
+      const occ = parseFloat(lm[2]);
+      const vol = parseFloat(lm[3]);
+      if (Number.isFinite(spd) && spd >= 0 && spd <= 140) {
+        sumSpd += spd;
+        sumOcc += (Number.isFinite(occ) ? occ : 0);
+        sumVol += (Number.isFinite(vol) ? vol : 0);
+        cnt++;
+      }
+    }
+    if (cnt > 0) {
+      liveMap.set(id, {
+        speed: Math.round(sumSpd / cnt),
+        occ: Math.round(sumOcc / cnt),
+        vol: Math.round(sumVol)
+      });
+    }
+  }
+  return { capturedAt, liveMap };
+}
+
+function decodeTextBufferAuto(buf) {
+  if (!buf || !buf.byteLength) return '';
+  const u8 = new Uint8Array(buf);
+  if (u8.length >= 2 && u8[0] === 0xFF && u8[1] === 0xFE) {
+    return new TextDecoder('utf-16le').decode(u8.subarray(2));
+  }
+  if (u8.length >= 2 && u8[0] === 0xFE && u8[1] === 0xFF) {
+    return new TextDecoder('utf-16be').decode(u8.subarray(2));
+  }
+  return new TextDecoder('utf-8').decode(u8);
+}
+
+function parseTrafficCameraCsv(tsvOrCsvText) {
+  const lines = String(tsvOrCsvText || '').replace(/^\uFEFF/, '').split(/\r?\n/).filter(l => l.trim());
+  if (lines.length < 2) return [];
+  const delim = lines[0].includes('\t') ? '\t' : ',';
+  const hdrs = lines[0].split(delim).map(h => h.trim().toLowerCase());
+  const iKey = hdrs.indexOf('key');
+  const iDesc = hdrs.indexOf('description');
+  const iLat = hdrs.indexOf('latitude');
+  const iLon = hdrs.indexOf('longitude');
+  const iUrl = hdrs.indexOf('url');
+  const cams = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split(delim);
+    if (cols.length < 7) continue;
+    const key = String(cols[iKey >= 0 ? iKey : 0] || '').trim();
+    const desc = String(cols[iDesc >= 0 ? iDesc : 3] || '').replace(/\s*\[[^\]]+\]\s*$/, '').trim();
+    const lat = parseFloat(cols[iLat >= 0 ? iLat : 6]);
+    const lon = parseFloat(cols[iLon >= 0 ? iLon : 7]);
+    const url = String(cols[iUrl >= 0 ? iUrl : 8] || '').trim();
+    if (!key || !isValidHkCoord(lat, lon)) continue;
+    cams.push({
+      key,
+      desc,
+      lat: Number(lat.toFixed(5)),
+      lon: Number(lon.toFixed(5)),
+      url: url || `https://tdcctv.data.one.gov.hk/${key}.JPG`
+    });
+  }
+  return cams;
+}
+
+let _cachedTrafficStaticMeta = null;
+let _cachedTrafficStaticMetaTs = 0;
+
+async function getTrafficStaticMetadata() {
+  const now = Date.now();
+  if (_cachedTrafficStaticMeta && (now - _cachedTrafficStaticMetaTs) < 6 * 3600 * 1000) {
+    return _cachedTrafficStaticMeta;
+  }
+  const [majCsvRes, slpCsvRes, camRes] = await Promise.all([
+    fetchWithTimeout('https://static.data.gov.hk/td/traffic-data-strategic-major-roads/info/traffic_speed_volume_occ_info.csv', 4000, {}, 86400),
+    fetchWithTimeout('https://static.data.gov.hk/td/traffic-data-slp/info/traffic_speed_volume_occ_info-slp.csv', 3000, {}, 86400),
+    fetchWithTimeout('https://static.data.gov.hk/td/traffic-snapshot-images/code/Traffic_Camera_Locations_En.csv', 3500, {}, 86400)
+  ]);
+
+  const detectorMeta = new Map();
+  if (majCsvRes?.ok) {
+    for (const [k, v] of parseStrategicDetectorCsv(await majCsvRes.text())) detectorMeta.set(k, v);
+  }
+  if (slpCsvRes?.ok) {
+    for (const [k, v] of parseStrategicDetectorCsv(await slpCsvRes.text())) detectorMeta.set(k, v);
+  }
+
+  let cameras = [];
+  if (camRes?.ok) {
+    const camBuf = await camRes.arrayBuffer();
+    cameras = parseTrafficCameraCsv(decodeTextBufferAuto(camBuf));
+  }
+
+  // Pre-bind closest official TD road snapshot camera within 0.85 km for instant preview
+  if (cameras.length && detectorMeta.size) {
+    for (const det of detectorMeta.values()) {
+      let bestCam = null;
+      let bestKm = 0.85;
+      for (let i = 0; i < cameras.length; i++) {
+        const c = cameras[i];
+        if (Math.abs(c.lat - det.lat) > 0.009 || Math.abs(c.lon - det.lon) > 0.010) continue;
+        const dKm = haversineKmWorker(det.lat, det.lon, c.lat, c.lon);
+        if (dKm < bestKm) {
+          bestKm = dKm;
+          bestCam = c;
+        }
+      }
+      if (bestCam) {
+        det.camKey = bestCam.key;
+        det.camDesc = bestCam.desc;
+      }
+    }
+  }
+
+  if (detectorMeta.size > 0) {
+    _cachedTrafficStaticMeta = { detectorMeta, cameras };
+    _cachedTrafficStaticMetaTs = now;
+  }
+  return _cachedTrafficStaticMeta || { detectorMeta, cameras };
+}
+
+async function handleTrafficLiveRequest() {
+  const [metaBundle, majXmlRes, slpXmlRes] = await Promise.all([
+    getTrafficStaticMetadata(),
+    fetchWithTimeout('https://resource.data.one.gov.hk/td/traffic-detectors/rawSpeedVol-all.xml', 4200, {}, 25),
+    fetchWithTimeout('https://resource.data.one.gov.hk/td/traffic-detectors/rawSpeedVol_SLP-all.xml', 3000, {}, 25)
+  ]);
+
+  const detectorMeta = metaBundle?.detectorMeta || new Map();
+  const parsedMaj = majXmlRes?.ok ? parseRawSpeedVolXml(await majXmlRes.text()) : { capturedAt: '', liveMap: new Map() };
+  const parsedSlp = slpXmlRes?.ok ? parseRawSpeedVolXml(await slpXmlRes.text()) : { capturedAt: '', liveMap: new Map() };
+
+  const combinedLive = new Map([...parsedMaj.liveMap, ...parsedSlp.liveMap]);
+  const detectors = [];
+  let smooth = 0, slow = 0, jammed = 0;
+
+  for (const [id, det] of detectorMeta.entries()) {
+    const reading = combinedLive.get(id);
+    if (!reading) continue;
+    const tier = classifyDetectorCongestion(reading.speed, reading.occ);
+    if (tier === 'JAMMED') jammed++;
+    else if (tier === 'SLOW') slow++;
+    else smooth++;
+
+    // Compact object preserving full fidelity & fast client lookup
+    detectors.push({
+      id,
+      lat: det.lat,
+      lon: det.lon,
+      rot: det.rot,
+      spd: reading.speed,
+      occ: reading.occ,
+      vol: reading.vol,
+      dir: det.dir,
+      roadEn: det.roadEn,
+      roadTc: det.roadTc,
+      tier,
+      camKey: det.camKey || ''
+    });
+  }
+
+  return new Response(
+    JSON.stringify({
+      ok: true,
+      ts: Date.now(),
+      capturedAt: parsedMaj.capturedAt || parsedSlp.capturedAt || '',
+      stats: { total: detectors.length, smooth, slow, jammed },
+      detectors
+    }),
+    { headers: { ...CORS_HEADERS, 'Cache-Control': 'public, max-age=20' } }
+  );
+}
+
 export async function onRequest(context) {
   const { request } = context;
   if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS_HEADERS });
@@ -715,6 +946,8 @@ export async function onRequest(context) {
   const action = (url.searchParams.get('action') || '').toLowerCase();
 
   if (action === 'ferry_live') return handleFerryLiveRequest(url);
+
+  if (action === 'traffic_live') return handleTrafficLiveRequest();
 
   if (action === 'lrt_live') {
     const stId = String(url.searchParams.get('station_id') || '').replace(/\D/g, '');

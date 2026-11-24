@@ -479,6 +479,30 @@
       border: 1px solid rgba(0, 122, 255, 0.25); border-radius: 10px;
       padding: 6px 10px; margin: 2px 2px 4px 2px; font-size: 0.73rem; font-weight: 700; line-height: 1.35;
     }
+    .traffic-road-status-bar {
+      display: flex; align-items: center; justify-content: space-between; gap: 10px;
+      margin: 2px 2px 5px 2px; padding: 7px 10px; border-radius: 10px;
+      background: var(--bg-surface); border: 1px solid var(--border-color);
+      border-left: 3.5px solid #16A34A; cursor: pointer; text-align: left;
+      transition: background-color 0.15s ease;
+    }
+    .traffic-road-status-bar:hover { filter: brightness(0.97); }
+    .traffic-road-status-bar.tone-slow { border-left-color: #D97706; }
+    .traffic-road-status-bar.tone-jammed { border-left-color: #DC2626; }
+    .traffic-road-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+    .traffic-road-headline { font-size: 0.75rem; font-weight: 700; color: var(--text-main); font-variant-numeric: tabular-nums; line-height: 1.25; }
+    .traffic-road-sub { font-size: 0.69rem; font-weight: 500; color: var(--text-sub); font-variant-numeric: tabular-nums; line-height: 1.3; }
+    .traffic-road-cta { font-size: 0.68rem; font-weight: 700; color: var(--ios-blue); white-space: nowrap; flex-shrink: 0; }
+    .map-traffic-chip-btn {
+      position: absolute; bottom: 14px; left: 10px; z-index: 650;
+      padding: 5px 11px; border-radius: 999px;
+      border: 1px solid var(--border-color); background: var(--glass-bg);
+      backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+      color: var(--text-main); font-weight: 700; font-size: 0.72rem; cursor: pointer;
+      display: inline-flex; align-items: center; gap: 4px;
+      box-shadow: 0 3px 10px rgba(0, 0, 0, 0.16);
+    }
+    .map-traffic-chip-btn.active { border-color: rgba(22, 163, 74, 0.55); color: var(--ios-green); }
     .stop-hub-pill {
       display: inline-flex; align-items: center; justify-content: center; gap: 3px;
       padding: 7px 9px; border-radius: 999px; font-size: 0.72rem; font-weight: 600;
@@ -1102,6 +1126,12 @@
     .planner-sig-est { color: var(--text-sub); font-weight: 500; }
     .planner-sig-warn { color: var(--ios-orange); font-weight: 700; }
     .planner-sig-cutoff { color: var(--ios-red); font-weight: 700; }
+    .planner-sig-road-smooth { color: #15803D; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .planner-sig-road-slow { color: #B45309; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .planner-sig-road-jammed { color: #DC2626; font-weight: 700; font-variant-numeric: tabular-nums; }
+    html:not(.light-mode) .planner-sig-road-smooth { color: #4ADE80; }
+    html:not(.light-mode) .planner-sig-road-slow { color: #FBBF24; }
+    html:not(.light-mode) .planner-sig-road-jammed { color: #F87171; }
     .planner-card-actions {
       display: flex;
       justify-content: flex-end;
@@ -1181,17 +1211,23 @@
     .settings-top-bar { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding-bottom: 12px; border-bottom: 1px solid var(--border-color); margin-bottom: 4px; }
     .settings-back-btn { background: var(--ios-blue); color: #FFFFFF; border: none; border-radius: 999px; padding: 6px 12px; font-size: 0.76rem; font-weight: 600; cursor: pointer; flex-shrink: 0; }
     .settings-close-btn { background: var(--bg-surface); color: var(--text-main); border: none; border-radius: 999px; padding: 6px 12px; font-size: 0.76rem; font-weight: 600; cursor: pointer; flex-shrink: 0; }
-    .settings-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 12px 2px; border-bottom: 1px solid var(--border-color); cursor: pointer; font-weight: 600; font-size: 0.88rem; }
+    .settings-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 12px 2px; border: none; border-bottom: 1px solid var(--border-color); background: transparent; width: 100%; text-align: left; font-family: inherit; color: var(--text-main); cursor: pointer; font-weight: 600; font-size: 0.88rem; }
     .settings-row:last-child { border-bottom: none; }
     .settings-section-divider { font-size: 0.72rem; font-weight: 600; color: var(--text-sub); padding: 12px 2px 2px 2px; letter-spacing: 0.01em; }
     .settings-row-sub { display: block; font-size: 0.72rem; font-weight: 500; color: var(--text-sub); margin-top: 2px; }
     .settings-val-pill { background: var(--bg-surface); border: none; padding: 4px 11px; border-radius: 999px; font-size: 0.75rem; font-weight: 600; color: var(--ios-blue); max-width: 55%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
+    .about-hero-box { background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 14px; padding: 12px 14px; margin: 6px 0 4px 0; display: flex; flex-direction: column; gap: 6px; }
+    .about-hero-title { font-weight: 800; font-size: 0.94rem; color: var(--text-main); letter-spacing: -0.01em; }
+    .about-hero-sub { font-size: 0.76rem; color: var(--text-sub); line-height: 1.42; }
+    .about-meta-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-top: 2px; }
+    .about-version-tag { font-size: 0.70rem; font-weight: 700; color: var(--ios-blue); background: rgba(0, 122, 255, 0.12); padding: 3px 9px; border-radius: 999px; }
+    .about-mini-btn { background: var(--bg-white); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 999px; padding: 4px 10px; font-size: 0.72rem; font-weight: 600; cursor: pointer; }
 
     /* Visual Picture-First Onboarding Carousel (MTR Mobile style) */
     .onboard-card {
       background: var(--bg-white); border: 1px solid var(--border-color); border-radius: 26px;
-      width: 100%; max-width: 400px; max-height: 92dvh; overflow-y: auto;
-      padding: 16px 16px 16px 16px; display: flex; flex-direction: column; gap: 12px;
+      width: 100%; max-width: 416px; max-height: 92dvh; overflow-y: auto;
+      padding: 15px 15px 14px 15px; display: flex; flex-direction: column; gap: 11px;
       box-shadow: 0 24px 64px rgba(0, 0, 0, 0.36);
       touch-action: pan-y;
     }
@@ -1225,31 +1261,15 @@
     }
     .onboard-caption {
       display: flex; flex-direction: column; align-items: center; text-align: center;
-      gap: 4px; padding: 2px 8px 0 8px;
+      gap: 4px; padding: 2px 10px 0 10px;
     }
     .onboard-step-heading {
-      font-size: 1.12rem; font-weight: 800; color: var(--text-main);
+      font-size: 1.14rem; font-weight: 800; color: var(--text-main);
       letter-spacing: -0.02em; line-height: 1.25; text-wrap: balance;
     }
     .onboard-step-cue {
-      font-size: 0.82rem; font-weight: 600; color: var(--text-sub);
-      line-height: 1.35;
-    }
-    .onboard-steps-list {
-      width: 100%; display: flex; flex-direction: column; gap: 5px;
-      margin-top: 6px; text-align: left;
-    }
-    .onboard-step-row {
-      display: flex; align-items: center; gap: 8px;
-      padding: 6px 10px; border-radius: 11px;
-      background: var(--bg-surface); font-size: 0.77rem; font-weight: 600;
-      color: var(--text-main); line-height: 1.3;
-    }
-    .onboard-step-num {
-      width: 19px; height: 19px; border-radius: 999px; flex-shrink: 0;
-      background: var(--ios-blue); color: #FFFFFF;
-      font-size: 0.68rem; font-weight: 800;
-      display: inline-flex; align-items: center; justify-content: center;
+      font-size: 0.81rem; font-weight: 600; color: var(--text-sub);
+      line-height: 1.32; max-width: 320px;
     }
     .onboard-rank-pill {
       display: inline-flex; align-items: center; gap: 4px;
@@ -1269,6 +1289,14 @@
       transition: width 0.2s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.2s ease;
     }
     .onboard-dot.active { width: 22px; background: var(--ios-blue); }
+    .onboard-dont-show-row {
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+      padding: 4px 6px 0 6px; font-size: 0.76rem; font-weight: 600; color: var(--text-sub);
+      cursor: pointer; user-select: none; -webkit-user-select: none;
+    }
+    .onboard-dont-show-row input[type="checkbox"] {
+      width: 16px; height: 16px; accent-color: var(--ios-blue); cursor: pointer; flex-shrink: 0;
+    }
     .onboard-foot {
       display: flex; align-items: center; justify-content: space-between; gap: 10px;
       padding-top: 8px; border-top: 1px solid var(--border-color);
@@ -1420,6 +1448,7 @@
         ⬍ Full Map
       </button>
       <div class="map-floating-controls">
+        <button type="button" class="map-ctrl-btn map-traffic-toggle active" id="xferMapTrafficBtn" onclick="toggleTrafficLayerOverlay()" title="Toggle Live Road Traffic & Cameras" aria-label="Toggle traffic layer">🚦</button>
         <button type="button" class="map-ctrl-btn" onclick="recenterXferMapToGps()" title="My GPS Location" aria-label="Center map on GPS">🎯</button>
         <button type="button" class="map-ctrl-btn" onclick="fitTransferPlannerMapBounds()" title="Fit Route Bounds" aria-label="Fit route on map">🗺️</button>
         <button type="button" class="map-ctrl-btn" onclick="if(window.xferMapInstance)window.xferMapInstance.zoomIn()" aria-label="Zoom in">+</button>
@@ -1456,6 +1485,7 @@
   </div>
   <div style="flex:1; position:relative; width:100%; height:100%;">
     <div id="browse-map-canvas" style="position:absolute; inset:0; width:100%; height:100%;"></div>
+    <button type="button" class="map-traffic-chip-btn map-traffic-toggle active" id="browseMapTrafficBtn" onclick="toggleTrafficLayerOverlay()">🚦 Traffic ON</button>
     <div class="map-floating-controls" style="bottom:26px; right:12px;">
       <button class="map-ctrl-btn" id="browseMapGpsBtn" onclick="recenterBrowseMapToGps(true)" title="Center on My Current GPS Location">🎯</button>
       <button class="map-ctrl-btn" onclick="window.browseMapInstance?.zoomIn()" title="Zoom In">+</button>
@@ -1475,6 +1505,7 @@
   </div>
   <div id="map-container">
     <div id="map-canvas-inner"></div>
+    <button type="button" class="map-traffic-chip-btn map-traffic-toggle active" id="detailMapTrafficBtn" onclick="toggleTrafficLayerOverlay()">🚦 Traffic ON</button>
     <div class="map-floating-controls">
       <button class="map-ctrl-btn" id="mapGpsRecenterBtn" onclick="toggleDetailGpsLock()" title="Lock / Unlock GPS Follow">🎯</button>
       <button class="map-ctrl-btn" onclick="zoomMapIn()">+</button>
@@ -1505,55 +1536,88 @@
   <div class="settings-modal-card">
     <div class="settings-top-bar">
       <div style="font-weight:700; font-size:0.98rem;" id="settingsModalTitle">Settings</div>
-      <button class="settings-close-btn" id="settingsCloseBtn" onclick="closeSettingsModal()">✕ Close</button>
+      <button type="button" class="settings-close-btn" id="settingsCloseBtn" onclick="closeSettingsModal()">✕ Close</button>
     </div>
-    <div class="settings-row" onclick="openSavedHubPickerFromSettings('home')">
+    <button type="button" class="settings-row" onclick="openSavedHubPickerFromSettings('home')">
       <span id="settingRowLblHomeHub">🏠 Home Stop</span>
       <span class="settings-val-pill" id="settingValHomeHub">Set Stop ›</span>
-    </div>
-    <div class="settings-row" onclick="openSavedHubPickerFromSettings('work')">
+    </button>
+    <button type="button" class="settings-row" onclick="openSavedHubPickerFromSettings('work')">
       <span id="settingRowLblWorkHub">💼 Work Stop</span>
       <span class="settings-val-pill" id="settingValWorkHub">Set Stop ›</span>
-    </div>
-    <div class="settings-row" onclick="closeSettingsModal(); openTutorialModal();">
+    </button>
+    <button type="button" class="settings-row" onclick="closeSettingsModal(); openTutorialModal();">
       <span id="settingRowLblTutorial">🖼️ Visual Guide</span>
       <span class="settings-val-pill" id="settingValTutorial">View ›</span>
-    </div>
-    <div class="settings-row" id="pwaInstallRow" onclick="triggerPwaInstall()">
+    </button>
+    <button type="button" class="settings-row" id="pwaInstallRow" onclick="triggerPwaInstall()">
       <span id="settingRowLblInstall">📲 Install</span>
       <span class="settings-val-pill" id="settingValInstall">Install ›</span>
-    </div>
-    <div class="settings-row" onclick="cycleLanguagePreference()">
+    </button>
+    <button type="button" class="settings-row" onclick="cycleLanguagePreference()">
       <span id="settingRowLblLang">🌐 Language</span>
       <span class="settings-val-pill" id="settingValLang">Auto</span>
-    </div>
-    <div class="settings-row" onclick="cycleThemePreference()">
+    </button>
+    <button type="button" class="settings-row" onclick="cycleThemePreference()">
       <span id="settingRowLblTheme">🌓 Theme</span>
       <span class="settings-val-pill" id="settingValTheme">Light</span>
-    </div>
-    <div class="settings-row" onclick="cycleTextSize()">
+    </button>
+    <button type="button" class="settings-row" onclick="cycleTextSize()">
       <span id="settingRowLblSize">🔠 Text Size</span>
       <span class="settings-val-pill" id="settingValSize">Large</span>
-    </div>
-    <div class="settings-row" onclick="closeSettingsModal(); openBuiltInStatusModal();">
+    </button>
+    <button type="button" class="settings-row" onclick="closeSettingsModal(); openBuiltInStatusModal();">
       <span id="settingRowLblStatus">⚡ Status &amp; Watchdog</span>
       <span class="settings-val-pill" id="settingValStatusOpen">Open ›</span>
-    </div>
-    <div class="settings-section-divider" id="settingSecCompanion">More HK Maps</div>
-    <div class="settings-row" onclick="openCompanionAppAtCurrentStop('property')">
+    </button>
+    <button type="button" class="settings-row" id="settingAboutRow" onclick="closeSettingsModal(); openAboutModal();">
       <div>
-        <div id="settingRowLblProp">🏠 Renters-First Digital Twin</div>
-        <span class="settings-row-sub" id="settingRowSubProp">18 HK regions · rent value &amp; livability</span>
+        <div id="settingRowLblAbout">ℹ️ About &amp; HK Apps</div>
+        <span class="settings-row-sub" id="settingRowSubAbout">Transit HK info · HKProperty, DrySmart HK &amp; HK Past</span>
+      </div>
+      <span class="settings-val-pill" id="settingValAboutOpen">Open ›</span>
+    </button>
+  </div>
+</div>
+
+<!-- ABOUT & COMPANION HK APPS SUBMODAL -->
+<div id="aboutModal" style="display:none; position:fixed; inset:0; z-index:5000; background:rgba(0,0,0,0.55); backdrop-filter:blur(6px); align-items:center; justify-content:center; padding:16px;" onclick="if(event.target===this)closeAboutModal()">
+  <div class="settings-modal-card" style="max-width:460px;">
+    <div class="settings-top-bar">
+      <button type="button" class="settings-back-btn" id="aboutBackBtn" onclick="closeAboutModal(); openSettingsModal();">‹ Back</button>
+      <div style="font-weight:700; font-size:0.92rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" id="aboutModalTitle">ℹ️ About &amp; HK Apps</div>
+      <button type="button" class="settings-close-btn" id="aboutCloseBtn" onclick="closeAboutModal()">✕ Close</button>
+    </div>
+    <div class="about-hero-box">
+      <div class="about-hero-title" id="aboutAppTitle">Transit HK (通)</div>
+      <div class="about-hero-sub" id="aboutAppDesc">Real-time Hong Kong Bus, MTR, Light Rail &amp; Ferry ETAs and multi-modal route planner powered by open HKSAR data.</div>
+      <div class="about-meta-row">
+        <span class="about-version-tag" id="aboutAppVersionBadge">v2026-11</span>
+        <button type="button" class="about-mini-btn" id="aboutResetGuideBtn" onclick="resetOnboardingAutoPopupFromAbout()">🖼️ Show guide on launch</button>
+      </div>
+    </div>
+    <div class="settings-section-divider" id="aboutSecCompanion">Useful HK Companion Apps</div>
+    <button type="button" class="settings-row" onclick="openCompanionAppAtCurrentStop('property')">
+      <div>
+        <div id="settingRowLblProp">🏠 Rent, Buy &amp; Livability Twin</div>
+        <span class="settings-row-sub" id="settingRowSubProp">18 HK regions · 1,164+ homes, Rent/Buy/Near Work &amp; zero agent ads</span>
       </div>
       <span class="settings-val-pill">HKProperty ↗</span>
-    </div>
-    <div class="settings-row" onclick="openCompanionAppAtCurrentStop('past')">
+    </button>
+    <button type="button" class="settings-row" onclick="openCompanionAppAtCurrentStop('sundry')">
+      <div>
+        <div id="settingRowLblSundry">👕 DrySmart HK — 晾衫王</div>
+        <span class="settings-row-sub" id="settingRowSubSundry">Live HK laundry drying call, humidity &amp; next outdoor drying window</span>
+      </div>
+      <span class="settings-val-pill">DrySmart ↗</span>
+    </button>
+    <button type="button" class="settings-row" onclick="openCompanionAppAtCurrentStop('past')">
       <div>
         <div id="settingRowLblPast">🕰️ Historical Split-View Map</div>
-        <span class="settings-row-sub" id="settingRowSubPast">1950s–1970s vs modern HK LandsD map</span>
+        <span class="settings-row-sub" id="settingRowSubPast">1950s–1970s archival HK maps split against modern LandsD map</span>
       </div>
       <span class="settings-val-pill">HK Past ↗</span>
-    </div>
+    </button>
   </div>
 </div>
 
@@ -1571,10 +1635,13 @@
     <div class="onboard-caption">
       <div class="onboard-step-heading" id="tutorialSlideTitle"></div>
       <div class="onboard-step-cue" id="tutorialSlideCue"></div>
-      <div class="onboard-steps-list" id="tutorialStepsList"></div>
       <div class="onboard-quick-action-row" id="tutorialQuickActionRow"></div>
     </div>
     <div class="onboard-dots" id="tutorialDots" role="tablist" aria-label="Guide slides"></div>
+    <label class="onboard-dont-show-row" id="tutorialDontShowRow">
+      <input type="checkbox" id="tutorialDontShowCheckbox" onchange="onTutorialDontShowToggle(this.checked)">
+      <span id="tutorialDontShowLabel">Don't show again (saved across updates)</span>
+    </label>
     <div class="onboard-foot" id="tutorialModalFoot">
       <button type="button" class="onboard-back-link" id="tutorialBackBtn" onclick="onTutorialBackClick()">Skip</button>
       <div class="onboard-cta-group" id="tutorialCtaGroup"></div>
@@ -1600,18 +1667,37 @@
 // ============================================================================
 // PART 1: EXECUTION ENGINE (Modularized with hardcode.js, map.js & planner.js)
 // ============================================================================
-window.__FIXED_JS_BUILD_TS__ = '2026-11-23 22:19 HKT';
-const APP_VERSION = '2026-11-23 22:19 HKT';
+window.__FIXED_JS_BUILD_TS__ = '2026-11-24 08:30 HKT';
+const APP_VERSION = '2026-11-24 08:30 HKT';
 const HK_UNIFIED_API_BASE = '/api/worker';
 window.__LAST_TD_UPDATED__ = '';
 window.__LIVE_HIGHWAY_KMH__ = 70;
 window.__LIVE_CORRIDORS__ = {};
+window.__LIVE_TRAFFIC_DETECTORS__ = [];
+window.__LIVE_TRAFFIC_CAPTURED_AT__ = '';
 window.__HKO_WEATHER__ = null;
 window.MULTI_MODAL_HUBS_DIRECTORY = [];
 window.MTR_EXITS_DIRECTORY = [];
 window.QUICK_MTR_LINES = [];
 window.QUICK_LRT_LINES = [];
 window.QUICK_FERRY_LINES = [];
+
+function syncTrafficToggleButtonsUI() {
+  const on = (window.trafficLayerEnabled !== false);
+  const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
+  ['detailMapTrafficBtn', 'browseMapTrafficBtn'].forEach(id => {
+    const b = document.getElementById(id);
+    if (!b) return;
+    b.classList.toggle('active', on);
+    b.innerText = on ? (isZh ? '🚦 實時路況 開' : '🚦 Traffic ON') : (isZh ? '🚦 路況 關' : '🚦 Traffic');
+  });
+  const xBtn = document.getElementById('xferMapTrafficBtn');
+  if (xBtn) {
+    xBtn.classList.toggle('active', on);
+    xBtn.title = isZh ? '切換實時道路交通及路面鏡頭' : 'Toggle Live Road Traffic & Cameras';
+  }
+}
+window.syncTrafficToggleButtonsUI = syncTrafficToggleButtonsUI;
 
 document.addEventListener('keydown', e => {
   const tut = document.getElementById('tutorialModal');
@@ -1630,7 +1716,7 @@ document.addEventListener('keydown', e => {
     if (tutOpen && typeof closeTutorialModal === 'function') {
       closeTutorialModal();
     }
-    ['builtInStatusModal','tutorialModal','settingsModal','commutePickerModal'].forEach(id => {
+    ['aboutModal','builtInStatusModal','tutorialModal','settingsModal','commutePickerModal'].forEach(id => {
       const el = document.getElementById(id); if (el) el.style.display = 'none';
     });
   }
@@ -2031,17 +2117,17 @@ function analyzeStopSectionFareProfile(group, stops, stopIdx, isHol = isHongKong
     return { fullFare, minSectionFare: minF, hasSectionTiers: fullFare > minF, labelText: lbl, secBadge: '' };
   }
 
-  const secMeta = (!group.mode || group.mode === 'BUS') && typeof getSectionalFareMeta === 'function'
-    ? getSectionalFareMeta(group.company, group.routeNo)
-    : null;
-  const secBadge = secMeta?.hasSectionalFare
+  const hasTwoWayHere = (!group.mode || group.mode === 'BUS') && typeof hasStopTwoWaySectionalFare === 'function'
+    ? hasStopTwoWaySectionalFare(group, stops, stopIdx, isHol)
+    : false;
+  const secBadge = hasTwoWayHere
     ? (isZh ? '雙向分段' : '2-Way Section')
     : '';
 
   return {
     fullFare,
     minSectionFare: fullFare,
-    hasSectionTiers: Boolean(secMeta?.hasSectionalFare),
+    hasSectionTiers: hasTwoWayHere,
     labelText: fullFare > 0 ? `${t('farePrefix')}${fullFare.toFixed(1)}` : '',
     secBadge
   };
@@ -3455,12 +3541,46 @@ function generateExpandedETAsHtml(arrs, group, stopKey, stopIdx) {
        </div>`
     : '';
 
+  const isHol = isHongKongHolidayFareDay();
   const secMeta = (!group?.mode || group?.mode === 'BUS') && typeof getSectionalFareMeta === 'function'
     ? getSectionalFareMeta(group.company, group.routeNo)
     : null;
-  const sectionalBannerHtml = secMeta && (secMeta.noticeEn || secMeta.noticeTc)
-    ? `<div class="sectional-notice-banner">${secMeta.rebateType === 'driver_override' || secMeta.rebateType === 'strict_boarding_only' ? '⚠️' : '💳'} ${escapeHtml(isZh ? (secMeta.noticeTc || secMeta.noticeEn) : secMeta.noticeEn)}</div>`
+  const showTwoWayBanner = Boolean(
+    secMeta?.hasSectionalFare &&
+    typeof hasStopTwoWaySectionalFare === 'function' &&
+    hasStopTwoWaySectionalFare(group, stops, stopIdx, isHol)
+  );
+  let strictNoticeRes = null;
+  if (!showTwoWayBanner && secMeta?.rebateType === 'strict_boarding_only' && typeof resolveBusLegNetFare === 'function') {
+    const sampleAlight = stops[Math.min(stops.length - 1, stopIdx + 2)] || stops[stops.length - 1];
+    strictNoticeRes = (stObjRaw && sampleAlight) ? resolveBusLegNetFare(group, stObjRaw, sampleAlight, isHol) : null;
+  }
+  const activeNoticeEn = showTwoWayBanner ? secMeta.noticeEn : (strictNoticeRes?.noticeEn || '');
+  const activeNoticeTc = showTwoWayBanner ? (secMeta.noticeTc || secMeta.noticeEn) : (strictNoticeRes?.noticeTc || strictNoticeRes?.noticeEn || '');
+  const sectionalBannerHtml = activeNoticeEn
+    ? `<div class="sectional-notice-banner">${(secMeta.rebateType === 'driver_override' || secMeta.rebateType === 'strict_boarding_only') ? '⚠️' : '💳'} ${escapeHtml(isZh ? activeNoticeTc : activeNoticeEn)}</div>`
     : '';
+
+  let roadTrafficBannerHtml = '';
+  if ((!group?.mode || group?.mode === 'BUS') && Array.isArray(window.__LIVE_TRAFFIC_DETECTORS__) && window.__LIVE_TRAFFIC_DETECTORS__.length && typeof getDirectionalRoadSummary === 'function') {
+    const roadSum = getDirectionalRoadSummary(stops, stopIdx, window.__LIVE_TRAFFIC_DETECTORS__, isZh, 14);
+    if (roadSum && roadSum.headline) {
+      const fDet = roadSum.focusDet;
+      const focusCall = fDet
+        ? `event.stopPropagation(); if(typeof focusTrafficDetectorOnDetailMap==='function')focusTrafficDetectorOnDetailMap(${fDet.lat}, ${fDet.lon}, '${escapeJsAttr(fDet.id)}');`
+        : 'event.stopPropagation();';
+      const camIcon = fDet?.camKey ? (isZh ? '📷 睇路況 ›' : '📷 Map/Cam ›') : (isZh ? '🗺️ 地圖 ›' : 'Map ›');
+      const toneDot = roadSum.tone === 'jammed' ? '🔴' : (roadSum.tone === 'slow' ? '🟠' : '🟢');
+      roadTrafficBannerHtml = `
+        <button type="button" class="traffic-road-status-bar tone-${roadSum.tone}" onclick="${focusCall}">
+          <span class="traffic-road-main">
+            <span class="traffic-road-headline">${toneDot} ${escapeHtml(roadSum.headline)}</span>
+            ${roadSum.detail ? `<span class="traffic-road-sub">${escapeHtml(roadSum.detail)}</span>` : ''}
+          </span>
+          <span class="traffic-road-cta">${camIcon}</span>
+        </button>`;
+    }
+  }
 
   if (!arrs || !arrs.length) {
     const allowFinal = isCircularRoute(group, stops);
@@ -3475,7 +3595,7 @@ function generateExpandedETAsHtml(arrs, group, stopKey, stopIdx) {
     if (!allowFinal && stops.length >= 2 && stopIdx > maxBoard) {
       return `<div class="last60-hud-box">${tempNoticeBannerHtml}<div onclick="event.stopPropagation(); reverseCurrentRouteDirection();" style="font-size:0.82rem;color:var(--ios-blue);font-weight:700;text-align:center;padding:8px 6px;cursor:pointer;">${isZh ? '🏁 終點落車站 · 點擊「⇅ 對調」查看反方向班次 ›' : '🏁 Terminus (Alight Only) · Tap ⇅ Swap for opposite direction ›'}</div>${hubRow}</div>`;
     }
-    return `<div class="last60-hud-box">${tempNoticeBannerHtml}${sectionalBannerHtml}<div style="font-size:0.86rem;color:var(--text-sub);font-weight:600;text-align:center;padding:6px 0;">${t('noScheduled')}</div>${hubRow}</div>`;
+    return `<div class="last60-hud-box">${tempNoticeBannerHtml}${sectionalBannerHtml}${roadTrafficBannerHtml}<div style="font-size:0.86rem;color:var(--text-sub);font-weight:600;text-align:center;padding:6px 0;">${t('noScheduled')}</div>${hubRow}</div>`;
   }
 
   const now = Date.now();
@@ -3537,7 +3657,7 @@ function generateExpandedETAsHtml(arrs, group, stopKey, stopIdx) {
       ${showWorkBtn ? `<button class="stop-hub-pill" onclick="toggleSavedStopHub('work', ${stopIdx})" title="${isZh ? '設此站為公司捷徑' : 'Set this stop as Work hub'}">💼</button>` : ''}
     </div>`;
 
-  return `<div class="last60-hud-box">${tempNoticeBannerHtml}${sectionalBannerHtml}${loadTipBannerHtml}${rowsHtml}${ferryUpdNote}${actionStrip}</div>`;
+  return `<div class="last60-hud-box">${tempNoticeBannerHtml}${sectionalBannerHtml}${roadTrafficBannerHtml}${loadTipBannerHtml}${rowsHtml}${ferryUpdNote}${actionStrip}</div>`;
 }
 // ============================================================================
 // PART 2: DYNAMIC INDEXING, 250M CLUSTER RADAR, LOAD PILLS, SMART RETURN & POLLING
@@ -5308,6 +5428,25 @@ function openSettingsModal() {
 }
 function closeSettingsModal() { document.getElementById('settingsModal').style.display = 'none'; }
 
+function openAboutModal() {
+  triggerHaptic(10);
+  syncSettingsModalLabels();
+  const modal = document.getElementById('aboutModal');
+  if (modal) modal.style.display = 'flex';
+}
+function closeAboutModal() {
+  const modal = document.getElementById('aboutModal');
+  if (modal) modal.style.display = 'none';
+}
+
+function resetOnboardingAutoPopupFromAbout() {
+  triggerHaptic(10);
+  setOnboardingDismissedCookie(false);
+  SafeStorage.removeItem(ONBOARDING_SEEN_KEY);
+  closeAboutModal();
+  openTutorialModal(true);
+}
+
 let deferredPwaPrompt = null;
 window.addEventListener('beforeinstallprompt', (e) => {
   e.preventDefault();
@@ -5358,11 +5497,29 @@ function syncSettingsModalLabels() {
   setV('settingRowLblStatus', isZh ? '⚡ 狀態及時間表監察' : '⚡ Status & Watchdog');
   const driftTotal = (window.__DATA_DRIFT_ALERTS__?.length || 0) + (window.__LIVE_FERRY_DRIFT_ALERTS__?.size || 0);
   setV('settingValStatusOpen', driftTotal > 0 ? (isZh ? `⚠️ ${driftTotal}項提示 ›` : `⚠️ ${driftTotal} Alert ›`) : (isZh ? '開啟 ›' : 'Open ›'));
-  setV('settingSecCompanion', isZh ? '同系列香港地圖工具' : 'More HK Maps');
-  setV('settingRowLblProp', isZh ? '🏠 租樓數碼分身・地區性價比' : '🏠 Renters-First Digital Twin');
-  setV('settingRowSubProp', isZh ? '全港18區 · 租金溢價、噪音及宜居分層' : '18 HK regions · rent value & livability layers');
+  setV('settingRowLblAbout', isZh ? 'ℹ️ 關於及香港實用工具' : 'ℹ️ About & HK Apps');
+  setV('settingRowSubAbout', isZh ? '應用程式資料 · HKProperty、晾衫王、HK Past' : 'Transit HK info · HKProperty, DrySmart HK & HK Past');
+  setV('settingValAboutOpen', isZh ? '開啟 ›' : 'Open ›');
+
+  setV('aboutBackBtn', isZh ? '‹ 返回' : '‹ Back');
+  setV('aboutModalTitle', isZh ? 'ℹ️ 關於及香港實用工具' : 'ℹ️ About & HK Apps');
+  setV('aboutCloseBtn', isZh ? '✕ 關閉' : '✕ Close');
+  setV('aboutAppTitle', isZh ? '香港交通通 (Transit HK)' : 'Transit HK (通)');
+  setV('aboutAppDesc', isZh
+    ? '整合九巴、城巴、嶼巴、小巴、港鐵、輕鐵及渡輪實時到站及多式聯運轉乘規劃，採用政府開放數據。'
+    : 'Real-time Hong Kong Bus, MTR, Light Rail & Ferry ETAs and multi-modal route planner powered by open HKSAR data.');
+  setV('aboutAppVersionBadge', `Build ${APP_VERSION}`);
+  const dismissedGuide = typeof hasOnboardingDismissedCookie === 'function' && hasOnboardingDismissedCookie();
+  setV('aboutResetGuideBtn', dismissedGuide
+    ? (isZh ? '🖼️ 重開啟動圖解教學' : '🖼️ Re-enable startup guide')
+    : (isZh ? '🖼️ 查看圖解教學' : '🖼️ Open Visual Guide'));
+  setV('aboutSecCompanion', isZh ? '同系列香港實用網站' : 'Useful HK Companion Apps');
+  setV('settingRowLblProp', isZh ? '🏠 香港樓市・租買及宜居數碼分身' : '🏠 Rent, Buy & Livability Twin');
+  setV('settingRowSubProp', isZh ? '全港18區 · 1,164+ 屋苑租金買樓估值、Near Work 及零地產廣告' : '18 HK regions · 1,164+ homes, Rent/Buy/Near Work & zero agent ads');
+  setV('settingRowLblSundry', isZh ? '👕 DrySmart HK — 晾衫王' : '👕 DrySmart HK — 晾衫王');
+  setV('settingRowSubSundry', isZh ? '香港實時室內／室外晾衫建議、相對濕度及最佳乾衣時段' : 'Live HK laundry drying call, humidity & next outdoor drying window');
   setV('settingRowLblPast', isZh ? '🕰️ 香港歷史地圖對照' : '🕰️ Historical Split-View Map');
-  setV('settingRowSubPast', isZh ? '歷代舊地圖與現代地政總署地圖同步拉頁' : 'Archival HK maps split against modern LandsD');
+  setV('settingRowSubPast', isZh ? '1950–1970年代舊地圖與現代地政總署地圖同步拉頁' : '1950s–1970s archival HK maps split against modern LandsD map');
   setV('statusModalTitle', isZh ? '⚡ 狀態及時間表監察' : '⚡ Status & Watchdog');
 
   setV('settingValLang', userLangPref === 'auto' ? (isZh ? '自動' : 'Auto') : (userLangPref === 'zh' ? '繁體中文' : 'English'));
@@ -5410,386 +5567,406 @@ function cycleTextSize() {
 let activeTutorialStep = 0;
 let tutorialOpenedFromSettings = false;
 const ONBOARDING_SEEN_KEY = 'transit_onboarding_seen_v2';
+const ONBOARDING_COOKIE_NAME = 'transit_onboarding_dismissed';
+const ONBOARDING_NEVER_SHOW_KEY = 'transit_onboarding_never_show_v1';
 const TUTORIAL_SLIDE_COUNT = 7;
+
+function setOnboardingDismissedCookie(enable) {
+  try {
+    if (enable) {
+      const maxAgeSec = 60 * 60 * 24 * 365 * 10; // 10 years — persists across app version bumps
+      document.cookie = `${ONBOARDING_COOKIE_NAME}=1; max-age=${maxAgeSec}; path=/; SameSite=Lax`;
+      SafeStorage.setItem(ONBOARDING_NEVER_SHOW_KEY, '1');
+    } else {
+      document.cookie = `${ONBOARDING_COOKIE_NAME}=; max-age=0; path=/; SameSite=Lax`;
+      SafeStorage.removeItem(ONBOARDING_NEVER_SHOW_KEY);
+    }
+  } catch (e) {}
+}
+
+function hasOnboardingDismissedCookie() {
+  try {
+    if (SafeStorage.getItem(ONBOARDING_NEVER_SHOW_KEY) === '1') return true;
+    return String(document.cookie || '').split(';').some(c => c.trim().startsWith(`${ONBOARDING_COOKIE_NAME}=1`));
+  } catch (e) {
+    return false;
+  }
+}
 
 function buildTutorialSlideSvg(stepIdx, isZh) {
   const font = "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'PingFang HK', sans-serif";
   const badgeCallout = (cx, cy, num, color = '#007AFF') => `
-    <circle cx="${cx}" cy="${cy}" r="11" fill="${color}" stroke="#FFFFFF" stroke-width="2"/>
-    <text x="${cx}" y="${cy + 3.5}" text-anchor="middle" font-family="${font}" font-size="9.5" font-weight="800" fill="#FFFFFF">${num}</text>`;
+    <circle cx="${cx}" cy="${cy}" r="11.5" fill="${color}" stroke="#FFFFFF" stroke-width="2"/>
+    <text x="${cx}" y="${cy + 3.8}" text-anchor="middle" font-family="${font}" font-size="10" font-weight="800" fill="#FFFFFF">${num}</text>`;
 
   if (stepIdx === 0) {
-    // Slide 1 (Priority #1): Nearby Live ETAs — Bus / Rail / Ferry + GPS / Search
+    // Slide 1 (Picture-First): Nearby Live ETAs — Mode bar, 🎯 GPS & Search, Next Bus/Rail cards
     const busT = isZh ? '巴士' : 'Bus';
     const railT = isZh ? '港鐵' : 'Rail';
     const ferryT = isZh ? '渡輪' : 'Ferry';
     const planT = isZh ? '規劃' : 'Plan';
-    const locT = isZh ? '旺角 (亞皆老街) · 85m' : 'Mong Kok · 85m';
-    const searchPh = isZh ? '搜尋站名或路線 (如 112 / 旺角)' : 'Search stop or route (e.g. 112)';
+    const locT = isZh ? '📍 旺角 · 85m' : '📍 Mong Kok · 85m';
+    const searchPh = isZh ? '112 / 旺角...' : 'Search stop / route (112)';
     const dest1 = isZh ? '往 尖沙咀碼頭' : 'To Tsim Sha Tsui';
     const dest2 = isZh ? '往 銅鑼灣 (崇光)' : 'To Causeway Bay';
     const dest3 = isZh ? '往 金鐘 (東鐵綫)' : 'To Admiralty (EAL)';
     const seatsLbl = isZh ? '有位' : 'Seats';
     const liveLbl = isZh ? '實時GPS' : 'Live GPS';
-    return `<svg viewBox="0 0 340 244" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${locT}">
+    return `<svg viewBox="0 0 340 276" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${locT}">
       <defs>
         <linearGradient id="obBg0" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stop-color="#FF3B30" stop-opacity="0.10"/>
-          <stop offset="100%" stop-color="#007AFF" stop-opacity="0.08"/>
+          <stop offset="0%" stop-color="#FF3B30" stop-opacity="0.11"/>
+          <stop offset="100%" stop-color="#007AFF" stop-opacity="0.09"/>
         </linearGradient>
       </defs>
-      <rect width="340" height="244" fill="url(#obBg0)"/>
-      <rect x="16" y="10" width="308" height="224" rx="18" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
+      <rect width="340" height="276" fill="url(#obBg0)"/>
+      <rect x="14" y="10" width="312" height="256" rx="18" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
       <!-- Top Mode Bar -->
-      <rect x="26" y="20" width="54" height="23" rx="11.5" fill="#FF3B30"/>
-      <text x="53" y="35" text-anchor="middle" font-family="${font}" font-size="10" font-weight="800" fill="#FFFFFF">${busT}</text>
-      <rect x="85" y="20" width="52" height="23" rx="11.5" fill="var(--bg-surface)"/>
-      <text x="111" y="35" text-anchor="middle" font-family="${font}" font-size="10" font-weight="700" fill="var(--text-sub)">${railT}</text>
-      <rect x="142" y="20" width="52" height="23" rx="11.5" fill="var(--bg-surface)"/>
-      <text x="168" y="35" text-anchor="middle" font-family="${font}" font-size="10" font-weight="700" fill="var(--text-sub)">${ferryT}</text>
-      <rect x="199" y="20" width="46" height="23" rx="11.5" fill="rgba(0,122,255,0.12)"/>
-      <text x="222" y="35" text-anchor="middle" font-family="${font}" font-size="10" font-weight="700" fill="#007AFF">${planT}</text>
-      ${badgeCallout(26, 20, '1', '#FF3B30')}
+      <rect x="24" y="21" width="56" height="25" rx="12.5" fill="#FF3B30"/>
+      <text x="52" y="37" text-anchor="middle" font-family="${font}" font-size="10.5" font-weight="800" fill="#FFFFFF">${busT}</text>
+      <rect x="85" y="21" width="54" height="25" rx="12.5" fill="var(--bg-surface)"/>
+      <text x="112" y="37" text-anchor="middle" font-family="${font}" font-size="10.5" font-weight="700" fill="var(--text-sub)">${railT}</text>
+      <rect x="144" y="21" width="54" height="25" rx="12.5" fill="var(--bg-surface)"/>
+      <text x="171" y="37" text-anchor="middle" font-family="${font}" font-size="10.5" font-weight="700" fill="var(--text-sub)">${ferryT}</text>
+      <rect x="203" y="21" width="48" height="25" rx="12.5" fill="rgba(0,122,255,0.13)"/>
+      <text x="227" y="37" text-anchor="middle" font-family="${font}" font-size="10.5" font-weight="800" fill="#007AFF">${planT}</text>
+      ${badgeCallout(24, 21, '1', '#FF3B30')}
       <!-- Location & Search Row -->
-      <text x="28" y="61" font-family="${font}" font-size="12.5" font-weight="800" fill="var(--text-main)">${locT}</text>
-      <rect x="26" y="69" width="222" height="26" rx="9" fill="var(--bg-surface)"/>
-      <text x="36" y="85.5" font-family="${font}" font-size="9.5" font-weight="500" fill="var(--text-sub)">${searchPh}</text>
-      <circle cx="283" cy="82" r="18" fill="#007AFF" opacity="0.18" class="ob-pulse-ring"/>
-      <rect x="256" y="69" width="54" height="26" rx="13" fill="#007AFF"/>
-      <text x="283" y="85.5" text-anchor="middle" font-family="${font}" font-size="10" font-weight="800" fill="#FFFFFF">🎯 GPS</text>
-      ${badgeCallout(309, 68, '2', '#007AFF')}
+      <text x="26" y="68" font-family="${font}" font-size="14" font-weight="800" fill="var(--text-main)">${locT}</text>
+      <rect x="24" y="77" width="224" height="30" rx="10" fill="var(--bg-surface)"/>
+      <text x="36" y="96" font-family="${font}" font-size="10.5" font-weight="500" fill="var(--text-sub)">${searchPh}</text>
+      <circle cx="284" cy="92" r="20" fill="#007AFF" opacity="0.18" class="ob-pulse-ring"/>
+      <rect x="255" y="77" width="58" height="30" rx="14" fill="#007AFF"/>
+      <text x="284" y="96" text-anchor="middle" font-family="${font}" font-size="10.5" font-weight="800" fill="#FFFFFF">🎯 GPS</text>
+      ${badgeCallout(312, 76, '2', '#007AFF')}
       <!-- Live ETA Card 1 -->
-      <rect x="26" y="104" width="288" height="38" rx="11" fill="var(--bg-surface)" stroke="#34C759" stroke-width="1.3"/>
-      <rect x="34" y="113" width="38" height="20" rx="6" fill="#E53935"/>
-      <text x="53" y="126.5" text-anchor="middle" font-family="${font}" font-size="10.5" font-weight="800" fill="#FFFFFF">1A</text>
-      <text x="80" y="121" font-family="${font}" font-size="11" font-weight="700" fill="var(--text-main)">${dest1}</text>
-      <rect x="80" y="125" width="36" height="12" rx="6" fill="rgba(52,199,89,0.16)"/>
-      <text x="98" y="134" text-anchor="middle" font-family="${font}" font-size="8" font-weight="700" fill="#248A3D">${seatsLbl}</text>
-      <circle cx="222" cy="120" r="3" fill="#34C759"/>
-      <text x="228" y="123" font-family="${font}" font-size="8.5" font-weight="700" fill="#248A3D">${liveLbl}</text>
-      <text x="304" y="128" text-anchor="end" font-family="${font}" font-size="14" font-weight="800" fill="var(--text-main)">3m</text>
-      ${badgeCallout(311, 105, '3', '#34C759')}
+      <rect x="24" y="117" width="292" height="44" rx="12" fill="var(--bg-surface)" stroke="#34C759" stroke-width="1.5"/>
+      <rect x="34" y="127" width="40" height="24" rx="7" fill="#E53935"/>
+      <text x="54" y="143" text-anchor="middle" font-family="${font}" font-size="11.5" font-weight="800" fill="#FFFFFF">1A</text>
+      <text x="82" y="137" font-family="${font}" font-size="12" font-weight="700" fill="var(--text-main)">${dest1}</text>
+      <text x="82" y="152" font-family="${font}" font-size="9" font-weight="700" fill="#248A3D">● ${liveLbl} · ${seatsLbl}</text>
+      <text x="304" y="145" text-anchor="end" font-family="${font}" font-size="16" font-weight="800" fill="var(--text-main)">3m</text>
+      ${badgeCallout(313, 118, '3', '#34C759')}
       <!-- Live ETA Card 2 -->
-      <rect x="26" y="147" width="288" height="36" rx="11" fill="var(--bg-surface)"/>
-      <rect x="34" y="155" width="38" height="20" rx="6" fill="#E53935"/>
-      <text x="53" y="168.5" text-anchor="middle" font-family="${font}" font-size="10.5" font-weight="800" fill="#FFFFFF">112</text>
-      <text x="80" y="169" font-family="${font}" font-size="11" font-weight="700" fill="var(--text-main)">${dest2}</text>
-      <text x="304" y="169" text-anchor="end" font-family="${font}" font-size="13.5" font-weight="800" fill="var(--text-main)">6m</text>
-      <!-- Live ETA Card 3 (EAL light blue contrast) -->
-      <rect x="26" y="188" width="288" height="36" rx="11" fill="var(--bg-surface)"/>
-      <rect x="34" y="196" width="38" height="20" rx="6" fill="#5EB6E4"/>
-      <text x="53" y="209.5" text-anchor="middle" font-family="${font}" font-size="10" font-weight="800" fill="#FFFFFF">EAL</text>
-      <text x="80" y="210" font-family="${font}" font-size="11" font-weight="700" fill="var(--text-main)">${dest3}</text>
-      <text x="304" y="210" text-anchor="end" font-family="${font}" font-size="13.5" font-weight="800" fill="#007AFF">2m</text>
+      <rect x="24" y="167" width="292" height="42" rx="12" fill="var(--bg-surface)"/>
+      <rect x="34" y="176" width="40" height="24" rx="7" fill="#E53935"/>
+      <text x="54" y="192" text-anchor="middle" font-family="${font}" font-size="11.5" font-weight="800" fill="#FFFFFF">112</text>
+      <text x="82" y="192" font-family="${font}" font-size="12" font-weight="700" fill="var(--text-main)">${dest2}</text>
+      <text x="304" y="193" text-anchor="end" font-family="${font}" font-size="15" font-weight="800" fill="var(--text-main)">6m</text>
+      <!-- Live ETA Card 3 -->
+      <rect x="24" y="215" width="292" height="42" rx="12" fill="var(--bg-surface)"/>
+      <rect x="34" y="224" width="40" height="24" rx="7" fill="#5EB6E4"/>
+      <text x="54" y="240" text-anchor="middle" font-family="${font}" font-size="10.5" font-weight="800" fill="#FFFFFF">EAL</text>
+      <text x="82" y="240" font-family="${font}" font-size="12" font-weight="700" fill="var(--text-main)">${dest3}</text>
+      <text x="304" y="241" text-anchor="end" font-family="${font}" font-size="15" font-weight="800" fill="#007AFF">2m</text>
     </svg>`;
   }
 
   if (stepIdx === 1) {
-    // Slide 2 (Priority #2): Route Detail Map, Next 3 ETAs, Live GPS vs Scheduled & Load
+    // Slide 2 (Picture-First): Live Directional Road Traffic + TD Camera Snapshot + ETAs & Seats
     const hdr = isZh ? '112 往 銅鑼灣 (崇光)' : '112 To Causeway Bay';
-    const stopA = isZh ? '紅磡海底隧道' : 'Cross-Harbour Tunnel';
     const stopB = isZh ? '崇光百貨 (銅鑼灣)' : 'SOGO Causeway Bay';
+    const trafficBtn = isZh ? '🚦 路況 開' : '🚦 Traffic';
+    const yourSideTxt = isZh ? '🟢 前路暢順 68 km/h' : '🟢 Your side 68 km/h';
+    const oppSideTxt = isZh ? '🔴 對面線塞車 22 km/h' : '🔴 Opp. jammed 22 km/h';
+    const camLbl = isZh ? '📷 路面實拍' : '📷 Road Cam';
     const liveTag = isZh ? '● 實時GPS' : '● Live GPS';
-    const schedTag = isZh ? '預計班次' : 'Scheduled';
     const seatsTag = isZh ? '有位' : 'Seats';
     const standTag = isZh ? '企位' : 'Standing';
-    return `<svg viewBox="0 0 340 244" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${hdr}">
+    return `<svg viewBox="0 0 340 276" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${hdr}">
       <defs>
         <linearGradient id="obBg1" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stop-color="#34C759" stop-opacity="0.11"/>
+          <stop offset="0%" stop-color="#34C759" stop-opacity="0.12"/>
           <stop offset="100%" stop-color="#007AFF" stop-opacity="0.08"/>
         </linearGradient>
       </defs>
-      <rect width="340" height="244" fill="url(#obBg1)"/>
-      <rect x="16" y="10" width="308" height="224" rx="18" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
+      <rect width="340" height="276" fill="url(#obBg1)"/>
+      <rect x="14" y="10" width="312" height="256" rx="18" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
       <!-- Header bar -->
-      <rect x="28" y="19" width="42" height="21" rx="7" fill="#E53935"/>
-      <text x="49" y="33" text-anchor="middle" font-family="${font}" font-size="10.5" font-weight="800" fill="#FFFFFF">112</text>
-      <text x="78" y="33" font-family="${font}" font-size="11.5" font-weight="800" fill="var(--text-main)">${hdr}</text>
-      <!-- Mini Route Map -->
-      <rect x="26" y="46" width="288" height="58" rx="12" fill="#EAF2F8" stroke="var(--border-color)" stroke-width="1"/>
-      <path d="M26 75 H314 M155 46 V104" stroke="#FFFFFF" stroke-width="4" opacity="0.8"/>
-      <path d="M56 82 Q145 58 205 74 T284 68" fill="none" stroke="#E53935" stroke-width="4" stroke-linecap="round"/>
-      <circle cx="88" cy="73" r="5" fill="#FFFFFF" stroke="#E53935" stroke-width="2.5"/>
-      <circle cx="205" cy="74" r="7" fill="#007AFF" stroke="#FFFFFF" stroke-width="2.5"/>
-      <circle cx="284" cy="68" r="5" fill="#FFFFFF" stroke="#E53935" stroke-width="2.5"/>
-      <rect x="148" y="51" width="114" height="16" rx="8" fill="#1C1C1E"/>
-      <text x="205" y="62" text-anchor="middle" font-family="${font}" font-size="8.5" font-weight="700" fill="#FFFFFF">${stopB}</text>
-      ${badgeCallout(304, 52, '1', '#E53935')}
-      <!-- Stop Row Header -->
-      <text x="28" y="121" font-family="${font}" font-size="10.5" font-weight="700" fill="var(--text-sub)">12. ${stopA}</text>
-      <rect x="24" y="128" width="292" height="98" rx="13" fill="var(--bg-surface)" stroke="#007AFF" stroke-width="1.3"/>
-      <text x="36" y="144" font-family="${font}" font-size="11.5" font-weight="800" fill="var(--text-main)">13. ${stopB}</text>
-      <!-- Next 3 Departures -->
-      <rect x="34" y="151" width="272" height="21" rx="7" fill="var(--bg-white)"/>
-      <text x="44" y="165" font-family="${font}" font-size="11.5" font-weight="800" fill="var(--text-main)">● 3m</text>
-      <text x="86" y="165" font-family="${font}" font-size="10.5" font-weight="700" fill="#007AFF">18:42</text>
-      <rect x="128" y="154" width="66" height="15" rx="7.5" fill="rgba(52,199,89,0.16)"/>
-      <text x="161" y="164.5" text-anchor="middle" font-family="${font}" font-size="8.5" font-weight="700" fill="#248A3D">${liveTag}</text>
-      ${badgeCallout(198, 161, '2', '#34C759')}
-      <rect x="218" y="154" width="52" height="15" rx="7.5" fill="rgba(52,199,89,0.16)"/>
-      <text x="244" y="164.5" text-anchor="middle" font-family="${font}" font-size="8.5" font-weight="700" fill="#248A3D">${seatsTag}</text>
-      <rect x="34" y="175" width="272" height="21" rx="7" fill="var(--bg-white)"/>
-      <text x="44" y="189" font-family="${font}" font-size="11" font-weight="700" fill="var(--text-main)">11m</text>
-      <text x="86" y="189" font-family="${font}" font-size="10.5" font-weight="600" fill="var(--text-sub)">18:50</text>
-      <rect x="128" y="178" width="66" height="15" rx="7.5" fill="rgba(52,199,89,0.16)"/>
-      <text x="161" y="188.5" text-anchor="middle" font-family="${font}" font-size="8.5" font-weight="700" fill="#248A3D">${liveTag}</text>
-      <rect x="218" y="178" width="56" height="15" rx="7.5" fill="rgba(255,149,0,0.18)"/>
-      <text x="246" y="188.5" text-anchor="middle" font-family="${font}" font-size="8.5" font-weight="700" fill="#B25000">${standTag}</text>
-      ${badgeCallout(294, 172, '3', '#FF9500')}
-      <rect x="34" y="199" width="272" height="21" rx="7" fill="var(--bg-white)"/>
-      <text x="44" y="213" font-family="${font}" font-size="11" font-weight="700" fill="var(--text-sub)">22m</text>
-      <text x="86" y="213" font-family="${font}" font-size="10.5" font-weight="600" fill="var(--text-sub)">19:01</text>
-      <rect x="128" y="202" width="76" height="15" rx="7.5" fill="rgba(255,149,0,0.16)"/>
-      <text x="166" y="212.5" text-anchor="middle" font-family="${font}" font-size="8.5" font-weight="700" fill="#B25000">${schedTag}</text>
+      <rect x="24" y="19" width="42" height="22" rx="7" fill="#E53935"/>
+      <text x="45" y="34" text-anchor="middle" font-family="${font}" font-size="11" font-weight="800" fill="#FFFFFF">112</text>
+      <text x="74" y="34" font-family="${font}" font-size="11.5" font-weight="800" fill="var(--text-main)">${hdr}</text>
+      <!-- Visual Directional Map + Mini Webcam Card -->
+      <rect x="24" y="47" width="292" height="84" rx="13" fill="#EAF2F8" stroke="var(--border-color)" stroke-width="1"/>
+      <!-- Two carriageways: Smooth Green vs Jammed Red -->
+      <path d="M36 96 C95 76, 155 76, 212 90" fill="none" stroke="#FFFFFF" stroke-width="8" stroke-linecap="round"/>
+      <path d="M36 96 C95 76, 155 76, 212 90" fill="none" stroke="#16A34A" stroke-width="4.5" stroke-linecap="round"/>
+      <path d="M210 105 C150 93, 95 93, 36 112" fill="none" stroke="#FFFFFF" stroke-width="7.5" stroke-linecap="round"/>
+      <path d="M210 105 C150 93, 95 93, 36 112" fill="none" stroke="#DC2626" stroke-width="4.2" stroke-linecap="round"/>
+      <!-- Direction chevrons -->
+      <polygon points="154,75 162,79 154,83" fill="#16A34A"/>
+      <polygon points="98,96 90,100 98,104" fill="#DC2626"/>
+      <circle cx="122" cy="80" r="6" fill="#007AFF" stroke="#FFFFFF" stroke-width="2"/>
+      <!-- Traffic chip top left -->
+      <rect x="30" y="53" width="68" height="19" rx="9.5" fill="var(--bg-white)" stroke="#16A34A" stroke-width="1.2"/>
+      <text x="64" y="65.5" text-anchor="middle" font-family="${font}" font-size="8.5" font-weight="800" fill="#15803D">${trafficBtn}</text>
+      ${badgeCallout(30, 53, '1', '#16A34A')}
+      <!-- Embedded Live Webcam Thumbnail right side -->
+      <rect x="220" y="54" width="88" height="70" rx="9" fill="#1E293B" stroke="#FFFFFF" stroke-width="1.5"/>
+      <path d="M222 106 L252 80 L276 80 L306 106 Z" fill="#475569"/>
+      <line x1="264" y1="82" x2="264" y2="104" stroke="#E2E8F0" stroke-width="1.5" stroke-dasharray="3 3"/>
+      <rect x="234" y="88" width="12" height="7" rx="2" fill="#EF4444"/>
+      <rect x="278" y="92" width="12" height="7" rx="2" fill="#22C55E"/>
+      <text x="264" y="68" text-anchor="middle" font-family="${font}" font-size="8" font-weight="700" fill="#F8FAFC">${camLbl}</text>
+      ${badgeCallout(306, 54, '2', '#007AFF')}
+      <!-- Directional Road Status Strip inside Stop Card -->
+      <rect x="24" y="138" width="292" height="36" rx="10" fill="var(--bg-surface)" stroke="var(--border-color)" stroke-width="1"/>
+      <rect x="24" y="138" width="4" height="36" rx="2" fill="#16A34A"/>
+      <text x="36" y="153" font-family="${font}" font-size="10" font-weight="800" fill="var(--text-main)">${yourSideTxt}</text>
+      <text x="36" y="167" font-family="${font}" font-size="9" font-weight="600" fill="var(--text-sub)">${oppSideTxt}</text>
+      ${badgeCallout(308, 146, '3', '#DC2626')}
+      <!-- Next Departures & Crowding -->
+      <rect x="24" y="180" width="292" height="78" rx="12" fill="var(--bg-surface)"/>
+      <text x="34" y="196" font-family="${font}" font-size="10.5" font-weight="800" fill="var(--text-main)">13. ${stopB}</text>
+      <rect x="34" y="203" width="272" height="23" rx="7" fill="var(--bg-white)"/>
+      <text x="44" y="218" font-family="${font}" font-size="11.5" font-weight="800" fill="var(--text-main)">● 3m · 18:42</text>
+      <text x="155" y="218" font-family="${font}" font-size="9" font-weight="700" fill="#248A3D">${liveTag}</text>
+      <rect x="244" y="207" width="52" height="15" rx="7.5" fill="rgba(52,199,89,0.16)"/>
+      <text x="270" y="217.5" text-anchor="middle" font-family="${font}" font-size="8.5" font-weight="700" fill="#248A3D">${seatsTag}</text>
+      <rect x="34" y="230" width="272" height="22" rx="7" fill="var(--bg-white)"/>
+      <text x="44" y="244.5" font-family="${font}" font-size="11" font-weight="700" fill="var(--text-sub)">11m · 18:50</text>
+      <text x="155" y="244.5" font-family="${font}" font-size="9" font-weight="700" fill="#248A3D">${liveTag}</text>
+      <rect x="242" y="233.5" width="56" height="15" rx="7.5" fill="rgba(255,149,0,0.18)"/>
+      <text x="270" y="244" text-anchor="middle" font-family="${font}" font-size="8.5" font-weight="700" fill="#B25000">${standTag}</text>
     </svg>`;
   }
 
   if (stepIdx === 2) {
-    // Slide 3 (Priority #3): Multi-Modal Route Planner + Exact MTR Exits + Stops & ETA button
+    // Slide 3 (Picture-First): Multi-Modal Planner + Exact MTR Exit + Stops & ETA
     const planT = isZh ? '規劃' : 'Plan';
     const fromT = isZh ? '旺角' : 'Mong Kok';
     const toT = isZh ? '中環 (IFC)' : 'Central (IFC)';
     const bestT = isZh ? '最佳路線' : 'Best';
-    const walkTag = isZh ? '步行 2分 · 金鐘 B出口' : 'Walk 2m · Exit B';
+    const walkTag = isZh ? '金鐘 B出口 · 2分' : 'Walk 2m · Exit B';
     const btnLbl = isZh ? '站點班次 ›' : 'Stops & ETA ›';
-    const liveLbl = isZh ? '● 實時到站' : '● Live ETA';
-    return `<svg viewBox="0 0 340 244" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${walkTag}">
-      <rect width="340" height="244" fill="var(--bg-surface)"/>
-      <rect x="16" y="10" width="308" height="224" rx="18" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
+    const liveLbl = isZh ? '● 實時到站 · 🟢 前路暢順' : '● Live ETA · 🟢 Smooth';
+    return `<svg viewBox="0 0 340 276" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${walkTag}">
+      <rect width="340" height="276" fill="var(--bg-surface)"/>
+      <rect x="14" y="10" width="312" height="256" rx="18" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
       <!-- Top Bar + From/To -->
-      <rect x="28" y="19" width="52" height="21" rx="10.5" fill="#007AFF"/>
-      <text x="54" y="33" text-anchor="middle" font-family="${font}" font-size="10" font-weight="800" fill="#FFFFFF">${planT}</text>
-      ${badgeCallout(24, 20, '1', '#007AFF')}
-      <rect x="88" y="17" width="222" height="25" rx="8" fill="var(--bg-surface)"/>
-      <circle cx="99" cy="29.5" r="3.5" fill="#FFFFFF" stroke="#007AFF" stroke-width="2"/>
-      <text x="108" y="33" font-family="${font}" font-size="10" font-weight="700" fill="var(--text-main)">${fromT} → ${toT}</text>
-      <!-- Mini Map Frame -->
-      <rect x="26" y="48" width="288" height="94" rx="13" fill="#EAF2F8" stroke="var(--border-color)" stroke-width="1"/>
-      <path d="M26 95 H314 M130 48 V142 M235 48 V142" stroke="#FFFFFF" stroke-width="4" opacity="0.85"/>
-      <path d="M62 118 Q112 114 152 94" fill="none" stroke="#007AFF" stroke-width="3.5" stroke-dasharray="5 4" stroke-linecap="round"/>
-      <path d="M152 94 C192 94, 215 74, 272 74" fill="none" stroke="#E2231A" stroke-width="4.5" stroke-linecap="round"/>
-      <circle cx="62" cy="118" r="6" fill="#007AFF" stroke="#FFFFFF" stroke-width="2"/>
-      <circle cx="152" cy="94" r="6.5" fill="#1C1C1E" stroke="#FFFFFF" stroke-width="2"/>
-      <rect x="95" y="61" width="114" height="20" rx="8" fill="#1C1C1E"/>
-      <text x="152" y="74.5" text-anchor="middle" font-family="${font}" font-size="9" font-weight="700" fill="#FFFFFF">${walkTag}</text>
-      <circle cx="272" cy="74" r="7" fill="#FF3B30" stroke="#FFFFFF" stroke-width="2"/>
-      ${badgeCallout(216, 61, '2', '#1C1C1E')}
+      <rect x="26" y="20" width="54" height="23" rx="11.5" fill="#007AFF"/>
+      <text x="53" y="35" text-anchor="middle" font-family="${font}" font-size="10.5" font-weight="800" fill="#FFFFFF">${planT}</text>
+      ${badgeCallout(22, 20, '1', '#007AFF')}
+      <rect x="88" y="18" width="224" height="27" rx="9" fill="var(--bg-surface)"/>
+      <circle cx="100" cy="31.5" r="4" fill="#FFFFFF" stroke="#007AFF" stroke-width="2"/>
+      <text x="110" y="35" font-family="${font}" font-size="10.5" font-weight="700" fill="var(--text-main)">${fromT} → ${toT}</text>
+      <!-- Large Map Frame -->
+      <rect x="24" y="52" width="292" height="114" rx="14" fill="#EAF2F8" stroke="var(--border-color)" stroke-width="1"/>
+      <path d="M24 110 H316 M130 52 V166 M235 52 V166" stroke="#FFFFFF" stroke-width="4.5" opacity="0.88"/>
+      <path d="M58 138 Q112 132 152 108" fill="none" stroke="#007AFF" stroke-width="4" stroke-dasharray="5 4" stroke-linecap="round"/>
+      <path d="M152 108 C194 108, 218 82, 276 82" fill="none" stroke="#E2231A" stroke-width="5" stroke-linecap="round"/>
+      <circle cx="58" cy="138" r="6.5" fill="#007AFF" stroke="#FFFFFF" stroke-width="2"/>
+      <circle cx="152" cy="108" r="7" fill="#1C1C1E" stroke="#FFFFFF" stroke-width="2"/>
+      <rect x="92" y="70" width="120" height="22" rx="9" fill="#1C1C1E"/>
+      <text x="152" y="84.5" text-anchor="middle" font-family="${font}" font-size="9.5" font-weight="700" fill="#FFFFFF">${walkTag}</text>
+      <circle cx="276" cy="82" r="7.5" fill="#FF3B30" stroke="#FFFFFF" stroke-width="2"/>
+      ${badgeCallout(220, 70, '2', '#1C1C1E')}
       <!-- Result Card -->
-      <rect x="26" y="148" width="288" height="78" rx="12" fill="var(--bg-surface)" stroke="#007AFF" stroke-width="1.5"/>
-      <rect x="35" y="155" width="46" height="15" rx="7.5" fill="rgba(0,122,255,0.14)"/>
-      <text x="58" y="165.5" text-anchor="middle" font-family="${font}" font-size="8.5" font-weight="800" fill="#007AFF">${bestT}</text>
-      <rect x="86" y="155" width="32" height="16" rx="5" fill="#E2231A"/>
-      <text x="102" y="166.5" text-anchor="middle" font-family="${font}" font-size="8.5" font-weight="800" fill="#FFFFFF">TWL</text>
-      <text x="122" y="166.5" font-family="${font}" font-size="9.5" fill="var(--text-sub)">→</text>
-      <rect x="132" y="155" width="28" height="16" rx="5" fill="#0075C9"/>
-      <text x="146" y="166.5" text-anchor="middle" font-family="${font}" font-size="8.5" font-weight="800" fill="#FFFFFF">ISL</text>
-      <text x="304" y="168" text-anchor="end" font-family="${font}" font-size="13" font-weight="800" fill="var(--text-main)">14m · $12.5</text>
-      <!-- Leg row with Stops & ETA button highlighted -->
-      <rect x="35" y="177" width="270" height="41" rx="9" fill="var(--bg-white)"/>
-      <text x="44" y="193" font-family="${font}" font-size="10.5" font-weight="700" fill="var(--text-main)">18:40 ${fromT}</text>
-      <text x="44" y="209" font-family="${font}" font-size="9.5" font-weight="700" fill="#248A3D">${liveLbl}</text>
-      <circle cx="261" cy="197" r="20" fill="#007AFF" opacity="0.16" class="ob-pulse-ring"/>
-      <rect x="220" y="185" width="79" height="24" rx="7" fill="var(--bg-surface)" stroke="#007AFF" stroke-width="1.2"/>
-      <text x="259.5" y="200.5" text-anchor="middle" font-family="${font}" font-size="9.5" font-weight="800" fill="#007AFF">${btnLbl}</text>
-      ${badgeCallout(303, 184, '3', '#007AFF')}
+      <rect x="24" y="173" width="292" height="84" rx="13" fill="var(--bg-surface)" stroke="#007AFF" stroke-width="1.6"/>
+      <rect x="34" y="181" width="50" height="17" rx="8.5" fill="rgba(0,122,255,0.14)"/>
+      <text x="59" y="192.5" text-anchor="middle" font-family="${font}" font-size="9" font-weight="800" fill="#007AFF">${bestT}</text>
+      <rect x="90" y="181" width="34" height="17" rx="5" fill="#E2231A"/>
+      <text x="107" y="192.5" text-anchor="middle" font-family="${font}" font-size="9" font-weight="800" fill="#FFFFFF">TWL</text>
+      <text x="128" y="193" font-family="${font}" font-size="10" fill="var(--text-sub)">→</text>
+      <rect x="139" y="181" width="30" height="17" rx="5" fill="#0075C9"/>
+      <text x="154" y="192.5" text-anchor="middle" font-family="${font}" font-size="9" font-weight="800" fill="#FFFFFF">ISL</text>
+      <text x="304" y="195" text-anchor="end" font-family="${font}" font-size="14" font-weight="800" fill="var(--text-main)">14m · $12.5</text>
+      <rect x="34" y="205" width="272" height="44" rx="10" fill="var(--bg-white)"/>
+      <text x="44" y="223" font-family="${font}" font-size="11.5" font-weight="700" fill="var(--text-main)">18:40 ${fromT}</text>
+      <text x="44" y="240" font-family="${font}" font-size="9.5" font-weight="700" fill="#248A3D">${liveLbl}</text>
+      <circle cx="261" cy="227" r="20" fill="#007AFF" opacity="0.16" class="ob-pulse-ring"/>
+      <rect x="219" y="214" width="80" height="26" rx="8" fill="var(--bg-surface)" stroke="#007AFF" stroke-width="1.3"/>
+      <text x="259" y="230.5" text-anchor="middle" font-family="${font}" font-size="10" font-weight="800" fill="#007AFF">${btnLbl}</text>
+      ${badgeCallout(304, 213, '3', '#007AFF')}
     </svg>`;
   }
 
   if (stepIdx === 3) {
-    // Slide 4 (Priority #4): Star Daily Stops & View in Saved Bookmarks
+    // Slide 4 (Picture-First): Star Stops & Saved Bookmarks
     const stopLbl = isZh ? '崇光百貨 (銅鑼灣)' : 'SOGO Causeway Bay';
-    const savedPill = isZh ? '★ 已收藏' : '★ Saved';
     const favHdr = isZh ? '已收藏車站' : 'Saved Stops';
     const s1 = isZh ? '銅鑼灣 (崇光)' : 'Causeway Bay';
     const s2 = isZh ? '旺角站' : 'Mong Kok Stn';
     const s3 = isZh ? '中環6號碼頭' : 'Central Pier 6';
-    return `<svg viewBox="0 0 340 244" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${favHdr}">
+    return `<svg viewBox="0 0 340 276" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${favHdr}">
       <defs>
         <linearGradient id="obBg3" x1="0" y1="0" x2="1" y2="1">
           <stop offset="0%" stop-color="#FF9500" stop-opacity="0.12"/>
           <stop offset="100%" stop-color="#007AFF" stop-opacity="0.08"/>
         </linearGradient>
       </defs>
-      <rect width="340" height="244" fill="url(#obBg3)"/>
-      <rect x="16" y="10" width="308" height="224" rx="18" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
-      <!-- Step 1: Star stop row -->
-      <rect x="26" y="20" width="288" height="44" rx="12" fill="rgba(255,149,0,0.11)" stroke="#FF9500" stroke-width="1.5"/>
-      <rect x="35" y="31" width="34" height="20" rx="6" fill="#E53935"/>
-      <text x="52" y="44.5" text-anchor="middle" font-family="${font}" font-size="9.5" font-weight="800" fill="#FFFFFF">112</text>
-      <text x="77" y="39" font-family="${font}" font-size="11.5" font-weight="800" fill="var(--text-main)">${stopLbl}</text>
-      <text x="77" y="54" font-family="${font}" font-size="9.5" font-weight="700" fill="#248A3D">3m · 11m</text>
-      <circle cx="288" cy="42" r="18" fill="#FF9500" opacity="0.22" class="ob-pulse-ring"/>
-      <circle cx="288" cy="42" r="13" fill="#FF9500"/>
-      <text x="288" y="47" text-anchor="middle" font-family="${font}" font-size="14" font-weight="700" fill="#FFFFFF">★</text>
-      ${badgeCallout(26, 20, '1', '#FF9500')}
-      <!-- Arrow + Step 2 Bookmark Icon -->
-      <path d="M170 67 v14 M165 76 l5 5 l5 -5" fill="none" stroke="#007AFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-      <rect x="26" y="86" width="288" height="32" rx="10" fill="var(--bg-surface)"/>
-      <text x="38" y="106" font-family="${font}" font-size="10.5" font-weight="800" fill="#007AFF">${favHdr}</text>
-      <rect x="180" y="93" width="60" height="18" rx="9" fill="#FF9500"/>
-      <text x="210" y="105" text-anchor="middle" font-family="${font}" font-size="9" font-weight="700" fill="#FFFFFF">${savedPill}</text>
-      <circle cx="288" cy="102" r="13" fill="#007AFF"/>
-      <path d="M292 108 l-4 -3 l-4 3 v-10 a1 1 0 0 1 1 -1 h6 a1 1 0 0 1 1 1 z" fill="#FFFFFF"/>
-      ${badgeCallout(309, 88, '2', '#007AFF')}
-      <!-- Saved List Rows with Step 3 Reorder control -->
-      <rect x="26" y="124" width="288" height="32" rx="10" fill="var(--bg-surface)"/>
-      <text x="38" y="144" font-family="${font}" font-size="12" fill="#FF9500">★</text>
-      <rect x="54" y="131" width="34" height="18" rx="5" fill="#E53935"/>
-      <text x="71" y="143.5" text-anchor="middle" font-family="${font}" font-size="9" font-weight="800" fill="#FFFFFF">112</text>
-      <text x="96" y="144" font-family="${font}" font-size="11" font-weight="700" fill="var(--text-main)">${s1}</text>
-      <text x="268" y="144" text-anchor="end" font-family="${font}" font-size="11.5" font-weight="800" fill="#248A3D">3m</text>
-      <rect x="278" y="130" width="22" height="20" rx="6" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
-      <text x="289" y="144" text-anchor="middle" font-family="${font}" font-size="11" font-weight="800" fill="#007AFF">⇅</text>
-      ${badgeCallout(309, 130, '3', '#5856D6')}
-      <rect x="26" y="160" width="288" height="32" rx="10" fill="var(--bg-surface)"/>
-      <text x="38" y="180" font-family="${font}" font-size="12" fill="#FF9500">★</text>
-      <rect x="54" y="167" width="34" height="18" rx="5" fill="#E2231A"/>
-      <text x="71" y="179.5" text-anchor="middle" font-family="${font}" font-size="9" font-weight="800" fill="#FFFFFF">TWL</text>
-      <text x="96" y="180" font-family="${font}" font-size="11" font-weight="700" fill="var(--text-main)">${s2}</text>
-      <text x="298" y="180" text-anchor="end" font-family="${font}" font-size="11.5" font-weight="800" fill="#248A3D">2m</text>
-      <rect x="26" y="196" width="288" height="32" rx="10" fill="var(--bg-surface)"/>
-      <text x="38" y="216" font-family="${font}" font-size="12" fill="#FF9500">★</text>
-      <rect x="54" y="203" width="34" height="18" rx="5" fill="#0090D9"/>
-      <text x="71" y="215.5" text-anchor="middle" font-family="${font}" font-size="8" font-weight="800" fill="#FFFFFF">FERRY</text>
-      <text x="96" y="216" font-family="${font}" font-size="11" font-weight="700" fill="var(--text-main)">${s3}</text>
-      <text x="298" y="216" text-anchor="end" font-family="${font}" font-size="11.5" font-weight="800" fill="#248A3D">8m</text>
+      <rect width="340" height="276" fill="url(#obBg3)"/>
+      <rect x="14" y="10" width="312" height="256" rx="18" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
+      <rect x="24" y="21" width="292" height="50" rx="13" fill="rgba(255,149,0,0.12)" stroke="#FF9500" stroke-width="1.6"/>
+      <rect x="35" y="34" width="38" height="23" rx="7" fill="#E53935"/>
+      <text x="54" y="49.5" text-anchor="middle" font-family="${font}" font-size="10.5" font-weight="800" fill="#FFFFFF">112</text>
+      <text x="82" y="43" font-family="${font}" font-size="12" font-weight="800" fill="var(--text-main)">${stopLbl}</text>
+      <text x="82" y="59" font-family="${font}" font-size="10" font-weight="700" fill="#248A3D">3m · 11m</text>
+      <circle cx="288" cy="46" r="19" fill="#FF9500" opacity="0.22" class="ob-pulse-ring"/>
+      <circle cx="288" cy="46" r="14" fill="#FF9500"/>
+      <text x="288" y="51.5" text-anchor="middle" font-family="${font}" font-size="16" font-weight="700" fill="#FFFFFF">★</text>
+      ${badgeCallout(24, 21, '1', '#FF9500')}
+      <path d="M170 76 v16 M165 86 l5 6 l5 -6" fill="none" stroke="#007AFF" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+      <rect x="24" y="97" width="292" height="36" rx="11" fill="var(--bg-surface)"/>
+      <text x="38" y="119.5" font-family="${font}" font-size="12" font-weight="800" fill="#007AFF">${favHdr}</text>
+      <circle cx="288" cy="115" r="14" fill="#007AFF"/>
+      <path d="M292 121 l-4 -3 l-4 3 v-10 a1 1 0 0 1 1 -1 h6 a1 1 0 0 1 1 1 z" fill="#FFFFFF"/>
+      ${badgeCallout(310, 99, '2', '#007AFF')}
+      <rect x="24" y="139" width="292" height="36" rx="11" fill="var(--bg-surface)"/>
+      <text x="36" y="162" font-family="${font}" font-size="13" fill="#FF9500">★</text>
+      <rect x="54" y="147" width="36" height="20" rx="6" fill="#E53935"/>
+      <text x="72" y="160.5" text-anchor="middle" font-family="${font}" font-size="9.5" font-weight="800" fill="#FFFFFF">112</text>
+      <text x="98" y="161" font-family="${font}" font-size="11.5" font-weight="700" fill="var(--text-main)">${s1}</text>
+      <text x="268" y="161.5" text-anchor="end" font-family="${font}" font-size="12.5" font-weight="800" fill="#248A3D">3m</text>
+      <rect x="278" y="146" width="24" height="22" rx="6" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
+      <text x="290" y="161" text-anchor="middle" font-family="${font}" font-size="11.5" font-weight="800" fill="#007AFF">⇅</text>
+      ${badgeCallout(310, 145, '3', '#5856D6')}
+      <rect x="24" y="180" width="292" height="36" rx="11" fill="var(--bg-surface)"/>
+      <text x="36" y="203" font-family="${font}" font-size="13" fill="#FF9500">★</text>
+      <rect x="54" y="188" width="36" height="20" rx="6" fill="#E2231A"/>
+      <text x="72" y="201.5" text-anchor="middle" font-family="${font}" font-size="9.5" font-weight="800" fill="#FFFFFF">TWL</text>
+      <text x="98" y="202" font-family="${font}" font-size="11.5" font-weight="700" fill="var(--text-main)">${s2}</text>
+      <text x="298" y="202.5" text-anchor="end" font-family="${font}" font-size="12.5" font-weight="800" fill="#248A3D">2m</text>
+      <rect x="24" y="221" width="292" height="36" rx="11" fill="var(--bg-surface)"/>
+      <text x="36" y="244" font-family="${font}" font-size="13" fill="#FF9500">★</text>
+      <rect x="54" y="229" width="36" height="20" rx="6" fill="#0090D9"/>
+      <text x="72" y="242.5" text-anchor="middle" font-family="${font}" font-size="8.5" font-weight="800" fill="#FFFFFF">FERRY</text>
+      <text x="98" y="243" font-family="${font}" font-size="11.5" font-weight="700" fill="var(--text-main)">${s3}</text>
+      <text x="298" y="243.5" text-anchor="end" font-family="${font}" font-size="12.5" font-weight="800" fill="#248A3D">8m</text>
     </svg>`;
   }
 
   if (stepIdx === 4) {
-    // Slide 5 (Priority #5): Map Stop Browser & Long-Press Pin From/To
-    const mapTitle = isZh ? '地圖搵站 · 尖沙咀' : 'Map · Tsim Sha Tsui';
+    // Slide 5 (Picture-First): HK Stop Map + Traffic Lines + Hold to Pin From/To
+    const mapTitle = isZh ? '地圖 · 尖沙咀' : 'Map · Tsim Sha Tsui';
     const pinCardTitle = isZh ? '尖沙咀天星碼頭' : 'TST Star Ferry Pier';
-    const setFrom = isZh ? '設為起點' : 'Set Origin';
-    const setTo = isZh ? '設為終點' : 'Set Dest';
-    const holdHint = isZh ? '長按地圖任何位置' : 'Hold map anywhere';
-    return `<svg viewBox="0 0 340 244" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${mapTitle}">
-      <rect width="340" height="244" fill="var(--bg-surface)"/>
-      <rect x="16" y="10" width="308" height="224" rx="18" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
-      <!-- Top bar with Map icon highlighted -->
-      <text x="30" y="33" font-family="${font}" font-size="11" font-weight="800" fill="var(--text-main)">${mapTitle}</text>
-      <circle cx="292" cy="29" r="16" fill="#007AFF" opacity="0.2" class="ob-pulse-ring"/>
-      <circle cx="292" cy="29" r="12" fill="#007AFF"/>
-      <path d="M287 25 l3 -1.2 l4 1.2 l3 -1.2 v8 l-3 1.2 l-4 -1.2 l-3 1.2 z" fill="none" stroke="#FFFFFF" stroke-width="1.4"/>
-      ${badgeCallout(269, 29, '1', '#007AFF')}
-      <!-- Map canvas -->
-      <rect x="26" y="46" width="288" height="178" rx="14" fill="#E8F1F8" stroke="var(--border-color)" stroke-width="1"/>
-      <!-- Victoria Harbour water strip -->
-      <path d="M26 176 Q150 164 314 180 V224 H26 Z" fill="#C4E1F5"/>
-      <path d="M26 96 H314 M110 46 V176 M226 46 V176" stroke="#FFFFFF" stroke-width="5" opacity="0.9"/>
+    const setFrom = isZh ? '起點' : 'From';
+    const setTo = isZh ? '終點' : 'Dest';
+    const holdHint = isZh ? '長按地圖設起終點' : 'Hold map to pin';
+    return `<svg viewBox="0 0 340 276" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${mapTitle}">
+      <rect width="340" height="276" fill="var(--bg-surface)"/>
+      <rect x="14" y="10" width="312" height="256" rx="18" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
+      <text x="28" y="34" font-family="${font}" font-size="12" font-weight="800" fill="var(--text-main)">${mapTitle}</text>
+      <circle cx="294" cy="30" r="16" fill="#007AFF" opacity="0.2" class="ob-pulse-ring"/>
+      <circle cx="294" cy="30" r="12" fill="#007AFF"/>
+      <path d="M289 26 l3 -1.2 l4 1.2 l3 -1.2 v8 l-3 1.2 l-4 -1.2 l-3 1.2 z" fill="none" stroke="#FFFFFF" stroke-width="1.4"/>
+      ${badgeCallout(270, 30, '1', '#007AFF')}
+      <!-- Large Map Canvas -->
+      <rect x="24" y="48" width="292" height="208" rx="14" fill="#E8F1F8" stroke="var(--border-color)" stroke-width="1"/>
+      <path d="M24 202 Q150 188 316 206 V256 H24 Z" fill="#C4E1F5"/>
+      <path d="M24 106 H316 M112 48 V202 M228 48 V202" stroke="#FFFFFF" stroke-width="5" opacity="0.9"/>
+      <!-- Live Traffic Road Lines on Map -->
+      <line x1="34" y1="104" x2="110" y2="104" stroke="#16A34A" stroke-width="4" stroke-linecap="round"/>
+      <line x1="112" y1="54" x2="112" y2="100" stroke="#F59E0B" stroke-width="4" stroke-linecap="round"/>
       <!-- Colored stop pins -->
-      <circle cx="72" cy="96" r="7" fill="#FF3B30" stroke="#FFFFFF" stroke-width="2"/>
-      <circle cx="155" cy="80" r="8" fill="#5856D6" stroke="#FFFFFF" stroke-width="2"/>
-      <text x="155" y="83" text-anchor="middle" font-family="${font}" font-size="7.5" font-weight="800" fill="#FFFFFF">M</text>
-      <circle cx="110" cy="146" r="8" fill="#0090D9" stroke="#FFFFFF" stroke-width="2.5"/>
+      <circle cx="72" cy="106" r="7.5" fill="#FF3B30" stroke="#FFFFFF" stroke-width="2"/>
+      <circle cx="156" cy="82" r="9" fill="#5856D6" stroke="#FFFFFF" stroke-width="2"/>
+      <text x="156" y="85.5" text-anchor="middle" font-family="${font}" font-size="8" font-weight="800" fill="#FFFFFF">M</text>
+      <circle cx="112" cy="166" r="9" fill="#0090D9" stroke="#FFFFFF" stroke-width="2.5"/>
       <!-- Stop Popup Card -->
-      <rect x="128" y="102" width="174" height="66" rx="11" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
-      <text x="139" y="120" font-family="${font}" font-size="10.5" font-weight="800" fill="var(--text-main)">${pinCardTitle}</text>
-      <text x="139" y="135" font-family="${font}" font-size="9" font-weight="700" fill="#248A3D">FERRY 5m · 1A 3m</text>
-      <rect x="139" y="142" width="70" height="18" rx="6" fill="rgba(0,122,255,0.13)"/>
-      <text x="174" y="154" text-anchor="middle" font-family="${font}" font-size="8.5" font-weight="700" fill="#007AFF">${setFrom}</text>
-      <rect x="215" y="142" width="70" height="18" rx="6" fill="rgba(255,59,48,0.13)"/>
-      <text x="250" y="154" text-anchor="middle" font-family="${font}" font-size="8.5" font-weight="700" fill="#FF3B30">${setTo}</text>
-      ${badgeCallout(118, 128, '2', '#5856D6')}
+      <rect x="128" y="114" width="176" height="72" rx="12" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
+      <text x="140" y="134" font-family="${font}" font-size="11" font-weight="800" fill="var(--text-main)">${pinCardTitle}</text>
+      <text x="140" y="150" font-family="${font}" font-size="9.5" font-weight="700" fill="#248A3D">FERRY 5m · 1A 3m</text>
+      <rect x="140" y="158" width="72" height="20" rx="7" fill="rgba(0,122,255,0.13)"/>
+      <text x="176" y="171.5" text-anchor="middle" font-family="${font}" font-size="9" font-weight="800" fill="#007AFF">${setFrom}</text>
+      <rect x="218" y="158" width="72" height="20" rx="7" fill="rgba(255,59,48,0.13)"/>
+      <text x="254" y="171.5" text-anchor="middle" font-family="${font}" font-size="9" font-weight="800" fill="#FF3B30">${setTo}</text>
+      ${badgeCallout(118, 144, '2', '#5856D6')}
       <!-- Hold to Pin spot -->
-      <circle cx="242" cy="194" r="15" fill="#FF9500" opacity="0.25" class="ob-pulse-ring"/>
-      <circle cx="242" cy="194" r="7" fill="#FF9500" stroke="#FFFFFF" stroke-width="2"/>
-      <rect x="116" y="185" width="110" height="18" rx="9" fill="#1C1C1E"/>
-      <text x="171" y="197" text-anchor="middle" font-family="${font}" font-size="8.5" font-weight="700" fill="#FFFFFF">${holdHint}</text>
-      ${badgeCallout(262, 194, '3', '#FF9500')}
+      <circle cx="246" cy="222" r="16" fill="#FF9500" opacity="0.25" class="ob-pulse-ring"/>
+      <circle cx="246" cy="222" r="7.5" fill="#FF9500" stroke="#FFFFFF" stroke-width="2"/>
+      <rect x="116" y="212" width="114" height="20" rx="10" fill="#1C1C1E"/>
+      <text x="173" y="225.5" text-anchor="middle" font-family="${font}" font-size="9" font-weight="700" fill="#FFFFFF">${holdHint}</text>
+      ${badgeCallout(266, 222, '3', '#FF9500')}
     </svg>`;
   }
 
   if (stepIdx === 5) {
-    // Slide 6 (Priority #6): Home/Work Shortcuts, Language & Dark/Light Mode in Settings
+    // Slide 6 (Picture-First): Home/Work Shortcuts, Language & Theme
     const settingsT = isZh ? '設定' : 'Settings';
     const homeRow = isZh ? '🏠 屋企車站' : '🏠 Home Stop';
     const homeVal = isZh ? '旺角' : 'Mong Kok';
     const workRow = isZh ? '💼 公司車站' : '💼 Work Stop';
     const workVal = isZh ? '中環' : 'Central';
-    const langRow = isZh ? '🌐 語言 (Language)' : '🌐 Language';
+    const langRow = isZh ? '🌐 語言' : '🌐 Language';
     const themeRow = isZh ? '🌓 外觀主題' : '🌓 Theme';
     const themeVal = isZh ? '淺色 / 深色' : 'Light / Dark';
-    return `<svg viewBox="0 0 340 244" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${langRow}">
+    return `<svg viewBox="0 0 340 276" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${langRow}">
       <defs>
         <linearGradient id="obBg5" x1="0" y1="0" x2="1" y2="1">
           <stop offset="0%" stop-color="#5856D6" stop-opacity="0.11"/>
           <stop offset="100%" stop-color="#007AFF" stop-opacity="0.08"/>
         </linearGradient>
       </defs>
-      <rect width="340" height="244" fill="url(#obBg5)"/>
-      <rect x="16" y="10" width="308" height="224" rx="18" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
-      <text x="30" y="32" font-family="${font}" font-size="12" font-weight="800" fill="var(--text-main)">${settingsT}</text>
-      <circle cx="294" cy="28" r="12" fill="#007AFF"/>
-      <circle cx="294" cy="28" r="3.2" fill="none" stroke="#FFFFFF" stroke-width="1.8"/>
-      <path d="M294 20 v2.2 M294 33.8 v2.2 M286 28 h2.2 M299.8 28 h2.2" stroke="#FFFFFF" stroke-width="1.7" stroke-linecap="round"/>
-      ${badgeCallout(270, 28, '1', '#007AFF')}
-      <!-- Home & Work rows -->
-      <rect x="26" y="45" width="288" height="36" rx="10" fill="var(--bg-surface)"/>
-      <text x="38" y="67" font-family="${font}" font-size="11" font-weight="700" fill="var(--text-main)">${homeRow}</text>
-      <rect x="228" y="52" width="76" height="22" rx="11" fill="var(--bg-white)"/>
-      <text x="266" y="66.5" text-anchor="middle" font-family="${font}" font-size="10" font-weight="700" fill="#007AFF">${homeVal}</text>
-      <rect x="26" y="86" width="288" height="36" rx="10" fill="var(--bg-surface)"/>
-      <text x="38" y="108" font-family="${font}" font-size="11" font-weight="700" fill="var(--text-main)">${workRow}</text>
-      <rect x="228" y="93" width="76" height="22" rx="11" fill="var(--bg-white)"/>
-      <text x="266" y="107.5" text-anchor="middle" font-family="${font}" font-size="10" font-weight="700" fill="#007AFF">${workVal}</text>
-      ${badgeCallout(26, 46, '2', '#5856D6')}
-      <!-- Language row -->
-      <rect x="26" y="128" width="288" height="44" rx="11" fill="var(--bg-surface)" stroke="#007AFF" stroke-width="1.5"/>
-      <text x="38" y="154" font-family="${font}" font-size="11.5" font-weight="800" fill="var(--text-main)">${langRow}</text>
-      <rect x="190" y="138" width="54" height="24" rx="12" fill="${userLangPref === 'zh' ? '#007AFF' : 'var(--bg-white)'}"/>
-      <text x="217" y="153.5" text-anchor="middle" font-family="${font}" font-size="9.5" font-weight="700" fill="${userLangPref === 'zh' ? '#FFFFFF' : 'var(--text-main)'}">繁體中文</text>
-      <rect x="250" y="138" width="54" height="24" rx="12" fill="${userLangPref === 'en' ? '#007AFF' : 'var(--bg-white)'}"/>
-      <text x="277" y="153.5" text-anchor="middle" font-family="${font}" font-size="9.5" font-weight="700" fill="${userLangPref === 'en' ? '#FFFFFF' : 'var(--text-main)'}">English</text>
-      ${badgeCallout(26, 129, '3', '#007AFF')}
-      <!-- Theme row -->
-      <rect x="26" y="178" width="288" height="38" rx="10" fill="var(--bg-surface)"/>
-      <text x="38" y="201" font-family="${font}" font-size="11" font-weight="700" fill="var(--text-main)">${themeRow}</text>
-      <rect x="214" y="186" width="90" height="22" rx="11" fill="var(--bg-white)"/>
-      <text x="259" y="200.5" text-anchor="middle" font-family="${font}" font-size="9.5" font-weight="700" fill="#007AFF">${themeVal}</text>
+      <rect width="340" height="276" fill="url(#obBg5)"/>
+      <rect x="14" y="10" width="312" height="256" rx="18" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
+      <text x="28" y="35" font-family="${font}" font-size="13" font-weight="800" fill="var(--text-main)">${settingsT}</text>
+      <circle cx="294" cy="30" r="13" fill="#007AFF"/>
+      <circle cx="294" cy="30" r="3.4" fill="none" stroke="#FFFFFF" stroke-width="1.8"/>
+      <path d="M294 22 v2.2 M294 35.8 v2.2 M286 30 h2.2 M299.8 30 h2.2" stroke="#FFFFFF" stroke-width="1.7" stroke-linecap="round"/>
+      ${badgeCallout(268, 30, '1', '#007AFF')}
+      <rect x="24" y="50" width="292" height="44" rx="11" fill="var(--bg-surface)"/>
+      <text x="38" y="76.5" font-family="${font}" font-size="12" font-weight="700" fill="var(--text-main)">${homeRow}</text>
+      <rect x="228" y="59" width="76" height="26" rx="13" fill="var(--bg-white)"/>
+      <text x="266" y="75.5" text-anchor="middle" font-family="${font}" font-size="10.5" font-weight="700" fill="#007AFF">${homeVal}</text>
+      <rect x="24" y="100" width="292" height="44" rx="11" fill="var(--bg-surface)"/>
+      <text x="38" y="126.5" font-family="${font}" font-size="12" font-weight="700" fill="var(--text-main)">${workRow}</text>
+      <rect x="228" y="109" width="76" height="26" rx="13" fill="var(--bg-white)"/>
+      <text x="266" y="125.5" text-anchor="middle" font-family="${font}" font-size="10.5" font-weight="700" fill="#007AFF">${workVal}</text>
+      ${badgeCallout(24, 51, '2', '#5856D6')}
+      <rect x="24" y="152" width="292" height="50" rx="12" fill="var(--bg-surface)" stroke="#007AFF" stroke-width="1.5"/>
+      <text x="38" y="181.5" font-family="${font}" font-size="12.5" font-weight="800" fill="var(--text-main)">${langRow}</text>
+      <rect x="188" y="164" width="56" height="26" rx="13" fill="${userLangPref === 'zh' ? '#007AFF' : 'var(--bg-white)'}"/>
+      <text x="216" y="180.5" text-anchor="middle" font-family="${font}" font-size="10" font-weight="700" fill="${userLangPref === 'zh' ? '#FFFFFF' : 'var(--text-main)'}">繁體中文</text>
+      <rect x="250" y="164" width="56" height="26" rx="13" fill="${userLangPref === 'en' ? '#007AFF' : 'var(--bg-white)'}"/>
+      <text x="278" y="180.5" text-anchor="middle" font-family="${font}" font-size="10" font-weight="700" fill="${userLangPref === 'en' ? '#FFFFFF' : 'var(--text-main)'}">English</text>
+      ${badgeCallout(24, 153, '3', '#007AFF')}
+      <rect x="24" y="209" width="292" height="44" rx="11" fill="var(--bg-surface)"/>
+      <text x="38" y="235.5" font-family="${font}" font-size="12" font-weight="700" fill="var(--text-main)">${themeRow}</text>
+      <rect x="214" y="218" width="90" height="26" rx="13" fill="var(--bg-white)"/>
+      <text x="259" y="234.5" text-anchor="middle" font-family="${font}" font-size="10" font-weight="700" fill="#007AFF">${themeVal}</text>
     </svg>`;
   }
 
-  // Slide 7 (Priority #7): Add to Home Screen (Install as App)
+  // Slide 7 (Picture-First): Add to Home Screen
   const addLbl = isZh ? '加入主畫面' : 'Add to Home Screen';
-  const shareLbl = isZh ? '分享' : 'Share';
+  const shareLbl = isZh ? '分享 ↑' : 'Share ↑';
   const appLbl = isZh ? '香港交通通' : 'Transit HK';
-  return `<svg viewBox="0 0 340 244" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${addLbl}">
+  return `<svg viewBox="0 0 340 276" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${addLbl}">
     <defs>
       <linearGradient id="obBg6" x1="0" y1="0" x2="1" y2="1">
         <stop offset="0%" stop-color="#007AFF" stop-opacity="0.11"/>
         <stop offset="100%" stop-color="#34C759" stop-opacity="0.06"/>
       </linearGradient>
     </defs>
-    <rect width="340" height="244" fill="url(#obBg6)"/>
-    <rect x="20" y="14" width="300" height="58" rx="14" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
-    <rect x="34" y="22" width="272" height="18" rx="9" fill="var(--bg-surface)"/>
-    <text x="170" y="34.5" text-anchor="middle" font-family="${font}" font-size="9.5" font-weight="600" fill="var(--text-sub)">Transit HK · Web App</text>
-    <circle cx="170" cy="55" r="17" fill="#007AFF" opacity="0.18" class="ob-pulse-ring"/>
-    <circle cx="170" cy="55" r="12" fill="#007AFF"/>
-    <path d="M170 48 v10 M166 52 l4 -4 l4 4 M165 55 v4 h10 v-4" fill="none" stroke="#FFFFFF" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
-    <text x="191" y="59" font-family="${font}" font-size="9.5" font-weight="700" fill="#007AFF">${shareLbl}</text>
-    ${badgeCallout(144, 55, '1', '#007AFF')}
-    <path d="M170 76 v16 M165 87 l5 5 l5 -5" fill="none" stroke="#007AFF" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
-    <rect x="36" y="96" width="268" height="46" rx="14" fill="var(--bg-white)" stroke="#007AFF" stroke-width="1.8"/>
-    <rect x="49" y="108" width="22" height="22" rx="6" fill="rgba(0,122,255,0.14)"/>
-    <path d="M60 113 v12 M54 119 h12" stroke="#007AFF" stroke-width="2.1" stroke-linecap="round"/>
-    <text x="82" y="123" font-family="${font}" font-size="13" font-weight="700" fill="var(--text-main)">${addLbl}</text>
-    ${badgeCallout(282, 119, '2', '#007AFF')}
-    <path d="M170 146 v15 M165 156 l5 5 l5 -5" fill="none" stroke="#007AFF" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
-    <rect x="64" y="166" width="212" height="64" rx="16" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
-    <rect x="86" y="177" width="34" height="34" rx="9" fill="var(--bg-surface)" opacity="0.85"/>
-    <rect x="150" y="174" width="40" height="40" rx="11" fill="#E53935"/>
-    <rect x="159" y="182" width="22" height="17" rx="4" fill="#FFFFFF"/>
-    <rect x="162" y="185" width="16" height="8" rx="1.5" fill="#E53935"/>
-    <circle cx="164" cy="196" r="1.6" fill="#E53935"/>
-    <circle cx="176" cy="196" r="1.6" fill="#E53935"/>
-    <circle cx="187" cy="177" r="7" fill="#34C759"/>
-    <path d="M184 177 l2 2 l4 -4" fill="none" stroke="#FFFFFF" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
-    <text x="170" y="224" text-anchor="middle" font-family="${font}" font-size="9.5" font-weight="700" fill="var(--text-main)">${appLbl}</text>
-    <rect x="220" y="177" width="34" height="34" rx="9" fill="var(--bg-surface)" opacity="0.85"/>
-    ${badgeCallout(208, 184, '3', '#34C759')}
+    <rect width="340" height="276" fill="url(#obBg6)"/>
+    <rect x="20" y="16" width="300" height="66" rx="15" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
+    <rect x="36" y="25" width="268" height="20" rx="10" fill="var(--bg-surface)"/>
+    <text x="170" y="38.5" text-anchor="middle" font-family="${font}" font-size="10" font-weight="600" fill="var(--text-sub)">Transit HK · Web App</text>
+    <circle cx="170" cy="61" r="18" fill="#007AFF" opacity="0.18" class="ob-pulse-ring"/>
+    <circle cx="170" cy="61" r="13" fill="#007AFF"/>
+    <path d="M170 54 v10 M166 58 l4 -4 l4 4 M165 61 v4 h10 v-4" fill="none" stroke="#FFFFFF" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="193" y="65" font-family="${font}" font-size="10.5" font-weight="700" fill="#007AFF">${shareLbl}</text>
+    ${badgeCallout(143, 61, '1', '#007AFF')}
+    <path d="M170 86 v18 M165 98 l5 6 l5 -6" fill="none" stroke="#007AFF" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="34" y="110" width="272" height="52" rx="15" fill="var(--bg-white)" stroke="#007AFF" stroke-width="1.8"/>
+    <rect x="49" y="124" width="24" height="24" rx="7" fill="rgba(0,122,255,0.14)"/>
+    <path d="M61 129 v14 M54 136 h14" stroke="#007AFF" stroke-width="2.2" stroke-linecap="round"/>
+    <text x="85" y="141" font-family="${font}" font-size="14" font-weight="700" fill="var(--text-main)">${addLbl}</text>
+    ${badgeCallout(282, 136, '2', '#007AFF')}
+    <path d="M170 166 v18 M165 178 l5 6 l5 -6" fill="none" stroke="#007AFF" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="64" y="190" width="212" height="72" rx="17" fill="var(--bg-white)" stroke="var(--border-color)" stroke-width="1"/>
+    <rect x="86" y="204" width="36" height="36" rx="10" fill="var(--bg-surface)" opacity="0.85"/>
+    <rect x="148" y="200" width="44" height="44" rx="12" fill="#E53935"/>
+    <rect x="158" y="209" width="24" height="19" rx="4.5" fill="#FFFFFF"/>
+    <rect x="161" y="212" width="18" height="9" rx="1.5" fill="#E53935"/>
+    <circle cx="164" cy="224" r="1.8" fill="#E53935"/>
+    <circle cx="176" cy="224" r="1.8" fill="#E53935"/>
+    <circle cx="189" cy="203" r="7.5" fill="#34C759"/>
+    <path d="M186 203 l2.2 2.2 l4 -4" fill="none" stroke="#FFFFFF" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="170" y="255" text-anchor="middle" font-family="${font}" font-size="10" font-weight="700" fill="var(--text-main)">${appLbl}</text>
+    <rect x="218" y="204" width="36" height="36" rx="10" fill="var(--bg-surface)" opacity="0.85"/>
+    ${badgeCallout(211, 211, '3', '#34C759')}
   </svg>`;
 }
 
@@ -5801,152 +5978,82 @@ function renderTutorialStep() {
 
   const slides = isZh ? [
     {
-      rank: '重點 1 · 每日必用',
+      rank: '重點 1',
       title: '即睇附近實時班次',
-      cue: '自動鎖定最近車站（如旺角、銅鑼灣），一開即睇',
-      steps: [
-        '頂部切換「巴士 / 港鐵 / 渡輪」模式',
-        '按「🎯 GPS」鎖定最近站，或輸入路線如 112 / 旺角',
-        '點按任何路線，立即查看沿線站點及實時到站'
-      ]
+      cue: '頂部選 Bus / Rail / Ferry · 按 🎯 GPS 即出到站時間'
     },
     {
-      rank: '重點 2 · 看懂班次',
-      title: '未來 3 班、實時GPS與座位',
-      cue: '清楚區分「實時GPS」同「預計班次」，唔會白等',
-      steps: [
-        '上方路線地圖顯示所有車站位置與你所在距離',
-        '「● 實時GPS」= 巴士已開出實時追蹤；「預計班次」= 班次表時間',
-        '綠色「有位」/ 橙色「企位」幫你預先判斷車廂擠迫度'
-      ]
+      rank: '重點 2',
+      title: '實時路況・路面鏡頭・座位',
+      cue: '紅綠箭嘴區分你條線順唔順，點擊路牌仲睇到運輸署實拍圖'
     },
     {
-      rank: '重點 3 · 轉乘規劃',
-      title: '點對點規劃＋港鐵出口導航',
-      cue: '如由旺角去中環 IFC，自動教你邊個港鐵出口最近',
-      steps: [
-        '按頂部「規劃」，輸入起點及目的地（支援街名/港鐵/大廈）',
-        '跟隨地圖港鐵出口步行指引（如 B 出口），並可選「最快／最平」',
-        '按每程右邊「站點班次 ›」查看完整站表及下班車實時到站'
-      ],
+      rank: '重點 3',
+      title: '點對點規劃 ＋ 港鐵出口',
+      cue: '輸入起終點即時比對路線、出口行法及實時路況',
       showOpenPlanner: true
     },
     {
-      rank: '重點 4 · 一秒睇站',
+      rank: '重點 4',
       title: '收藏常用車站，出門秒睇',
-      cue: '將返工放工站加星，唔使每次重新搜尋',
-      steps: [
-        '喺路線站表點按車站右邊 ☆ 變成橙色 ★ 即已收藏',
-        '日後點按右上角書籤圖示，一次過睇晒所有常用路線到站時間',
-        '可按 ⇅ 自由調動已收藏車站的上下次序'
-      ]
+      cue: '點 ☆ 變 ★ 加星，按書籤一次過睇晒返工返學班次'
     },
     {
-      rank: '重點 5 · 地圖搵站',
-      title: '全港地圖搵站＋長按設起終點',
-      cue: '唔知附近有咩車？開地圖即睇紅紫藍站點圖示',
-      steps: [
-        '點按右上角地圖圖示，瀏覽附近巴士、港鐵、輕鐵及渡輪站',
-        '點按任何站點查看即時到站，並可直接「設為起點 / 終點」',
-        '長按地圖任意位置，即可直接定點規劃路線'
-      ],
+      rank: '重點 5',
+      title: '全港地圖搵站 ＋ 長按定點',
+      cue: '地圖即睇附近車站及交通流量，長按可設起終點',
       showOpenMap: true
     },
     {
-      rank: '重點 6 · 個人設定',
-      title: '設定屋企/公司、語言及深色主題',
-      cue: '設定好屋企同公司站，出門一按即規劃返家路線',
-      steps: [
-        '點按右上角 ⚙️ 設定齒輪圖示',
-        '設定「🏠 屋企車站」及「💼 公司車站」（例如旺角 / 中環）',
-        '隨時切換「繁體中文 / English」及「淺色 / 深色」外觀'
-      ],
+      rank: '重點 6',
+      title: '設定屋企/公司、語言及主題',
+      cue: '入 ⚙️ 設定一次，下次打開自動推薦返屋企路線',
       showLangTryBtn: true
     },
     {
-      rank: '重點 7 · 像 App 一樣用',
-      title: '加入主畫面，免下載即開即用',
-      cue: '一鍵放上手機桌面，全螢幕開啟更快更順手',
-      steps: [
-        '點按瀏覽器底部或右上角「分享 ↑」（Chrome 按 ⋮）',
-        '向下滑動並選擇「加入主畫面」',
-        '桌面出現紅色香港交通圖示，隨時一按即開'
-      ],
+      rank: '重點 7',
+      title: '加入手機主畫面，像 App 咁開',
+      cue: '按「分享 ↑」→「加入主畫面」，全螢幕極速開啟',
       isFinal: true
     }
   ] : [
     {
-      rank: 'Step 1 · Most Used',
-      title: 'Check Nearby Live Arrivals',
-      cue: 'Auto-locks your nearest stop (e.g. Mong Kok, Causeway Bay)',
-      steps: [
-        'Switch Bus / Rail / Ferry tabs along the top bar',
-        'Tap 🎯 GPS to snap nearby, or search route/stop (e.g. 112)',
-        'Tap any route card to open its full stop list & map'
-      ]
+      rank: 'Tip 1',
+      title: 'Nearby Live Arrivals at a Glance',
+      cue: 'Pick Bus, Rail or Ferry · Tap 🎯 GPS to snap your stop'
     },
     {
-      rank: 'Step 2 · Read ETAs',
-      title: 'Next 3 Buses, Live GPS & Seats',
-      cue: 'Know instantly if a bus is already running or scheduled only',
-      steps: [
-        'Interactive map shows every stop along the route',
-        '● Live GPS = tracked en route · Scheduled = timetable only',
-        'Green Seats / Amber Standing badges show estimated crowding'
-      ]
+      rank: 'Tip 2',
+      title: 'Live Road Speed, Cam & Crowding',
+      cue: 'Check your direction vs opposite bound · Tap road segments for TD webcam'
     },
     {
-      rank: 'Step 3 · Route Planner',
+      rank: 'Tip 3',
       title: 'Door-to-Door Plan & MTR Exits',
-      cue: 'Example: Mong Kok to Central IFC with exact exit walk',
-      steps: [
-        'Tap Plan at top and enter any stop, MTR, pier, or HK address',
-        'Follow exact MTR exit walk paths (e.g. Exit B) & Best priority',
-        'Tap "Stops & ETA ›" on any leg for full stops & live status'
-      ],
+      cue: 'Compare routes, exact station exits & live traffic speed',
       showOpenPlanner: true
     },
     {
-      rank: 'Step 4 · Save Daily Stops',
-      title: 'Star Stops for 1-Tap Morning Check',
-      cue: 'Keep your daily Bus, MTR & Ferry stops in one tab',
-      steps: [
-        'Tap ☆ beside any stop (e.g. SOGO Causeway Bay) to star ★ it',
-        'Tap the top-right Bookmark icon to view all saved ETAs together',
-        'Tap ⇅ anytime to reorder your saved stops'
-      ]
+      rank: 'Tip 4',
+      title: 'Star Daily Stops for 1-Tap Check',
+      cue: 'Tap ☆ beside any stop, then open Bookmarks for all ETAs'
     },
     {
-      rank: 'Step 5 · Map Browser',
-      title: 'Browse Map & Hold to Pin From/To',
-      cue: 'See all Bus (red), MTR (purple) & Ferry (blue) pins around HK',
-      steps: [
-        'Tap the Map icon at top-right to explore stops visually',
-        'Tap any pin for live ETAs or to Set Origin / Set Dest',
-        'Press & hold anywhere on the map to plan from that spot'
-      ],
+      rank: 'Tip 5',
+      title: 'Map Browser & Live Traffic Overlay',
+      cue: 'Browse all stops & road flow · Hold map anywhere to plan',
       showOpenMap: true
     },
     {
-      rank: 'Step 6 · Personalize',
-      title: 'Home/Work Shortcuts, Language & Theme',
-      cue: 'Set your Home & Work stops once for 1-tap commute routing',
-      steps: [
-        'Tap the top-right ⚙️ Settings gear icon',
-        'Set Home (e.g. Mong Kok) & Work (e.g. Central) stops',
-        'Switch Language (Auto / 繁體中文 / English) & Light/Dark theme'
-      ],
+      rank: 'Tip 6',
+      title: 'Home / Work, Language & Dark Mode',
+      cue: 'Save Home & Work once in ⚙️ Settings for 1-tap commute',
       showLangTryBtn: true
     },
     {
-      rank: 'Step 7 · Install Web App',
-      title: 'Add to Home Screen (No App Store)',
-      cue: 'Launch full-screen from your phone home screen like an app',
-      steps: [
-        'Tap browser Share ↑ (Safari) or menu ⋮ (Chrome)',
-        'Choose "Add to Home Screen"',
-        'Open the Transit HK icon directly whenever you commute'
-      ],
+      rank: 'Tip 7',
+      title: 'Add to Home Screen Like an App',
+      cue: 'Tap Share ↑ then "Add to Home Screen" — zero download',
       isFinal: true
     }
   ];
@@ -5958,13 +6065,6 @@ function renderTutorialStep() {
   setV('tutorialRankPill', st.rank || '');
   setV('tutorialSlideTitle', st.title);
   setV('tutorialSlideCue', st.cue);
-
-  const stepsListEl = document.getElementById('tutorialStepsList');
-  if (stepsListEl) {
-    stepsListEl.innerHTML = (st.steps || []).map((txt, sIdx) =>
-      `<div class="onboard-step-row"><span class="onboard-step-num">${sIdx + 1}</span><span>${escapeHtml(txt)}</span></div>`
-    ).join('');
-  }
 
   const quickRow = document.getElementById('tutorialQuickActionRow');
   if (quickRow) {
@@ -5999,6 +6099,17 @@ function renderTutorialStep() {
     }
   }
 
+  const dontShowLbl = document.getElementById('tutorialDontShowLabel');
+  if (dontShowLbl) {
+    dontShowLbl.innerText = isZh
+      ? '不再自動顯示（更新後亦會保留設定）'
+      : "Don't show again (saved across updates)";
+  }
+  const dontShowCb = document.getElementById('tutorialDontShowCheckbox');
+  if (dontShowCb) {
+    dontShowCb.checked = hasOnboardingDismissedCookie();
+  }
+
   const ctaGroup = document.getElementById('tutorialCtaGroup');
   if (ctaGroup) {
     ctaGroup.innerHTML = st.isFinal
@@ -6028,6 +6139,11 @@ function renderTutorialStep() {
     }
   }, { passive: true });
 })();
+
+function onTutorialDontShowToggle(checked) {
+  triggerHaptic(8);
+  setOnboardingDismissedCookie(Boolean(checked));
+}
 
 function setTutorialStep(idx) {
   triggerHaptic(8);
@@ -6066,6 +6182,10 @@ function openTutorialModal(fromSettings = true) {
 
 function closeTutorialModal() {
   SafeStorage.setItem(ONBOARDING_SEEN_KEY, '1');
+  const dontShowCb = document.getElementById('tutorialDontShowCheckbox');
+  if (dontShowCb && dontShowCb.checked) {
+    setOnboardingDismissedCookie(true);
+  }
   const modal = document.getElementById('tutorialModal');
   if (modal) modal.style.display = 'none';
 }
@@ -6073,6 +6193,7 @@ function closeTutorialModal() {
 function maybeShowFirstVisitOnboarding(hasDeepLink = false) {
   const params = new URLSearchParams(window.location.search || '');
   if (hasDeepLink || params.get('autostart') === '1') return;
+  if (hasOnboardingDismissedCookie()) return;
   if (SafeStorage.getItem(ONBOARDING_SEEN_KEY)) return;
   if (document.getElementById('settingsModal')?.style.display === 'flex') return;
   openTutorialModal(false);
@@ -6412,9 +6533,13 @@ function applyLanguage() {
   if (mapTitle) mapTitle.innerText = t('mapTapHint');
 
   syncSettingsModalLabels();
+  syncTrafficToggleButtonsUI();
   updateTopBackButtonVisibility();
   updateCommuteBarUI();
   updateMainStopHeaderDisplay();
+  if (typeof window.syncTrafficOverlaysAllMaps === 'function') {
+    window.syncTrafficOverlaysAllMaps();
+  }
   if (document.getElementById('tutorialModal')?.style.display === 'flex' && typeof renderTutorialStep === 'function') {
     renderTutorialStep();
   }
@@ -6527,28 +6652,52 @@ let _lastCorridorsSig = '';
 async function syncEdgeTrafficCorridors() {
   if (document.hidden) return;
   try {
-    const d = await fetchEdgeApiJSON('', 3500, false);
-    if (!d?.ok) return;
+    const [d, tdLive] = await Promise.all([
+      fetchEdgeApiJSON('', 3500, false).catch(() => null),
+      fetchEdgeApiJSON('?action=traffic_live', 4800, false).catch(() => null)
+    ]);
 
-    if (d.highwayCorridors && typeof d.highwayCorridors === 'object') {
-      const nextSig = Object.entries(d.highwayCorridors)
-        .filter(([k]) => k !== 'TM_CLK_TUNNEL')
-        .map(([k, v]) => `${k}:${v?.status || 'SMOOTH'}`)
-        .join('|');
-      window.__LIVE_CORRIDORS__ = d.highwayCorridors;
-      window.__LIVE_HIGHWAY_KMH__ = Number(d.highwayCorridors.LANTAU_TM?.speedKmh || d.highwayCorridors.TM_CLK_TUNNEL?.speedKmh) || 70;
-      if (_lastCorridorsSig && _lastCorridorsSig !== nextSig && typeof window.invalidateRaptorGraph === 'function') {
-        window.invalidateRaptorGraph();
+    if (d?.ok) {
+      if (d.highwayCorridors && typeof d.highwayCorridors === 'object') {
+        const nextSig = Object.entries(d.highwayCorridors)
+          .filter(([k]) => k !== 'TM_CLK_TUNNEL')
+          .map(([k, v]) => `${k}:${v?.status || 'SMOOTH'}`)
+          .join('|');
+        window.__LIVE_CORRIDORS__ = d.highwayCorridors;
+        window.__LIVE_HIGHWAY_KMH__ = Number(d.highwayCorridors.LANTAU_TM?.speedKmh || d.highwayCorridors.TM_CLK_TUNNEL?.speedKmh) || 70;
+        if (_lastCorridorsSig && _lastCorridorsSig !== nextSig && typeof window.invalidateRaptorGraph === 'function') {
+          window.invalidateRaptorGraph();
+        }
+        _lastCorridorsSig = nextSig;
       }
-      _lastCorridorsSig = nextSig;
+
+      if (d.weather && typeof d.weather === 'object') {
+        window.__HKO_WEATHER__ = d.weather;
+      }
+
+      if (typeof syncRelevantCorridorPillUI === 'function') {
+        syncRelevantCorridorPillUI();
+      }
     }
 
-    if (d.weather && typeof d.weather === 'object') {
-      window.__HKO_WEATHER__ = d.weather;
-    }
-
-    if (typeof syncRelevantCorridorPillUI === 'function') {
-      syncRelevantCorridorPillUI();
+    if (tdLive?.ok && Array.isArray(tdLive.detectors)) {
+      const hadDetectorsBefore = Array.isArray(window.__LIVE_TRAFFIC_DETECTORS__) && window.__LIVE_TRAFFIC_DETECTORS__.length > 0;
+      window.__LIVE_TRAFFIC_DETECTORS__ = tdLive.detectors;
+      window.__LIVE_TRAFFIC_CAPTURED_AT__ = tdLive.capturedAt || '';
+      if (typeof window.syncTrafficOverlaysAllMaps === 'function') {
+        window.syncTrafficOverlaysAllMaps();
+      }
+      if (currentView === 'detail' && detailRouteGroup && detailExpandedStopIdx >= 0 && Array.isArray(detailLastFetchedArrs)) {
+        const stops = getStopsForGroup(detailRouteGroup, detailTargetStopKey);
+        const stObj = stops[detailExpandedStopIdx];
+        const stKey = stObj?.stopKey || getGlobalStopKey(stObj);
+        const expEl = document.getElementById(`detail-eta-expanded-${detailExpandedStopIdx}`);
+        if (expEl && stObj) {
+          expEl.innerHTML = generateExpandedETAsHtml(detailLastFetchedArrs, detailRouteGroup, stKey, detailExpandedStopIdx);
+        }
+      } else if (!hadDetectorsBefore && currentView === 'xfer' && userCommuteProfile?.home && userCommuteProfile?.work && typeof renderTransferPlannerView === 'function') {
+        renderTransferPlannerView();
+      }
     }
   } catch (e) {}
 }
@@ -6587,7 +6736,9 @@ window.openCompanionAppAtCurrentStop = function(target) {
   const lon = st ? parseFloat(st.longitude) : (lastKnownPos?.lon || 114.1556);
   const targetUrl = target === 'property'
     ? `https://hkproperty.pages.dev/#lat=${lat.toFixed(5)}&lng=${lon.toFixed(5)}&from=transit`
-    : `https://hkpast.pages.dev/#1889-victoria/16/${lat.toFixed(4)}/${lon.toFixed(4)}/hk/split`;
+    : (target === 'sundry'
+      ? 'https://hksundry.pages.dev/'
+      : `https://hkpast.pages.dev/#1889-victoria/16/${lat.toFixed(4)}/${lon.toFixed(4)}/hk/split`);
   const a = document.createElement('a');
   a.href = targetUrl;
   a.target = '_blank';

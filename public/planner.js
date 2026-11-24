@@ -2715,14 +2715,19 @@ function runRaptorCorridorPass(G, originAccess, destEgress, queryDateObj, isAirp
         if (boardSeq !== -1) {
           const rideSec = rt.cumSecs[seq] - rt.cumSecs[boardSeq];
           const isMicroBusHop = isBusRoute && (seq - boardSeq < 2) && rideSec < 95;
+          const bObj = rt.stObjs[boardSeq], aObj = rt.stObjs[seq];
+          const dBoardToDestKm = calculateDistanceKm(bObj.lat, bObj.lon, toMeta.lat, toMeta.lon);
+          const dAlightToDestKm = calculateDistanceKm(aObj.lat, aObj.lon, toMeta.lat, toMeta.lon);
+          // Never board a leg already near destination (<= 0.45km) that carries the rider farther away (e.g. AIR -> AWE + 14m walk back)
+          const isAwayOvershoot = dBoardToDestKm <= 0.45 && dAlightToDestKm > dBoardToDestKm + 0.08;
+
           let isSuppressedLongBus = false;
           if (suppressLongHaulBusKm > 0 && isBusRoute) {
-            const bObj = rt.stObjs[boardSeq], aObj = rt.stObjs[seq];
             const hopKm = calculateDistanceKm(bObj.lat, bObj.lon, aObj.lat, aObj.lon);
             if (hopKm > suppressLongHaulBusKm) isSuppressedLongBus = true;
           }
 
-          if (!isMicroBusHop && !isSuppressedLongBus) {
+          if (!isMicroBusHop && !isSuppressedLongBus && !isAwayOvershoot) {
             let xferBufSec = 0;
             if (boardPrevRound > 0) {
               const prevStep = parent[boardPrevRound][rt.stIndices[boardSeq]];
@@ -2760,7 +2765,11 @@ function runRaptorCorridorPass(G, originAccess, destEgress, queryDateObj, isAirp
           }
         }
         const candArrSec = tau[k - 1][u];
-        const canBoardBetter = candArrSec < INF && (
+        const prevCandRound = bestRound[k - 1][u];
+        const uStopObj = rt.stObjs[seq];
+        const alreadyArrivedNearDest = prevCandRound > 0 && uStopObj &&
+          calculateDistanceKm(uStopObj.lat, uStopObj.lon, toMeta.lat, toMeta.lon) <= 0.35;
+        const canBoardBetter = !alreadyArrivedNearDest && candArrSec < INF && (
           boardSeq === -1 ||
           candArrSec < boardTime + (rt.cumSecs[seq] - rt.cumSecs[boardSeq])
         );
@@ -2769,7 +2778,7 @@ function runRaptorCorridorPass(G, originAccess, destEgress, queryDateObj, isAirp
           if (isRouteActiveAtPlannerTime(rt.group, candBoardDate)) {
             boardSeq = seq;
             boardTime = candArrSec;
-            boardPrevRound = bestRound[k - 1][u];
+            boardPrevRound = prevCandRound;
           }
         }
       }
@@ -2862,6 +2871,20 @@ function runRaptorCorridorPass(G, originAccess, destEgress, queryDateObj, isAirp
       if (!acc) continue;
 
       const chainRoutes = rideSteps.map(s => G.routes[s.rIdx]);
+      // Reject chains where an earlier leg already landed at or closer to the destination than the final alighting stop
+      const finalAlightCheck = chainRoutes[chainRoutes.length - 1].stObjs[rideSteps[rideSteps.length - 1].alightSeq];
+      const dFinalDestKm = calculateDistanceKm(finalAlightCheck.lat, finalAlightCheck.lon, toMeta.lat, toMeta.lon);
+      let hasDestinationOvershoot = false;
+      for (let m = 0; m < rideSteps.length - 1; m++) {
+        const interAlight = chainRoutes[m].stObjs[rideSteps[m].alightSeq];
+        const dInterDestKm = calculateDistanceKm(interAlight.lat, interAlight.lon, toMeta.lat, toMeta.lon);
+        if (dInterDestKm <= 0.35 || dInterDestKm <= dFinalDestKm + 0.05) {
+          hasDestinationOvershoot = true;
+          break;
+        }
+      }
+      if (hasDestinationOvershoot) continue;
+
       const chainKey = chainRoutes.map(r => `${r.group.company}_${r.group.routeNo}`).join('>');
 
       const leg1Rt = chainRoutes[0], leg2Rt = chainRoutes[1];
@@ -3163,6 +3186,10 @@ function buildFromToEdgeRequestSpec(queryDateObj = getHongKongNow()) {
       for (let j = i + 1; j < rt.stIndices.length; j++) {
         const egr = destEgress.get(rt.stIndices[j]);
         if (!egr) continue;
+        const bSt = rt.stObjs[i], aSt = rt.stObjs[j];
+        const dB = calculateDistanceKm(bSt.lat, bSt.lon, toMeta.lat, toMeta.lon);
+        const dA = calculateDistanceKm(aSt.lat, aSt.lon, toMeta.lat, toMeta.lon);
+        if (dB < 0.30 && dA > dB + 0.08) continue;
         const driveSec = rt.cumSecs[j] - rt.cumSecs[i];
         const effDriveSec = egr.byBike && (!rt.group.mode || rt.group.mode === 'BUS') ? driveSec * 1.12 : driveSec;
         const rankSec = acc.sec + waitSec + effDriveSec + egr.sec;
@@ -3870,6 +3897,49 @@ function formatLegSignalTagHtml(sigType, headwayMins = 0, isFreeFeeder = false, 
   return parts.join(' · ');
 }
 
+function buildPlannerLegRoadTrafficTagHtml(group, boardStopObj, alightStopObj, isZh = false) {
+  if (group?.mode && group.mode !== 'BUS') return '';
+  const detectors = (typeof window !== 'undefined' && Array.isArray(window.__LIVE_TRAFFIC_DETECTORS__))
+    ? window.__LIVE_TRAFFIC_DETECTORS__
+    : null;
+  if (!detectors || !detectors.length || typeof inferDirectionalRoadTrafficForStops !== 'function') return '';
+
+  let segStops = [];
+  if (typeof sliceRouteStopPoints === 'function' && boardStopObj && alightStopObj) {
+    segStops = sliceRouteStopPoints(group, boardStopObj, alightStopObj).map(x => x.stop).filter(Boolean);
+  }
+  if (segStops.length < 2 && typeof getStopsForGroup === 'function' && boardStopObj && alightStopObj) {
+    const allGroupStops = getStopsForGroup(group) || [];
+    if (allGroupStops.length >= 2) {
+      const bKey = String(boardStopObj.stopKey || boardStopObj.stopId || '');
+      const aKey = String(alightStopObj.stopKey || alightStopObj.stopId || '');
+      const bIdx = allGroupStops.findIndex(s => String(s.stopKey || s.stopId || '') === bKey);
+      const aIdx = bIdx >= 0 ? allGroupStops.findIndex((s, i) => i > bIdx && String(s.stopKey || s.stopId || '') === aKey) : -1;
+      if (bIdx >= 0 && aIdx > bIdx) segStops = allGroupStops.slice(bIdx, aIdx + 1);
+    }
+  }
+  if (segStops.length < 2 && boardStopObj && alightStopObj) {
+    segStops = [boardStopObj, alightStopObj];
+  }
+  if (segStops.length < 2) return '';
+
+  const res = inferDirectionalRoadTrafficForStops(segStops, 0, detectors, segStops.length);
+  if (!res?.sameSide) return '';
+  const same = res.sameSide;
+  const opp = res.oppSide;
+
+  if (same.status === 'JAMMED') {
+    return `<span class="planner-sig-road-jammed">${isZh ? `🔴 前路擠塞 ~${same.minSpd} km/h` : `🔴 Traffic jam ~${same.minSpd} km/h`}</span>`;
+  }
+  if (same.status === 'SLOW') {
+    return `<span class="planner-sig-road-slow">${isZh ? `🟠 前路緩慢 ~${same.minSpd} km/h` : `🟠 Slow traffic ~${same.minSpd} km/h`}</span>`;
+  }
+  if (opp?.status === 'JAMMED') {
+    return `<span class="planner-sig-road-smooth">${isZh ? `🟢 本線暢順 ~${same.avgSpd} km/h · 對面塞車` : `🟢 Your side ~${same.avgSpd} km/h · Opp. jammed`}</span>`;
+  }
+  return `<span class="planner-sig-road-smooth">${isZh ? `🟢 路面暢順 ~${same.avgSpd} km/h` : `🟢 Road ~${same.avgSpd} km/h`}</span>`;
+}
+
 function getLegStopDisplayName(group, stopObj) {
   const isZh = (currentLang === 'zh');
   if (group?.mode === 'FERRY' && typeof getFerryPierBerthLabel === 'function') {
@@ -4293,7 +4363,9 @@ async function renderTransferPlannerView() {
         const rideMins = Math.max(1, Math.round((dp.driveSec || 180) / 60));
         const walkTotalMins = Math.round(((dp.accessWalkSec || 0) + (dp.egressWalkSec || 0)) / 60);
         const cutoff1 = (xferTimeMode === 'NOW') ? getLegServiceCutoffWarning(dp.group, depMs, isZh) : null;
-        const sigText = formatLegSignalTagHtml(dp.sigType1, dp.hw1, false, dp.load1, cutoff1);
+        const baseSigText = formatLegSignalTagHtml(dp.sigType1, dp.hw1, false, dp.load1, cutoff1);
+        const roadSig1 = buildPlannerLegRoadTrafficTagHtml(dp.group, dp.boardStopObj, dp.alightStopObj, isZh);
+        const sigText = [baseSigText, roadSig1].filter(Boolean).join(' · ');
         const allNotices = [...(dp.fareNotices || []), ...collectLoadNoticesFromList([dp.load1])];
         const noticesHtml = renderSectionalNoticesHtml(allNotices);
 
@@ -4407,8 +4479,11 @@ async function renderTransferPlannerView() {
 
       const cutoff1 = (xferTimeMode === 'NOW') ? getLegServiceCutoffWarning(cor.leg1Group, dep1Ms, isZh) : null;
       const cutoff2 = (xferTimeMode === 'NOW') ? getLegServiceCutoffWarning(cor.leg2Group, dep2Ms, isZh) : null;
-      const sig1Text = formatLegSignalTagHtml(cor.sigType1, cor.hw1, Boolean(cor.leg1FreeFeeder), cor.load1, cutoff1);
-      const sig2Text = formatLegSignalTagHtml(cor.sigType2, cor.hw2, Boolean(cor.leg2FreeFeeder), cor.load2, cutoff2);
+      const leg2AlightPre = cor.leg3Options?.length ? cor.leg3Options[0].prevAlightStopObj : cor.alight2StopObj;
+      const roadSig1 = buildPlannerLegRoadTrafficTagHtml(cor.leg1Group, cor.board1StopObj, node.alight1StopObj, isZh);
+      const roadSig2 = buildPlannerLegRoadTrafficTagHtml(cor.leg2Group, node.board2StopObj, leg2AlightPre, isZh);
+      const sig1Text = [formatLegSignalTagHtml(cor.sigType1, cor.hw1, Boolean(cor.leg1FreeFeeder), cor.load1, cutoff1), roadSig1].filter(Boolean).join(' · ');
+      const sig2Text = [formatLegSignalTagHtml(cor.sigType2, cor.hw2, Boolean(cor.leg2FreeFeeder), cor.load2, cutoff2), roadSig2].filter(Boolean).join(' · ');
       const tight1MinsTxt = cor.tightTransfer1Mins > 0 ? (isZh ? ` ${cor.tightTransfer1Mins}分` : ` ${cor.tightTransfer1Mins}m`) : '';
       const tightText = cor.tightTransfer1 ? `<span class="planner-sig-warn">⚠ ${isZh ? '緊湊轉乘' : 'Tight xfer'}${tight1MinsTxt}</span>` : '';
 
@@ -4462,9 +4537,10 @@ async function renderTransferPlannerView() {
         const l3DepClk = formatHkArrivalClock(l3DepMs);
         const cutoff3 = (xferTimeMode === 'NOW') ? getLegServiceCutoffWarning(l3.group, l3DepMs, isZh) : null;
         const sig3Text = formatLegSignalTagHtml(l3.sigType, l3.hwMins, Boolean(l3.isFreeMtrFeeder), l3.loadEstimate, cutoff3);
+        const roadSig3 = buildPlannerLegRoadTrafficTagHtml(l3.group, l3.boardStopObj, l3.alightStopObj, isZh);
         const l3TightMinsTxt = l3.tightTransferMins > 0 ? (isZh ? ` ${l3.tightTransferMins}分` : ` ${l3.tightTransferMins}m`) : '';
         const l3TightText = l3.tightTransfer ? `<span class="planner-sig-warn">⚠ ${isZh ? '緊湊轉乘' : 'Tight xfer'}${l3TightMinsTxt}</span>` : '';
-        const l3SigsCombined = [sig3Text, l3TightText].filter(Boolean).join(' · ');
+        const l3SigsCombined = [sig3Text, roadSig3, l3TightText].filter(Boolean).join(' · ');
         const l3Mins = Math.max(1, Math.round((l3.driveSec || 180) / 60));
         const l3Col = l3.group?.colorHex || '#007AFF';
         const l3BoardDisp = getLegStopDisplayName(l3.group, l3.boardStopObj);

@@ -32,6 +32,215 @@ var xferDrawToken = 0;
 var bikeRouteGeoCache = new Map();
 var _mapResizeObservers = new WeakMap();
 
+var _trafficLayerByMap = new WeakMap();
+var _trafficMarkersByMap = new WeakMap();
+var _trafficMoveTimerByMap = new WeakMap();
+window.trafficLayerEnabled = true;
+
+function projectPointMeters(lat, lon, bearingDeg, meters) {
+  const rad = (Number(bearingDeg) || 0) * Math.PI / 180;
+  const dLat = (meters * Math.cos(rad)) / 111111;
+  const dLon = (meters * Math.sin(rad)) / (111111 * Math.max(0.2, Math.cos(lat * Math.PI / 180)));
+  return [lat + dLat, lon + dLon];
+}
+
+function buildTrafficDetectorPopupHtml(det, isZh) {
+  const roadName = isZh ? (det.roadTc || det.roadEn || '主要幹道') : (det.roadEn || det.roadTc || 'Major Road');
+  const tierCol = det.tier === 'JAMMED' ? '#DC2626' : (det.tier === 'SLOW' ? '#D97706' : '#16A34A');
+  const tierLbl = det.tier === 'JAMMED'
+    ? (isZh ? '交通擠塞' : 'Jammed')
+    : (det.tier === 'SLOW' ? (isZh ? '車多緩慢' : 'Slow') : (isZh ? '交通暢順' : 'Smooth'));
+  const dirTxt = det.dir ? ` · ${escapeHtml(det.dir)}` : '';
+  const updTxt = window.__LIVE_TRAFFIC_CAPTURED_AT__
+    ? `<div style="font-size:0.66rem; color:#64748B; margin-top:4px; font-variant-numeric:tabular-nums;">TD ${escapeHtml(window.__LIVE_TRAFFIC_CAPTURED_AT__)}</div>`
+    : '';
+  const camUrl = det.camKey ? `https://tdcctv.data.one.gov.hk/${encodeURIComponent(det.camKey)}.JPG?t=${Math.floor(Date.now() / 60000)}` : '';
+  const camHtml = camUrl
+    ? `<div style="margin-top:8px; border-radius:8px; overflow:hidden; border:1px solid rgba(0,0,0,0.12); background:#0F172A;">
+         <img src="${camUrl}" alt="${escapeHtml(roadName)}" loading="lazy"
+              style="display:block; width:100%; height:112px; object-fit:cover;"
+              onerror="this.parentElement.style.display='none'">
+         <div style="padding:3px 7px; font-size:0.64rem; color:#CBD5E1; font-weight:600;">📷 ${isZh ? '運輸署實時道路快照' : 'TD Live Road Snapshot'}</div>
+       </div>`
+    : '';
+
+  return `
+    <div style="min-width:205px; max-width:240px; font-family:inherit; color:#1C1C1E;">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+        <span style="font-weight:800; font-size:0.82rem; line-height:1.25;">${escapeHtml(roadName)}</span>
+        <span style="font-weight:800; font-size:0.72rem; color:${tierCol}; white-space:nowrap;">${escapeHtml(tierLbl)}</span>
+      </div>
+      <div style="font-size:0.71rem; color:#475569; margin-top:2px;">${det.rot}°${dirTxt}</div>
+      <div style="display:flex; align-items:baseline; gap:10px; margin-top:6px; padding-top:6px; border-top:1px solid rgba(0,0,0,0.08); font-variant-numeric:tabular-nums;">
+        <span style="font-size:1.05rem; font-weight:800; color:${tierCol};">${Number(det.spd)} <span style="font-size:0.72rem; font-weight:600;">km/h</span></span>
+        <span style="font-size:0.73rem; font-weight:600; color:#475569;">${Number(det.occ) || 0}% ${isZh ? '佔用率' : 'occ'}</span>
+      </div>
+      ${camHtml}
+      ${updTxt}
+    </div>
+  `;
+}
+
+function renderTrafficOverlayOnMap(targetMap, forceRedraw = false) {
+  if (!targetMap || typeof L === 'undefined') return;
+  let layerGroup = _trafficLayerByMap.get(targetMap);
+  if (!layerGroup) {
+    layerGroup = L.layerGroup().addTo(targetMap);
+    _trafficLayerByMap.set(targetMap, layerGroup);
+  }
+
+  // Keep existing traffic layers intact if the user is viewing an open traffic detector/camera popup
+  // (Leaflet autoPan after openPopup triggers moveend; clearing layers would close the popup).
+  const activePopup = targetMap._popup;
+  if (!forceRedraw && activePopup && typeof activePopup.isOpen === 'function' && activePopup.isOpen() && activePopup._source && layerGroup.hasLayer(activePopup._source)) {
+    return;
+  }
+
+  const detMarkerMap = new Map();
+  _trafficMarkersByMap.set(targetMap, detMarkerMap);
+
+  layerGroup.clearLayers();
+
+  const detectors = window.__LIVE_TRAFFIC_DETECTORS__;
+  if (!window.trafficLayerEnabled || !Array.isArray(detectors) || !detectors.length) return;
+
+  const bounds = targetMap.getBounds();
+  if (!bounds || !bounds.isValid()) return;
+  const padded = bounds.pad(0.22);
+  const zoom = targetMap.getZoom() || 13;
+  const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
+
+  const inView = [];
+  for (let i = 0; i < detectors.length; i++) {
+    const d = detectors[i];
+    if (!Number.isFinite(d.lat) || !Number.isFinite(d.lon)) continue;
+    if (padded.contains([d.lat, d.lon])) inView.push(d);
+  }
+  if (!inView.length) return;
+
+  // Prioritize JAMMED & SLOW segments so bottlenecks never get dropped by density caps
+  const prio = (t) => (t === 'JAMMED' ? 0 : (t === 'SLOW' ? 1 : 2));
+  inView.sort((a, b) => prio(a.tier) - prio(b.tier));
+
+  const maxDraw = zoom <= 11 ? 150 : (zoom <= 13 ? 250 : 380);
+  const segHalfMeters = zoom <= 12 ? 150 : (zoom <= 14 ? 105 : 75);
+  const selected = inView.slice(0, maxDraw);
+
+  selected.forEach((d) => {
+    const isJam = d.tier === 'JAMMED';
+    const isSlow = d.tier === 'SLOW';
+    const col = isJam ? '#DC2626' : (isSlow ? '#F59E0B' : '#16A34A');
+    const pStart = projectPointMeters(d.lat, d.lon, (d.rot + 180) % 360, segHalfMeters);
+    const pEnd = projectPointMeters(d.lat, d.lon, d.rot, segHalfMeters);
+
+    if (isJam || isSlow) {
+      L.polyline([pStart, pEnd], {
+        color: '#FFFFFF',
+        weight: isJam ? 8 : 7,
+        opacity: 0.86,
+        lineCap: 'round',
+        interactive: false
+      }).addTo(layerGroup);
+    }
+
+    const flowLine = L.polyline([pStart, pEnd], {
+      color: col,
+      weight: isJam ? 5.2 : (isSlow ? 4.4 : 3.2),
+      opacity: isJam ? 0.94 : (isSlow ? 0.88 : 0.62),
+      lineCap: 'round'
+    }).addTo(layerGroup);
+
+    const tipTxt = `${isZh ? (d.roadTc || d.roadEn) : (d.roadEn || d.roadTc)} · ${d.spd} km/h${d.camKey ? ' 📷' : ''}`;
+    flowLine.bindTooltip(tipTxt, { sticky: true, className: 'kmb-map-stop-label' });
+    flowLine.bindPopup(() => buildTrafficDetectorPopupHtml(d, isZh), { closeButton: true, maxWidth: 260 });
+    detMarkerMap.set(d.id, flowLine);
+
+    if (isJam || isSlow || zoom >= 14) {
+      const arrowSvg = `<svg width="14" height="14" viewBox="0 0 16 16" style="transform:rotate(${d.rot}deg);display:block;filter:drop-shadow(0 1px 2px rgba(0,0,0,0.45));"><path d="M8 1 L13 13 L8 10 L3 13 Z" fill="${col}" stroke="#FFFFFF" stroke-width="1.3"/></svg>`;
+      const arrowMarker = L.marker(pEnd, {
+        icon: L.divIcon({ className: '', html: arrowSvg, iconSize: [14, 14], iconAnchor: [7, 7] }),
+        zIndexOffset: isJam ? 460 : (isSlow ? 360 : 120)
+      }).addTo(layerGroup);
+      arrowMarker.bindTooltip(tipTxt, { direction: 'top', offset: [0, -6], className: 'kmb-map-stop-label' });
+      arrowMarker.bindPopup(() => buildTrafficDetectorPopupHtml(d, isZh), { closeButton: true, maxWidth: 260 });
+      detMarkerMap.set(`${d.id}_arrow`, arrowMarker);
+    }
+  });
+}
+
+function bindTrafficRefreshOnMapMove(targetMap) {
+  if (!targetMap || targetMap._trafficMoveBound) return;
+  targetMap._trafficMoveBound = true;
+  targetMap.on('moveend', () => {
+    clearTimeout(_trafficMoveTimerByMap.get(targetMap));
+    const tid = setTimeout(() => renderTrafficOverlayOnMap(targetMap, false), 120);
+    _trafficMoveTimerByMap.set(targetMap, tid);
+  });
+}
+
+function syncTrafficOverlaysAllMaps() {
+  if (window.mapInstance) renderTrafficOverlayOnMap(window.mapInstance, true);
+  if (window.browseMapInstance) renderTrafficOverlayOnMap(window.browseMapInstance, true);
+  if (window.xferMapInstance) {
+    renderTrafficOverlayOnMap(window.xferMapInstance, true);
+    // Keep planned transit route lines & stops cleanly on top of green traffic background strokes
+    xferMapLegPolylines.forEach((entry) => {
+      try {
+        if (entry.casing?.bringToFront) entry.casing.bringToFront();
+        if (entry.poly?.bringToFront) entry.poly.bringToFront();
+      } catch (e) {}
+    });
+  }
+}
+
+function toggleTrafficLayerOverlay(forceState = null) {
+  if (typeof triggerHaptic === 'function') triggerHaptic(10);
+  window.trafficLayerEnabled = (typeof forceState === 'boolean') ? forceState : !window.trafficLayerEnabled;
+  syncTrafficOverlaysAllMaps();
+  if (typeof window.syncTrafficToggleButtonsUI === 'function') {
+    window.syncTrafficToggleButtonsUI();
+  }
+  const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
+  if (typeof showToast === 'function') {
+    showToast(window.trafficLayerEnabled
+      ? (isZh ? '🚦 已顯示實時道路交通及路面快照' : '🚦 Live HK Road Traffic & Cameras ON')
+      : (isZh ? '🚦 已隱藏實時道路交通圖層' : '🚦 Live Road Traffic Layer OFF'));
+  }
+}
+
+function focusTrafficDetectorOnDetailMap(lat, lon, detId = '') {
+  if (!window.mapInstance || !isValidRailOrFerryCoord(lat, lon)) return;
+  if (!window.trafficLayerEnabled) {
+    window.trafficLayerEnabled = true;
+    if (typeof window.syncTrafficToggleButtonsUI === 'function') window.syncTrafficToggleButtonsUI();
+  }
+  const mapEl = document.getElementById('map-container');
+  if (mapEl) mapEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+  clearTimeout(_trafficMoveTimerByMap.get(window.mapInstance));
+  let opened = false;
+  const openTargetPopup = () => {
+    if (opened) return;
+    opened = true;
+    clearTimeout(_trafficMoveTimerByMap.get(window.mapInstance));
+    renderTrafficOverlayOnMap(window.mapInstance, true);
+    const detMap = _trafficMarkersByMap.get(window.mapInstance);
+    const layer = detMap?.get(detId) || detMap?.get(`${detId}_arrow`);
+    if (layer && typeof layer.openPopup === 'function') {
+      layer.openPopup([lat, lon]);
+    }
+  };
+
+  window.mapInstance.once('moveend', () => setTimeout(openTargetPopup, 60));
+  window.mapInstance.setView([lat, lon], Math.max(window.mapInstance.getZoom() || 14, 15), { animate: false });
+  setTimeout(openTargetPopup, 260);
+}
+
+window.renderTrafficOverlayOnMap = renderTrafficOverlayOnMap;
+window.syncTrafficOverlaysAllMaps = syncTrafficOverlaysAllMaps;
+window.toggleTrafficLayerOverlay = toggleTrafficLayerOverlay;
+window.focusTrafficDetectorOnDetailMap = focusTrafficDetectorOnDetailMap;
+
 window.attachStandardMapLayers = function(targetMap) {
   if (!targetMap || typeof L === 'undefined') return;
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -477,6 +686,7 @@ function drawRouteOnMap(group, activeStopIdx = 0) {
       }
     });
     attachMapResizeObserver('map-container', window.mapInstance);
+    bindTrafficRefreshOnMapMove(window.mapInstance);
   }
   try { window.mapInstance.invalidateSize(false); } catch (e) {}
 
@@ -553,6 +763,7 @@ function drawRouteOnMap(group, activeStopIdx = 0) {
       window.mapInstance.fitBounds(L.latLngBounds(polyPts), { paddingTopLeft: [36, 36], paddingBottomRight: [36, 44], maxZoom: 16 });
     } catch (e) {}
   }
+  renderTrafficOverlayOnMap(window.mapInstance);
 }
 
 function highlightActiveStopMarkerOnMap(activeIdx) {
@@ -861,6 +1072,7 @@ function renderBrowseMapVisiblePins() {
     const marker = createBrowseMapStopMarker(spec.item, spec.dispLat, spec.dispLon);
     activeBrowseMarkersByKey.set(key, marker);
   }
+  renderTrafficOverlayOnMap(window.browseMapInstance);
 }
 
 async function recenterBrowseMapToGps(forceFreshFix = false) {
@@ -1023,6 +1235,7 @@ function ensureXferMapInitialized() {
     window.attachStandardMapLayers(window.xferMapInstance);
     // Do NOT attach click/contextmenu tap-to-pin listeners on Planner map so panning/zooming stays clean.
     attachMapResizeObserver('xferMapWrapper', window.xferMapInstance, () => fitTransferPlannerMapBounds());
+    bindTrafficRefreshOnMapMove(window.xferMapInstance);
   }
   updateUserMarkers();
   return window.xferMapInstance;
@@ -1354,4 +1567,11 @@ function drawTransferCorridorOnMap(spec, selectedCard) {
   }
 
   fitTransferPlannerMapBounds();
+  renderTrafficOverlayOnMap(map);
+  xferMapLegPolylines.forEach((entry) => {
+    try {
+      if (entry.casing?.bringToFront) entry.casing.bringToFront();
+      if (entry.poly?.bringToFront) entry.poly.bringToFront();
+    } catch (e) {}
+  });
 }

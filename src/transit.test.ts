@@ -4,13 +4,26 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import { createRequire } from 'node:module';
 
-function loadWorkerSandbox() {
+function loadWorkerSandbox(extraCtx: Record<string, any> = {}) {
   const rawSrc = fs.readFileSync('functions/api/worker.js', 'utf8');
   const sandboxSrc = rawSrc.replace(/^export\s+/gm, '');
-  const ctx: Record<string, any> = { URL, Response, AbortController, setTimeout, clearTimeout, Date, Math, console };
+  const ctx: Record<string, any> = {
+    URL,
+    Response,
+    AbortController,
+    TextDecoder,
+    Uint8Array,
+    ArrayBuffer,
+    setTimeout,
+    clearTimeout,
+    Date,
+    Math,
+    console,
+    ...extraCtx,
+  };
   vm.createContext(ctx);
   return vm.runInContext(
-    `${sandboxSrc}\n;({ parseXmlRecords, parseFerryRowSortMin, sortFerryEtasChronologically, classifyTrafficCorridorSeverity, parseHkoWeatherSummary, onRequest });`,
+    `${sandboxSrc}\n;({ parseXmlRecords, parseFerryRowSortMin, sortFerryEtasChronologically, classifyTrafficCorridorSeverity, parseHkoWeatherSummary, classifyDetectorCongestion, parseStrategicDetectorCsv, parseRawSpeedVolXml, decodeTextBufferAuto, parseTrafficCameraCsv, handleTrafficLiveRequest, onRequest });`,
     ctx
   );
 }
@@ -92,6 +105,7 @@ function loadHardcodeAndPlannerSandbox(overrides: Record<string, any> = {}) {
       inferPlannerLegLoad,
       SECTIONAL_FARE_REGISTRY,
       resolveBusLegNetFare,
+      hasStopTwoWaySectionalFare,
       getRaptorGraph,
       runRaptorCorridorPass,
       buildFromToEdgeRequestSpec,
@@ -123,6 +137,11 @@ function loadHardcodeAndPlannerSandbox(overrides: Record<string, any> = {}) {
       renderPlannerInlineDropdown,
       collapseParallelDirectRoutes,
       formatLegSignalTagHtml,
+      computeBearingDeg,
+      angularDiffDeg,
+      inferDirectionalRoadTrafficForStops,
+      getDirectionalRoadSummary,
+      buildPlannerLegRoadTrafficTagHtml,
     });`,
     ctx
   );
@@ -1895,7 +1914,16 @@ test('planner.js & index.html: deduplicates opposite-side stops in Settings Hub 
   assert.ok(html.includes('data-i18n="planApp">Plan</span>') && html.includes("planApp: '規劃'"), 'Plan tab must have EN/ZH labels');
   assert.ok(html.includes('html.ios-standalone .app-switcher') && html.includes('calc(env(safe-area-inset-top) + 14px)'), 'iOS standalone PWA must clear the status-bar whiteout frost zone');
   assert.ok(html.includes('function triggerIosStandaloneTopBarReflow()'), 'index.html must include post-load iOS standalone compositor reflow');
-  assert.ok(html.includes('Renters-First Digital Twin') && html.includes('Historical Split-View Map'), 'Settings companion links must match updated HKProperty & HK Past apps');
+  assert.ok(
+    html.includes('id="aboutModal"') &&
+    html.includes('id="settingAboutRow"') &&
+    html.includes('Rent, Buy &amp; Livability Twin') &&
+    html.includes('DrySmart HK — 晾衫王') &&
+    html.includes('https://hksundry.pages.dev/') &&
+    html.includes('Historical Split-View Map') &&
+    html.includes("openCompanionAppAtCurrentStop('sundry')"),
+    'About subpage in Settings must include updated HKProperty, DrySmart HK (hksundry.pages.dev), and HK Past companion links'
+  );
   assert.ok(html.includes('ONBOARDING_SEEN_KEY') && html.includes('maybeShowFirstVisitOnboarding') && html.includes('openPlannerFromTutorial'), 'First-use visual onboarding carousel with Skip/Next/Open Planner must be wired');
 });
 
@@ -1948,18 +1976,25 @@ test('index.html: detects client device language on landing and renders MTR-styl
   for (let i = 0; i < 7; i++) {
     const svgEn = sandbox.buildTutorialSlideSvg(i, false);
     const svgZh = sandbox.buildTutorialSlideSvg(i, true);
-    assert.ok(svgEn.startsWith('<svg viewBox="0 0 340 244"'), `Slide ${i} EN must render crisp 340x244 SVG`);
-    assert.ok(svgZh.startsWith('<svg viewBox="0 0 340 244"'), `Slide ${i} ZH must render crisp 340x244 SVG`);
+    assert.ok(svgEn.startsWith('<svg viewBox="0 0 340 276"'), `Slide ${i} EN must render crisp 340x276 SVG`);
+    assert.ok(svgZh.startsWith('<svg viewBox="0 0 340 276"'), `Slide ${i} ZH must render crisp 340x276 SVG`);
     assert.ok(svgEn.includes(expectedEn[i]), `Slide ${i} EN visual must include "${expectedEn[i]}"`);
     assert.ok(svgZh.includes(expectedZh[i]), `Slide ${i} ZH visual must include "${expectedZh[i]}"`);
     assert.ok(!/Lo Uk Tsuen|Pui O|羅屋村|貝澳/.test(svgEn + svgZh), `Slide ${i} must use mainstream HK landmarks instead of village defaults`);
   }
 
-  // 3. Structural & interactive checks
+  // Slide 2 visual must illustrate directional road speed & live road camera thumbnail
+  const slide2En = sandbox.buildTutorialSlideSvg(1, false);
+  const slide2Zh = sandbox.buildTutorialSlideSvg(1, true);
+  assert.ok(slide2En.includes('Road Cam') && slide2En.includes('Your side 68 km/h'), 'Slide 2 EN must depict Road Cam and directional smooth speed');
+  assert.ok(slide2Zh.includes('路面實拍') && slide2Zh.includes('前路暢順 68 km/h'), 'Slide 2 ZH must depict 路面實拍 and directional smooth speed');
+
+  // 3. Structural & interactive checks (Picture-First, Minimal Text)
   assert.ok(!html.includes('onboard-step-points'), 'Old bullet-list text wall must be removed');
   assert.ok(!html.includes('onboard-step-desc'), 'Old paragraph text wall must be removed');
+  assert.ok(!html.includes('onboard-step-row') && !html.includes('onboard-steps-list'), '3-row prose checklist must be removed for picture-first onboarding');
   assert.ok(html.includes('TUTORIAL_SLIDE_COUNT = 7'), 'Must have 7 priority-ranked tutorial slides');
-  assert.ok(html.includes('onboard-rank-pill') && html.includes('onboard-step-row'), 'Tutorial must include priority pill & numbered step checklist');
+  assert.ok(html.includes('onboard-rank-pill') && html.includes('tutorialSlideCue'), 'Tutorial must include priority pill & single short cue line');
   assert.ok(html.includes('openMapFromTutorial') && html.includes('openPlannerFromTutorial'), 'Tutorial must link into Planner and Map');
   assert.ok(html.includes('attachTutorialSwipeGestures'), 'Must support mobile touch swipe navigation');
   assert.ok(html.includes("params.get('autostart') === '1'"), 'Must support ?autostart=1 bypass for testing');
@@ -2046,10 +2081,427 @@ test('planner.js: keeps 3M (19m live) above 1 (59m sched) without false merge an
   assert.ok(!plannerSrc.includes("'Live ›'") && !plannerSrc.includes("'實時 ›'"), 'Ambiguous Live › button label must be removed');
 });
 
+function loadUnpackedBusIndexForTest() {
+  const db = JSON.parse(fs.readFileSync('public/bus_index.min.json', 'utf8'));
+  const dict: any[] = Array.isArray(db.stopsDict) ? db.stopsDict : [];
+  const routeStopsCache: Record<string, any[]> = {};
+  const groupedRoutes = db.groupedRoutes || [];
+  const routeMapIndex = new Map<string, any>();
+  const ridCompany = new Map<string, string>();
+  for (const g of groupedRoutes) {
+    for (const rid of g.routeIds || []) {
+      routeMapIndex.set(rid, g);
+      ridCompany.set(rid, g.company || 'BUS');
+    }
+  }
 
+  const stopMapIndex = new Map<string, any>();
+  for (const [rid, items] of Object.entries<any>(db.routeStopsCache || {})) {
+    const company = ridCompany.get(rid) || 'BUS';
+    const g = routeMapIndex.get(rid);
+    routeStopsCache[rid] = (items || []).map((item: any, idx: number) => {
+      if (Array.isArray(item) && dict[item[0]]) {
+        const d = dict[item[0]];
+        const stopId = String(d[0] ?? '');
+        const stopKey = `${company}_${stopId}`;
+        const st: any = {
+          stopId,
+          stopKey,
+          stopName_e: String(d[1] ?? ''),
+          name_tc: String(d[2] ?? ''),
+          latitude: Number(d[3] || 0).toFixed(6),
+          longitude: Number(d[4] || 0).toFixed(6),
+          seq: idx + 1,
+          fare: String(item[1] ?? '0'),
+        };
+        if (item[2] !== undefined && item[2] !== null && item[2] !== '') st.fareHol = String(item[2]);
+        if (d[5]) st.mtrCode = d[5];
+        if (d[6]) st.lrtCode = d[6];
+        if (d[7]) st.mtrLine = d[7];
+        if (d[8]) st.lrtLine = d[8];
+        let existing = stopMapIndex.get(stopKey);
+        if (!existing) {
+          existing = { ...st, routeNos: new Set<string>() };
+          stopMapIndex.set(stopKey, existing);
+        }
+        if (g?.routeNo) existing.routeNos.add(String(g.routeNo));
+        return st;
+      }
+      return item;
+    }).filter(Boolean);
+  }
+  return {
+    db,
+    groupedRoutes,
+    routeStopsCache,
+    routeMapIndex,
+    allStops: Array.from(stopMapIndex.values()),
+    stopMapIndex,
+  };
+}
 
+test('hardcode.js: NLB 1 & NLB 3M two-way sectional fare badge & driver notice only appear before final leg', () => {
+  const { hasStopTwoWaySectionalFare, resolveBusLegNetFare } = loadHardcodeAndPlannerSandbox();
+  const unpacked = loadUnpackedBusIndexForTest();
 
+  const findGroup = (routeNo: string, destPattern: RegExp) =>
+    unpacked.groupedRoutes.find((g: any) => g.company === 'NLB' && g.routeNo === routeNo && destPattern.test(String(g.dest_e || '')));
 
+  // 1. NLB 3M -> Mui Wo: two-way sectional only up to Shek Mun Kap Road, NOT after Shek Mun Kap
+  const g3mToMw = findGroup('3M', /Mui Wo/i);
+  assert.ok(g3mToMw, 'NLB 3M to Mui Wo must exist in bus_index.min.json');
+  const s3mToMw = unpacked.routeStopsCache[g3mToMw.routeIds[0]];
+  const smkOutIdx = s3mToMw.findIndex((s: any) => /Shek Mun Kap/i.test(s.stopName_e));
+  assert.ok(smkOutIdx >= 5, `Expected Shek Mun Kap along 3M -> Mui Wo, got idx ${smkOutIdx}`);
+  assert.equal(hasStopTwoWaySectionalFare(g3mToMw, s3mToMw, 0, false), true, '3M -> Mui Wo terminus needs two-way section');
+  assert.equal(hasStopTwoWaySectionalFare(g3mToMw, s3mToMw, smkOutIdx, false), true, '3M -> Mui Wo at Shek Mun Kap still has sectional tiers');
+  for (let i = smkOutIdx + 1; i < s3mToMw.length; i++) {
+    assert.equal(
+      hasStopTwoWaySectionalFare(g3mToMw, s3mToMw, i, false),
+      false,
+      `3M -> Mui Wo stop ${i + 1}. ${s3mToMw[i].stopName_e} after Shek Mun Kap must NOT show driver notice`
+    );
+  }
 
+  // 2. NLB 3M -> Tung Chung: Lo Uk Tsuen keeps it, Shek Mun Kap / San Shek Wan+ do not
+  const g3mToTc = findGroup('3M', /Tung Chung/i);
+  assert.ok(g3mToTc, 'NLB 3M to Tung Chung must exist in bus_index.min.json');
+  const s3mToTc = unpacked.routeStopsCache[g3mToTc.routeIds[0]];
+  const loUk3mTcIdx = s3mToTc.findIndex((s: any) => /Lo Uk Tsuen/i.test(s.stopName_e));
+  const smkInIdx = s3mToTc.findIndex((s: any) => /Shek Mun Kap/i.test(s.stopName_e));
+  assert.ok(loUk3mTcIdx >= 0 && smkInIdx > loUk3mTcIdx);
+  assert.equal(hasStopTwoWaySectionalFare(g3mToTc, s3mToTc, loUk3mTcIdx, false), true, '3M -> Tung Chung at Lo Uk Tsuen needs driver notice');
+  for (let i = smkInIdx; i < s3mToTc.length; i++) {
+    assert.equal(
+      hasStopTwoWaySectionalFare(g3mToTc, s3mToTc, i, false),
+      false,
+      `3M -> Tung Chung stop ${i + 1}. ${s3mToTc[i].stopName_e} must NOT show driver notice`
+    );
+  }
 
+  // 3. NLB 1 -> Mui Wo: final leg from Lo Uk Tsuen onward must NOT show 2-way notice or rebate
+  const g1ToMw = findGroup('1', /Mui Wo/i);
+  assert.ok(g1ToMw, 'NLB 1 to Mui Wo must exist in bus_index.min.json');
+  const s1ToMw = unpacked.routeStopsCache[g1ToMw.routeIds[0]];
+  const loUk1MwIdx = s1ToMw.findIndex((s: any) => /Lo Uk Tsuen/i.test(s.stopName_e));
+  assert.ok(loUk1MwIdx > 20, `Expected Lo Uk Tsuen around stop 38 on NLB 1 -> Mui Wo, got idx ${loUk1MwIdx}`);
+  assert.equal(hasStopTwoWaySectionalFare(g1ToMw, s1ToMw, 0, false), true, 'NLB 1 at Tai O terminus still needs driver notice');
+  for (let i = loUk1MwIdx; i < s1ToMw.length; i++) {
+    assert.equal(
+      hasStopTwoWaySectionalFare(g1ToMw, s1ToMw, i, false),
+      false,
+      `NLB 1 -> Mui Wo final leg stop ${i + 1}. ${s1ToMw[i].stopName_e} must NOT show driver notice`
+    );
+  }
+  const fareLoUkToMw = resolveBusLegNetFare(g1ToMw, s1ToMw[loUk1MwIdx], s1ToMw[s1ToMw.length - 1], s1ToMw, false);
+  assert.equal(fareLoUkToMw.rebateAmount, 0, 'NLB 1 Lo Uk Tsuen -> Mui Wo must not claim a 2-way sectional rebate');
+
+  // 4. NLB 1 -> Tai O: Lo Uk Tsuen STILL needs driver notice ($11.9 full fare vs cheaper village stops)
+  const g1ToTo = findGroup('1', /Tai O/i);
+  assert.ok(g1ToTo, 'NLB 1 to Tai O must exist in bus_index.min.json');
+  const s1ToTo = unpacked.routeStopsCache[g1ToTo.routeIds[0]];
+  const loUk1ToIdx = s1ToTo.findIndex((s: any) => /Lo Uk Tsuen/i.test(s.stopName_e));
+  assert.ok(loUk1ToIdx >= 5);
+  assert.equal(hasStopTwoWaySectionalFare(g1ToTo, s1ToTo, loUk1ToIdx, false), true, 'NLB 1 -> Tai O at Lo Uk Tsuen still requires telling driver');
+});
+
+test('planner.js: Lo Uk Tsuen -> Airport MTR Station at 23:29 eliminates S1 -> AEL overshoot-and-backtrack loop', () => {
+  const unpacked = loadUnpackedBusIndexForTest();
+  const html = fs.readFileSync('index.html', 'utf8');
+  const stepSecMatch = html.match(/function computeSegmentStepSeconds\([\s\S]*?\n\}/);
+  assert.ok(stepSecMatch, 'computeSegmentStepSeconds must exist in index.html');
+  const stepCtx: any = { getCorridorLiveStatusAt: () => ({ status: 'SMOOTH', speedKmh: 70 }) };
+  vm.createContext(stepCtx);
+  vm.runInContext(stepSecMatch[0], stepCtx);
+
+  const sb = loadHardcodeAndPlannerSandbox({
+    groupedRoutes: unpacked.groupedRoutes,
+    routeStopsCache: unpacked.routeStopsCache,
+    routeMapIndex: unpacked.routeMapIndex,
+    allStops: unpacked.allStops,
+    stopMapIndex: unpacked.stopMapIndex,
+    getStopsForGroup: (g: any) => unpacked.routeStopsCache[g?.routeIds?.[0]] || [],
+    initRouteMapFast: () => {},
+    isParallelRailTerminusPair: () => false,
+    isAirportOrPortZone: (la: number, lo: number, n = '') =>
+      (la >= 22.29 && la <= 22.33 && lo >= 113.89 && lo <= 113.96) || /airport|asiaworld|機場|博覽館/i.test(n),
+    isLantauOrAirportZone: () => true,
+    isRouteActiveAtPlannerTime: () => true,
+    computeSegmentStepSeconds: stepCtx.computeSegmentStepSeconds,
+  });
+
+  const loUk = unpacked.allStops.find((s: any) => s.stopKey === 'NLB_4969E3B1DFC2')
+    || unpacked.allStops.find((s: any) => /Lo Uk Tsuen/i.test(s.stopName_e) && Number(s.latitude) < 22.26);
+  const airportMtr = unpacked.allStops.find((s: any) => s.stopKey === 'MTR_AIR')
+    || unpacked.allStops.find((s: any) => s.stopId === 'AIR' || /Airport Station/i.test(s.stopName_e));
+  assert.ok(loUk && airportMtr, 'Must find Lo Uk Tsuen and Airport MTR Station in bus_index.min.json');
+
+  sb.ctx.userCommuteProfile = {
+    home: { stopKey: loUk.stopKey, stopName_e: loUk.stopName_e, lat: parseFloat(loUk.latitude), lon: parseFloat(loUk.longitude) },
+    work: { stopKey: airportMtr.stopKey, stopName_e: airportMtr.stopName_e, lat: parseFloat(airportMtr.latitude), lon: parseFloat(airportMtr.longitude) },
+  };
+  sb.ctx.xferTimeMode = 'DEPART';
+  sb.ctx.xferSortPref = 'BEST';
+
+  const spec = sb.buildFromToEdgeRequestSpec(new Date('2026-11-23T23:29:00+08:00'));
+  assert.ok(spec, 'Should resolve routes from Lo Uk Tsuen to Airport MTR Station');
+
+  const chains = (spec.transferCorridors || []).map((c: any) => String(c.chainKey || ''));
+  const hasLoop = chains.some((ch: string) => /S1>MTR_AEL/.test(ch));
+  assert.equal(hasLoop, false, `Must never suggest S1>MTR_AEL overshoot+backtrack loop, got: ${chains.join(', ')}`);
+  const has3mS1 = chains.some((ch: string) => /NLB_3M>(CTB|LWB)_S1$/.test(ch));
+  assert.equal(has3mS1, true, `Expected direct 3M>S1 transfer option, got: ${chains.join(', ')}`);
+});
+
+test('hardcode.js: Tuesday 08:04 AM South Lantau NLB 1 & NLB 4 to Mui Wo at Lo Uk Tsuen report Seats (LOW) even on 46m headway gap', () => {
+  const { LoadFactorEngine } = loadHardcodeAndPlannerSandbox();
+  const tue0804 = new Date(2026, 10, 24, 8, 4, 0); // Tuesday 08:04 AM HKT
+
+  const g1Mw = { company: 'NLB', routeNo: '1', mode: 'BUS', headwayMins: 12, orig_e: 'Tai O', dest_e: 'Mui Wo Ferry Pier' };
+  const g4Mw = { company: 'NLB', routeNo: '4', mode: 'BUS', headwayMins: 20, orig_e: 'Tong Fuk', dest_e: 'Mui Wo Ferry Pier' };
+
+  const load1Live = LoadFactorEngine.inferBusLoad({
+    group: g1Mw,
+    stopIdx: 37,
+    totalStops: 52,
+    obsHeadwaySec: 2760, // 08:17 -> 09:03 46m gap seen in screenshot
+    schedHeadwaySec: 720,
+    isSched: false,
+    dateObj: tue0804,
+    isHoliday: false,
+  });
+  const load1Sched = LoadFactorEngine.inferBusLoad({
+    group: g1Mw,
+    stopIdx: 37,
+    totalStops: 52,
+    obsHeadwaySec: 2760,
+    schedHeadwaySec: 720,
+    isSched: true,
+    dateObj: tue0804,
+    isHoliday: false,
+  });
+  const load4Live = LoadFactorEngine.inferBusLoad({
+    group: g4Mw,
+    stopIdx: 12,
+    totalStops: 25,
+    obsHeadwaySec: 2340,
+    schedHeadwaySec: 1200,
+    isSched: false,
+    dateObj: tue0804,
+    isHoliday: false,
+  });
+
+  assert.equal(load1Live.tier, 'LOW', `Tuesday 08:04 NLB 1 live must be Seats/LOW (got ${load1Live.pct}% ${load1Live.labelEn})`);
+  assert.equal(load1Sched.tier, 'LOW', `Tuesday 08:04 NLB 1 sched must be Seats/LOW (got ${load1Sched.pct}% ${load1Sched.labelEn})`);
+  assert.equal(load4Live.tier, 'LOW', `Tuesday 08:04 NLB 4 live must be Seats/LOW (got ${load4Live.pct}% ${load4Live.labelEn})`);
+});
+
+test("index.html: onboarding 'Don't show again' persistent cookie survives app updates while manual guide and reset work", () => {
+  const html = fs.readFileSync('index.html', 'utf8');
+  assert.ok(html.includes('id="tutorialDontShowCheckbox"'), 'Tutorial modal must render Dont show again checkbox');
+
+  const mCookieConsts = html.match(/const ONBOARDING_SEEN_KEY = [\s\S]*?const TUTORIAL_SLIDE_COUNT = 7;/);
+  const mFns = html.match(/function setOnboardingDismissedCookie[\s\S]*?function hasOnboardingDismissedCookie[\s\S]*?\}\n\}/);
+  const mMaybe = html.match(/function maybeShowFirstVisitOnboarding[\s\S]*?\n\}/);
+  const mReset = html.match(/function resetOnboardingAutoPopupFromAbout[\s\S]*?\n\}/);
+  assert.ok(mCookieConsts && mFns && mMaybe && mReset, 'Onboarding cookie helpers must exist in index.html');
+
+  const store = new Map<string, string>();
+  let cookieJar = '';
+  let modalOpenedCount = 0;
+  let closedAbout = false;
+  const sb: any = {
+    URLSearchParams,
+    window: { location: { search: '' } },
+    document: {
+      get cookie() { return cookieJar; },
+      set cookie(val: string) {
+        const kv = String(val).split(';')[0];
+        if (/max-age=0/i.test(val)) {
+          cookieJar = '';
+        } else {
+          cookieJar = kv;
+        }
+      },
+      getElementById: () => ({ style: { display: 'none' } }),
+    },
+    SafeStorage: {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => store.set(k, String(v)),
+      removeItem: (k: string) => store.delete(k),
+    },
+    triggerHaptic: () => {},
+    closeAboutModal: () => { closedAbout = true; },
+    openTutorialModal: () => { modalOpenedCount += 1; },
+  };
+  vm.createContext(sb);
+  vm.runInContext(`${mCookieConsts[0]}\n${mFns[0]}\n${mMaybe[0]}\n${mReset[0]}`, sb);
+
+  // 1. Fresh user sees onboarding automatically once
+  sb.maybeShowFirstVisitOnboarding(false);
+  assert.equal(modalOpenedCount, 1);
+
+  // 2. User ticks "Don't show again" -> persistent cookie written
+  sb.setOnboardingDismissedCookie(true);
+  assert.ok(cookieJar.includes('transit_onboarding_dismissed=1'));
+  assert.equal(sb.hasOnboardingDismissedCookie(), true);
+
+  // 3. Simulate app update clearing versioned ONBOARDING_SEEN_KEY (or cookie-only device): must NOT reopen
+  store.clear();
+  assert.equal(sb.hasOnboardingDismissedCookie(), true);
+  sb.maybeShowFirstVisitOnboarding(false);
+  assert.equal(modalOpenedCount, 1, 'Cookie must keep onboarding dismissed even if storage was cleared/bumped');
+
+  // 4. Re-enable startup guide from About page clears cookie and opens tutorial
+  sb.resetOnboardingAutoPopupFromAbout();
+  assert.equal(closedAbout, true);
+  assert.equal(sb.hasOnboardingDismissedCookie(), false);
+  assert.equal(modalOpenedCount, 2);
+});
+
+test('worker.js: parses HKSAR strategic road CSV, valid-only speed XML lanes, UTF-16LE TD cameras, and traffic_live payload', async () => {
+  const csvSample = [
+    'AID_ID_Number,District,Road_EN,Road_TC,Latitude,Longitude,Direction,Rotation',
+    'AID03101,Tuen Mun,Tuen Mun Rd [AID03101],屯門公路 [AID03101],22.3712,113.9721,North Bound,32',
+    'AID03102,Tuen Mun,Tuen Mun Rd,屯門公路,22.3714,113.9723,South Bound,212',
+    'BADROW,Nowhere,Invalid,無效,99.9,0,East,90',
+  ].join('\n');
+
+  const xmlSample = `<?xml version="1.0" encoding="UTF-8"?>
+    <raw_speed_volume_list>
+      <date>2026-11-24</date>
+      <period_to>08:45:00</period_to>
+      <detectors>
+        <detector>
+          <detector_id>AID03101</detector_id>
+          <lanes>
+            <lane><lane_id>Fast</lane_id><speed>72</speed><occupancy>14</occupancy><volume>18</volume><valid>Y</valid></lane>
+            <lane><lane_id>Slow</lane_id><speed>64</speed><occupancy>22</occupancy><volume>12</volume><valid>Y</valid></lane>
+            <lane><lane_id>Broken</lane_id><speed>0</speed><occupancy>99</occupancy><volume>0</volume><valid>N</valid></lane>
+          </lanes>
+        </detector>
+        <detector>
+          <detector_id>AID03102</detector_id>
+          <lanes>
+            <lane><lane_id>Fast</lane_id><speed>20</speed><occupancy>88</occupancy><volume>25</volume><valid>Y</valid></lane>
+            <lane><lane_id>Slow</lane_id><speed>24</speed><occupancy>92</occupancy><volume>21</volume><valid>Y</valid></lane>
+          </lanes>
+        </detector>
+      </detectors>
+    </raw_speed_volume_list>`;
+
+  const camTsvText = [
+    'key\tdistrict\troad_type\tdescription\teasting\tnorthing\tlatitude\tlongitude\turl',
+    'TM105F\tTuen Mun\tMajor Road\tTuen Mun Rd near Siu Lam [TM105F]\t814500\t825100\t22.3715\t113.9722\thttps://tdcctv.data.one.gov.hk/TM105F.JPG',
+  ].join('\n');
+  // Encode camTsvText as UTF-16LE with FF FE BOM (matches HKSAR TD camera TSV encoding)
+  const utf16Bytes = new Uint8Array(2 + camTsvText.length * 2);
+  utf16Bytes[0] = 0xFF;
+  utf16Bytes[1] = 0xFE;
+  for (let i = 0; i < camTsvText.length; i++) {
+    const code = camTsvText.charCodeAt(i);
+    utf16Bytes[2 + i * 2] = code & 0xFF;
+    utf16Bytes[2 + i * 2 + 1] = (code >> 8) & 0xFF;
+  }
+
+  const mockFetch = async (url: string) => {
+    const u = String(url);
+    const mkRes = (bodyText: string, buf?: ArrayBuffer) => ({
+      ok: true,
+      status: 200,
+      text: async () => bodyText,
+      arrayBuffer: async () => buf || new ArrayBuffer(0),
+      clone() { return this; },
+    });
+    if (u.includes('traffic_speed_volume_occ_info.csv')) return mkRes(csvSample);
+    if (u.includes('traffic_speed_volume_occ_info-slp.csv')) return mkRes('AID_ID_Number,District,Road_EN,Road_TC,Latitude,Longitude,Direction,Rotation\n');
+    if (u.includes('Traffic_Camera_Locations_En.csv')) return mkRes('', utf16Bytes.buffer);
+    if (u.includes('rawSpeedVol-all.xml')) return mkRes(xmlSample);
+    if (u.includes('rawSpeedVol_SLP-all.xml')) return mkRes('<raw_speed_volume_list></raw_speed_volume_list>');
+    return { ok: false, status: 404, text: async () => '', arrayBuffer: async () => new ArrayBuffer(0) };
+  };
+
+  const w = loadWorkerSandbox({ fetch: mockFetch });
+
+  assert.equal(w.classifyDetectorCongestion(68, 18), 'SMOOTH');
+  assert.equal(w.classifyDetectorCongestion(38, 42), 'SLOW');
+  assert.equal(w.classifyDetectorCongestion(22, 90), 'JAMMED');
+  assert.equal(w.classifyDetectorCongestion(34, 65), 'JAMMED');
+
+  const meta = w.parseStrategicDetectorCsv(csvSample);
+  assert.equal(meta.size, 2);
+  assert.equal(meta.get('AID03101').roadEn, 'Tuen Mun Rd');
+  assert.equal(meta.get('AID03101').rot, 32);
+
+  const parsedXml = w.parseRawSpeedVolXml(xmlSample);
+  assert.equal(parsedXml.capturedAt, '2026-11-24 08:45:00');
+  assert.equal(parsedXml.liveMap.get('AID03101').speed, 68, 'Must average only valid=Y lanes (72 & 64 -> 68)');
+  assert.equal(parsedXml.liveMap.get('AID03101').vol, 30);
+
+  const decodedCam = w.decodeTextBufferAuto(utf16Bytes.buffer);
+  const cams = w.parseTrafficCameraCsv(decodedCam);
+  assert.equal(cams.length, 1);
+  assert.equal(cams[0].key, 'TM105F');
+  assert.equal(cams[0].desc, 'Tuen Mun Rd near Siu Lam');
+
+  const res = await w.onRequest({ request: { method: 'GET', url: 'https://example.com/api/worker?action=traffic_live' } });
+  const json = await res.json();
+  assert.equal(json.ok, true);
+  assert.equal(json.stats.total, 2);
+  assert.equal(json.stats.smooth, 1);
+  assert.equal(json.stats.jammed, 1);
+  const nb = json.detectors.find((d: any) => d.id === 'AID03101');
+  const sb = json.detectors.find((d: any) => d.id === 'AID03102');
+  assert.equal(nb.tier, 'SMOOTH');
+  assert.equal(nb.camKey, 'TM105F', 'Detector must link closest TD snapshot camera');
+  assert.equal(sb.tier, 'JAMMED');
+});
+
+test('hardcode.js & planner.js: directional road inference distinguishes smooth bus side from jammed opposite carriageway', () => {
+  const sb = loadHardcodeAndPlannerSandbox();
+
+  // Model E36 Northbound from Tung Chung -> TM-CLK Tunnel -> Tuen Mun / Yuen Long (bearings ~20-40 deg)
+  const e36Stops = [
+    { stopKey: 'KMB_YTC', stopName_e: 'Yu Tung Court', latitude: '22.2840', longitude: '113.9410' },
+    { stopKey: 'KMB_TMCLK', stopName_e: 'Tuen Mun - Chek Lap Kok Tunnel', latitude: '22.3450', longitude: '113.9630' },
+    { stopKey: 'KMB_YLC', stopName_e: 'Yuen Long (West)', latitude: '22.4440', longitude: '114.0220' },
+  ];
+
+  const b1 = sb.computeBearingDeg(22.2840, 113.9410, 22.3450, 113.9630);
+  const b2 = sb.computeBearingDeg(22.3450, 113.9630, 22.4440, 114.0220);
+  assert.ok(b1 > 10 && b1 < 40, `Expected NNE bearing toward TM-CLK, got ${b1}`);
+  assert.ok(b2 > 20 && b2 < 50, `Expected NE bearing toward Yuen Long, got ${b2}`);
+  assert.equal(Math.round(sb.angularDiffDeg(355, 5)), 10);
+
+  const detectors = [
+    // Bus direction (Northbound ~32 deg) — smooth 68 km/h
+    { id: 'AID_NB1', lat: 22.3465, lon: 113.9640, rot: 32, spd: 68, occ: 18, tier: 'SMOOTH', roadEn: 'TM-CLK Link', roadTc: '屯赤連接路', camKey: 'TM105F' },
+    // Opposite bound (~210 deg) — jammed 22 km/h (passenger saw jam across median)
+    { id: 'AID_SB1', lat: 22.3466, lon: 113.9642, rot: 210, spd: 22, occ: 92, tier: 'JAMMED', roadEn: 'TM-CLK Link', roadTc: '屯赤連接路', camKey: 'TM105F' },
+  ];
+
+  const sumEn = sb.getDirectionalRoadSummary(e36Stops, 0, detectors, false, 14);
+  assert.ok(sumEn, 'Expected directional road summary');
+  assert.equal(sumEn.tone, 'smooth', 'Same-direction traffic is smooth despite opposite-side jam');
+  assert.ok(sumEn.headline.includes('Your side smooth ahead (~68 km/h)'), `Unexpected EN headline: ${sumEn.headline}`);
+  assert.ok(sumEn.detail.includes('Opposite bound jammed (22 km/h'), `Unexpected EN detail: ${sumEn.detail}`);
+
+  const sumZh = sb.getDirectionalRoadSummary(e36Stops, 0, detectors, true, 14);
+  assert.ok(sumZh.headline.includes('你搭乘方向前路暢順 (~68 km/h)'), `Unexpected ZH headline: ${sumZh.headline}`);
+  assert.ok(sumZh.detail.includes('僅對面線擠塞 (22 km/h'), `Unexpected ZH detail: ${sumZh.detail}`);
+
+  // Opposite scenario: bus's OWN direction ahead is jammed (19 km/h)
+  const jammedDetectors = [
+    { id: 'AID_NB_JAM', lat: 22.3465, lon: 113.9640, rot: 28, spd: 19, occ: 94, tier: 'JAMMED', roadEn: 'Tuen Mun Rd', roadTc: '屯門公路', camKey: 'TM108F' },
+  ];
+  const jammedSum = sb.getDirectionalRoadSummary(e36Stops, 0, jammedDetectors, false, 14);
+  assert.equal(jammedSum.tone, 'jammed');
+  assert.ok(jammedSum.headline.includes('Traffic jam ahead · 19 km/h'));
+
+  // Planner leg inline road badge when live detectors loaded
+  sb.ctx.window.__LIVE_TRAFFIC_DETECTORS__ = detectors;
+  const gE36 = { key: 'KMB_E36_O', mode: 'BUS', company: 'KMB', routeNo: 'E36', _stops: e36Stops };
+  const legRoadHtml = sb.buildPlannerLegRoadTrafficTagHtml(gE36, e36Stops[0], e36Stops[2], false);
+  assert.ok(legRoadHtml.includes('~68 km/h') && legRoadHtml.includes('planner-sig-road-smooth'), `Expected smooth road badge in planner leg, got: ${legRoadHtml}`);
+});
 

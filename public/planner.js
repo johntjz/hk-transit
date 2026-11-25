@@ -72,9 +72,86 @@ function cleanAlsAddressLabel(raw) {
 // ============================================================================
 const SmartReturnManager = {
   storageKey: 'transit_last_trip_v1',
+  historyStorageKey: 'transit_return_trip_history_v1',
+  prefStorageKey: 'transit_quick_return_pref_v1',
+  MIN_REPEAT_TRIPS: 3,
+  TIME_WINDOW_MINS: 120,
+  DEDUP_SESSION_MS: 30 * 60000,
+  MAX_WAIT_WITH_IMMINENT_LOCAL_MINS: 20,
+  IMMINENT_LOCAL_THRESHOLD_MINS: 5,
+  ACTIVE_GROUP_DIST_TOLERANCE_M: 15,
   dismissedTs: 0,
 
-  recordInboundTrip(group, boardStop, stopsList = []) {
+  _getHkMinuteOfDay(tsMs = Date.now()) {
+    const d = new Date(Number(tsMs) + 8 * 3600000);
+    return d.getUTCHours() * 60 + d.getUTCMinutes();
+  },
+
+  _circularMinuteDiff(minA, minB) {
+    const diff = Math.abs(Number(minA) - Number(minB)) % 1440;
+    return Math.min(diff, 1440 - diff);
+  },
+
+  _getBookmarkedStops() {
+    try {
+      if (typeof bookmarkedStops !== 'undefined' && Array.isArray(bookmarkedStops)) {
+        return bookmarkedStops;
+      }
+    } catch (e) {}
+    try {
+      const raw = SafeStorage.getItem('transit_stop_bookmarks_v1');
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (e) {
+      return [];
+    }
+  },
+
+  hasSavedHomeAnchor() {
+    try {
+      if (typeof SavedHubsManager !== 'undefined' && SavedHubsManager.getHubs) {
+        const hubs = SavedHubsManager.getHubs();
+        if (hubs && hubs.home && hubs.home.stopKey) return true;
+      }
+    } catch (e) {}
+    return false;
+  },
+
+  getPref() {
+    try {
+      const v = String(SafeStorage.getItem(this.prefStorageKey) || '').trim().toLowerCase();
+      if (v === 'on' || v === 'off') return v;
+    } catch (e) {}
+    return '';
+  },
+
+  isEnabled() {
+    const pref = this.getPref();
+    if (pref === 'off') return false;
+    if (pref === 'on') return true;
+    // Clean Plate Default: OFF unless a Home stop/route is explicitly saved
+    return this.hasSavedHomeAnchor();
+  },
+
+  setEnabled(enabled) {
+    SafeStorage.setItem(this.prefStorageKey, enabled ? 'on' : 'off');
+    return Boolean(enabled);
+  },
+
+  getTripHistory(nowMs = Date.now()) {
+    try {
+      const raw = SafeStorage.getItem(this.historyStorageKey);
+      if (!raw) return [];
+      const arr = JSON.parse(raw);
+      if (!Array.isArray(arr)) return [];
+      const cutoff = nowMs - 90 * 24 * 3600000;
+      return arr.filter(e => e && e.groupKey && Number(e.timestamp) >= cutoff && Number(e.timestamp) <= nowMs + 60000);
+    } catch (e) {
+      return [];
+    }
+  },
+
+  recordInboundTrip(group, boardStop, stopsList = [], nowMs = Date.now()) {
     if (!group || !boardStop) return;
     const bLat = parseFloat(boardStop.lat ?? boardStop.latitude);
     const bLon = parseFloat(boardStop.lon ?? boardStop.longitude);
@@ -84,13 +161,15 @@ const SmartReturnManager = {
     const destStop = stops.length ? stops[stops.length - 1] : null;
     const dLat = parseFloat(destStop?.lat ?? destStop?.latitude ?? bLat);
     const dLon = parseFloat(destStop?.lon ?? destStop?.longitude ?? bLon);
+    const ts = Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now();
+    const bound = extractRouteBoundCode(group);
 
     const trip = {
       routeNo: String(group.routeNo || ''),
       company: String(group.company || ''),
       mode: String(group.mode || 'BUS'),
       groupKey: String(group.key || ''),
-      bound: extractRouteBoundCode(group),
+      bound,
       originStopKey: boardStop.stopKey || getGlobalStopKey(boardStop),
       originNameEn: stripPlatformCodeFromDisplay(boardStop.stopName_e || ''),
       originNameTc: stripPlatformCodeFromDisplay(boardStop.name_tc || boardStop.stopName_e || ''),
@@ -100,18 +179,162 @@ const SmartReturnManager = {
       destNameTc: stripPlatformCodeFromDisplay(destStop?.name_tc || group.dest_tc || group.dest_e || ''),
       destLat: Number(dLat.toFixed(6)),
       destLon: Number(dLon.toFixed(6)),
-      timestamp: Date.now()
+      timestamp: ts
     };
     SafeStorage.setItem(this.storageKey, JSON.stringify(trip));
+
+    // Append to repeat-trip history (deduplicated within 30 mins per route direction so a single session never counts multiple times)
+    try {
+      const history = this.getTripHistory(ts);
+      const recentSame = history.find(e =>
+        e.groupKey === trip.groupKey && Math.abs(ts - Number(e.timestamp)) < this.DEDUP_SESSION_MS
+      );
+      if (!recentSame) {
+        history.push({
+          groupKey: trip.groupKey,
+          routeNo: trip.routeNo,
+          company: trip.company,
+          mode: trip.mode,
+          bound: trip.bound,
+          originStopKey: trip.originStopKey,
+          timestamp: ts,
+          hkMinuteOfDay: this._getHkMinuteOfDay(ts)
+        });
+        SafeStorage.setItem(this.historyStorageKey, JSON.stringify(history.slice(-80)));
+      }
+    } catch (e) {}
   },
 
-  getLastTrip() {
+  countTripsInTimeWindow(returnGroup, nowMs = Date.now(), windowMins = this.TIME_WINDOW_MINS) {
+    if (!returnGroup) return 0;
+    const targetKey = String(returnGroup.key || '');
+    const targetRouteNo = String(returnGroup.routeNo || '');
+    const targetCompany = String(returnGroup.company || '');
+    const targetMode = String(returnGroup.mode || 'BUS');
+    const targetBound = extractRouteBoundCode(returnGroup);
+    const nowMin = this._getHkMinuteOfDay(nowMs);
+    const history = this.getTripHistory(nowMs);
+
+    return history.filter(e => {
+      const routeMatch = (targetKey && e.groupKey === targetKey) || (
+        e.routeNo === targetRouteNo &&
+        e.company === targetCompany &&
+        (e.mode || 'BUS') === targetMode &&
+        e.bound === targetBound
+      );
+      if (!routeMatch) return false;
+      const entryMin = Number.isFinite(Number(e.hkMinuteOfDay))
+        ? Number(e.hkMinuteOfDay)
+        : this._getHkMinuteOfDay(e.timestamp);
+      return this._circularMinuteDiff(nowMin, entryMin) <= windowMins;
+    }).length;
+  },
+
+  matchesExplicitHomeAnchor(trip, returnGroup, returnStops = []) {
+    if (!returnGroup) return false;
+    // 1. Pinned Home stop via SavedHubsManager that this return trip actually serves
+    try {
+      const hubs = (typeof SavedHubsManager !== 'undefined' && SavedHubsManager.getHubs)
+        ? SavedHubsManager.getHubs()
+        : null;
+      const home = hubs?.home || null;
+      if (home && home.stopKey) {
+        if (trip && trip.originStopKey === home.stopKey) return true;
+        if (trip && isValidRailOrFerryCoord(home.lat, home.lon) && isValidRailOrFerryCoord(trip.originLat, trip.originLon)) {
+          if (calculateDistanceKm(trip.originLat, trip.originLon, home.lat, home.lon) <= 0.65) return true;
+        }
+        const homeBase = home.nameEn ? getBaseStopNameKey(home.nameEn) : '';
+        if (Array.isArray(returnStops) && returnStops.length) {
+          const servesHome = returnStops.some(s => {
+            if (!s) return false;
+            const sk = s.stopKey || getGlobalStopKey(s);
+            if (sk === home.stopKey) return true;
+            if (homeBase && s.stopName_e && getBaseStopNameKey(s.stopName_e) === homeBase) return true;
+            const sLat = parseFloat(s.latitude ?? s.lat), sLon = parseFloat(s.longitude ?? s.lon);
+            if (isValidRailOrFerryCoord(sLat, sLon) && isValidRailOrFerryCoord(home.lat, home.lon)) {
+              return calculateDistanceKm(sLat, sLon, home.lat, home.lon) <= 0.65;
+            }
+            return false;
+          });
+          if (servesHome) return true;
+        }
+      }
+    } catch (e) {}
+
+    // 2. Explicitly bookmarked exact return route
+    const bookmarks = this._getBookmarkedStops();
+    if (bookmarks.some(bm => bm && bm.groupKey && bm.groupKey === returnGroup.key)) {
+      return true;
+    }
+    return false;
+  },
+
+  isBoardingStopFartherThanActiveGroup(returnStop, userPos, activeStopContext) {
+    if (!activeStopContext || !returnStop || !userPos) return false;
+    const bLat = parseFloat(returnStop.latitude ?? returnStop.lat);
+    const bLon = parseFloat(returnStop.longitude ?? returnStop.lon);
+    if (!isValidRailOrFerryCoord(bLat, bLon)) return false;
+    const boardDistM = calculateDistanceKm(userPos.lat, userPos.lon, bLat, bLon) * 1000;
+
+    let activeAnchorDistM = Number.isFinite(Number(activeStopContext.activeGroupDistM))
+      ? Number(activeStopContext.activeGroupDistM)
+      : NaN;
+    const anchorStop = activeStopContext.centerStop || null;
+    if (!Number.isFinite(activeAnchorDistM) && anchorStop) {
+      const aLat = parseFloat(anchorStop.latitude ?? anchorStop.lat);
+      const aLon = parseFloat(anchorStop.longitude ?? anchorStop.lon);
+      if (isValidRailOrFerryCoord(aLat, aLon)) {
+        activeAnchorDistM = calculateDistanceKm(userPos.lat, userPos.lon, aLat, aLon) * 1000;
+      }
+    }
+    if (!Number.isFinite(activeAnchorDistM)) return false;
+
+    // Allow if the boarding stop is the exact same stop / stop base name as the user's primary active stop (within bay-pole jitter)
+    if (anchorStop) {
+      const rKey = returnStop.stopKey || getGlobalStopKey(returnStop);
+      const aKey = anchorStop.stopKey || getGlobalStopKey(anchorStop);
+      const sameStop = (rKey && aKey && rKey === aKey) ||
+        (returnStop.stopName_e && anchorStop.stopName_e && getBaseStopNameKey(returnStop.stopName_e) === getBaseStopNameKey(anchorStop.stopName_e));
+      if (sameStop && boardDistM <= activeAnchorDistM + 25) return false;
+    }
+
+    return boardDistM > (activeAnchorDistM + this.ACTIVE_GROUP_DIST_TOLERANCE_M);
+  },
+
+  shouldSuppressByWaitTime(srFirstArrival, nearbyArrivals = [], srRawDistM = null, nowMs = Date.now()) {
+    if (!srFirstArrival || !Number.isFinite(Number(srFirstArrival.targetMs))) {
+      return { suppress: false, reason: 'NO_SR_ETA', srWaitMins: null };
+    }
+    const srWaitMins = (Number(srFirstArrival.targetMs) - nowMs) / 60000;
+    if (srWaitMins <= this.MAX_WAIT_WITH_IMMINENT_LOCAL_MINS) {
+      return { suppress: false, reason: 'WITHIN_20M', srWaitMins };
+    }
+
+    const srKey = srFirstArrival.groupKey || '';
+    const hasImminentCloserRoute = (nearbyArrivals || []).some(item => {
+      if (!item || !Number.isFinite(Number(item.targetMs))) return false;
+      if (srKey && item.groupKey === srKey) return false;
+      const waitMins = (Number(item.targetMs) - nowMs) / 60000;
+      if (waitMins < -1 || waitMins > this.IMMINENT_LOCAL_THRESHOLD_MINS) return false;
+      if (Number.isFinite(Number(item.distM)) && Number.isFinite(Number(srRawDistM))) {
+        return Number(item.distM) <= Number(srRawDistM) + this.ACTIVE_GROUP_DIST_TOLERANCE_M;
+      }
+      return true;
+    });
+
+    if (hasImminentCloserRoute) {
+      return { suppress: true, reason: 'WAIT_OVER_20M_WITH_IMMINENT_LOCAL', srWaitMins };
+    }
+    return { suppress: false, reason: 'NO_IMMINENT_LOCAL_ALTERNATIVE', srWaitMins };
+  },
+
+  getLastTrip(nowMs = Date.now()) {
     try {
       const raw = SafeStorage.getItem(this.storageKey);
       if (!raw) return null;
       const trip = JSON.parse(raw);
       if (!trip || !trip.timestamp || !trip.routeNo) return null;
-      const ageMs = Date.now() - Number(trip.timestamp);
+      const ageMs = nowMs - Number(trip.timestamp);
       if (ageMs > 12 * 3600000 || ageMs < 0) {
         SafeStorage.setItem(this.storageKey, '');
         return null;
@@ -126,12 +349,13 @@ const SmartReturnManager = {
     SafeStorage.setItem(this.storageKey, '');
   },
 
-  evaluateCandidate(userPos) {
+  evaluateCandidate(userPos, activeStopContext = null, nowMs = Date.now()) {
+    if (!this.isEnabled()) return null;
     if (!userPos || !userPos.hasLiveFix || Number(userPos.acc) > 450) return null;
-    const trip = this.getLastTrip();
+    const trip = this.getLastTrip(nowMs);
     if (!trip || trip.timestamp === this.dismissedTs) return null;
 
-    const elapsedMs = Date.now() - trip.timestamp;
+    const elapsedMs = nowMs - trip.timestamp;
     if (elapsedMs < 45 * 60000 || elapsedMs > 12 * 3600000) return null;
 
     const distFromOriginKm = calculateDistanceKm(userPos.lat, userPos.lon, trip.originLat, trip.originLon);
@@ -164,6 +388,12 @@ const SmartReturnManager = {
 
     const rStops = getStopsForGroup(returnGroup);
     if (rStops.length < 2) return null;
+
+    // High-Confidence Gate: require explicit Home stop/route anchor OR 3+ repeat trips on this exact return route in similar time window
+    const isHomeAnchored = this.matchesExplicitHomeAnchor(trip, returnGroup, rStops);
+    const repeatTripCount = this.countTripsInTimeWindow(returnGroup, nowMs, this.TIME_WINDOW_MINS);
+    if (!isHomeAnchored && repeatTripCount < this.MIN_REPEAT_TRIPS) return null;
+
     const allowFinal = isCircularRoute(returnGroup, rStops);
     const maxBoardIdx = allowFinal ? rStops.length - 1 : rStops.length - 2;
 
@@ -182,6 +412,13 @@ const SmartReturnManager = {
     }
 
     if (!bestStop || bestDistKm > 1.50) return null;
+
+    // Distance Guardrail: suppress if boarding stop is farther away than the user's active stop group
+    if (this.isBoardingStopFartherThanActiveGroup(bestStop, userPos, activeStopContext)) {
+      return null;
+    }
+
+    const rawDistM = Math.round(bestDistKm * 1000);
     const walkDistM = Math.max(20, Math.round(bestDistKm * 1000 * 1.18));
     const walkMins = Math.max(1, Math.round(walkDistM / 75));
     return {
@@ -190,8 +427,11 @@ const SmartReturnManager = {
       returnStop: bestStop,
       returnStopIdx: bestIdx,
       returnStopKey: bestStop.stopKey || getGlobalStopKey(bestStop),
+      rawDistM,
       walkDistM,
-      walkMins
+      walkMins,
+      confidenceReason: isHomeAnchored ? 'HOME_ANCHOR' : 'REPEAT_HISTORY',
+      repeatTripCount
     };
   }
 };

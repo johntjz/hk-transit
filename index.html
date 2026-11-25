@@ -1398,6 +1398,32 @@
     .settings-section-divider { font-size: 0.72rem; font-weight: 600; color: var(--text-sub); padding: 12px 2px 2px 2px; letter-spacing: 0.01em; }
     .settings-row-sub { display: block; font-size: 0.72rem; font-weight: 500; color: var(--text-sub); margin-top: 2px; }
     .settings-val-pill { background: var(--bg-surface); border: none; padding: 4px 11px; border-radius: 999px; font-size: 0.75rem; font-weight: 600; color: var(--ios-blue); max-width: 55%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
+    .settings-toggle-wrap { display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0; }
+    .settings-toggle-state { font-size: 0.72rem; font-weight: 700; color: var(--text-sub); min-width: 24px; text-align: right; }
+    .settings-toggle-state.on { color: #34C759; }
+    .ios-switch {
+      position: relative;
+      display: inline-block;
+      width: 42px;
+      height: 24px;
+      border-radius: 999px;
+      background: rgba(120, 120, 128, 0.30);
+      transition: background 0.18s ease;
+      flex-shrink: 0;
+    }
+    .ios-switch.on { background: #34C759; }
+    .ios-switch-thumb {
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: #FFFFFF;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.28);
+      transition: transform 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
+    }
+    .ios-switch.on .ios-switch-thumb { transform: translateX(18px); }
     .about-hero-box { background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 14px; padding: 12px 14px; margin: 6px 0 4px 0; display: flex; flex-direction: column; gap: 6px; }
     .about-hero-title { font-weight: 800; font-size: 0.94rem; color: var(--text-main); letter-spacing: -0.01em; }
     .about-hero-sub { font-size: 0.76rem; color: var(--text-sub); line-height: 1.42; }
@@ -1861,6 +1887,16 @@
     <button type="button" class="settings-row" onclick="openSavedHubPickerFromSettings('work')">
       <span id="settingRowLblWorkHub">💼 Work Stop</span>
       <span class="settings-val-pill" id="settingValWorkHub">Set Stop ›</span>
+    </button>
+    <button type="button" class="settings-row" id="quickReturnToggleRow" role="switch" aria-checked="false" onclick="toggleQuickReturnSuggestions()">
+      <div style="min-width:0; padding-right:8px;">
+        <div id="settingRowLblQuickReturn">↩️ Quick Return Suggestions</div>
+        <span class="settings-row-sub" id="settingRowSubQuickReturn">Off by default · Shown for saved Home or 3+ repeat trips</span>
+      </div>
+      <span class="settings-toggle-wrap">
+        <span class="settings-toggle-state" id="settingValQuickReturn">Off</span>
+        <span class="ios-switch" id="settingSwitchQuickReturn" aria-hidden="true"><span class="ios-switch-thumb"></span></span>
+      </span>
     </button>
     <button type="button" class="settings-row" onclick="closeSettingsModal(); openTutorialModal();">
       <span id="settingRowLblTutorial">🖼️ Visual Guide</span>
@@ -4469,6 +4505,25 @@ function dismissSmartReturnCard(ev) {
   renderMainNearby(false);
 }
 
+window.toggleQuickReturnSuggestions = function toggleQuickReturnSuggestions() {
+  if (typeof SmartReturnManager === 'undefined') return false;
+  if (typeof triggerHaptic === 'function') triggerHaptic(10);
+  const next = !SmartReturnManager.isEnabled();
+  SmartReturnManager.setEnabled(next);
+  if (typeof syncSettingsModalLabels === 'function') syncSettingsModalLabels();
+  lastRenderedCenterStopKey = null;
+  if (typeof currentView !== 'undefined' && currentView === 'main' && typeof renderMainNearby === 'function') {
+    renderMainNearby(false);
+  }
+  const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
+  if (typeof showToast === 'function') {
+    showToast(next
+      ? (isZh ? '快捷回程建議：已開啟' : 'Quick Return Suggestions: On')
+      : (isZh ? '快捷回程建議：已關閉' : 'Quick Return Suggestions: Off'));
+  }
+  return next;
+};
+
 function toggleSavedStopHub(slot, stopIdx) {
   if (!detailRouteGroup || typeof SavedHubsManager === 'undefined') return;
   triggerHaptic(14);
@@ -4490,7 +4545,7 @@ function toggleSavedStopHub(slot, stopIdx) {
   }
 }
 
-function buildSmartTopOverlayHtml() {
+function buildSmartTopOverlayHtml(activeStopContext = null) {
   const isZh = (currentLang === 'zh');
   let html = '';
   let smartReturnCand = null;
@@ -4533,7 +4588,7 @@ function buildSmartTopOverlayHtml() {
   }
 
   if (typeof SmartReturnManager !== 'undefined' && (!hubEval || hubEval.mode !== 'NEARBY')) {
-    smartReturnCand = SmartReturnManager.evaluateCandidate(lastKnownPos);
+    smartReturnCand = SmartReturnManager.evaluateCandidate(lastKnownPos, activeStopContext);
   }
   if (smartReturnCand) {
     const { trip, returnGroup, returnStop, returnStopIdx, returnStopKey, walkDistM, walkMins } = smartReturnCand;
@@ -4543,7 +4598,7 @@ function buildSmartTopOverlayHtml() {
     const walkUrl = `https://www.google.com/maps/dir/?api=1&destination=${parseFloat(returnStop.latitude)},${parseFloat(returnStop.longitude)}&travelmode=walking`;
 
     html += `
-      <div class="smart-return-card" id="smartReturnCard" onclick="if(!isUserSelectingText())openRouteDetail('${escapeJsAttr(returnGroup.key)}', '${escapeJsAttr(returnStopKey)}', ${returnStopIdx})">
+      <div class="smart-return-card" id="smartReturnCard" style="display:none;" onclick="if(!isUserSelectingText())openRouteDetail('${escapeJsAttr(returnGroup.key)}', '${escapeJsAttr(returnStopKey)}', ${returnStopIdx})">
         <div class="smart-return-top">
           <span class="smart-return-badge">↩️ ${isZh ? '快捷回程' : 'QUICK RETURN'}</span>
           <div style="display:flex;align-items:center;gap:6px;">
@@ -4837,7 +4892,12 @@ async function renderMainNearby(isSilentRefresh = false) {
   });
 
   const isZh = (currentLang === 'zh');
-  const smartTop = buildSmartTopOverlayHtml();
+  const activeAnchorStop = (activeClusterSubStopKey === 'ALL') ? centerStop : (activeClusterStops[0] || centerStop);
+  const smartTop = buildSmartTopOverlayHtml({
+    centerStop: activeAnchorStop,
+    activeStops: activeClusterStops,
+    activeSubStopKey: activeClusterSubStopKey
+  });
   const bayFilterBarHtml = (activeAppMode === 'BUS' && uniqueClusterBays.length > 1)
     ? `<div class="ferry-hub-tabs" style="padding:8px 12px 2px 12px; max-width:760px; margin:0 auto; width:100%;">
          <button class="ferry-hub-tab ${activeClusterSubStopKey === 'ALL' ? 'active' : ''}" onclick="selectClusterSubStopFilter('ALL')">
@@ -4855,14 +4915,17 @@ async function renderMainNearby(isSilentRefresh = false) {
 
   if (!candidatePairs.length) {
     listEl.innerHTML = smartTop.html + bayFilterBarHtml + `<div class="text-center">${t('noRoutesFound')}</div>` + renderMtrStyleReportFooterHtml();
+    const srCardEmpty = document.getElementById('smartReturnCard');
+    if (srCardEmpty) srCardEmpty.style.display = '';
     return;
   }
 
   const smartSig = smartTop.smartReturnCand ? smartTop.smartReturnCand.returnStopKey : 'NONE';
+  const smartEnSig = (typeof SmartReturnManager !== 'undefined' && SmartReturnManager.isEnabled) ? (SmartReturnManager.isEnabled() ? '1' : '0') : '0';
   const hubOv = typeof SavedHubsManager !== 'undefined' ? SavedHubsManager.manualOverrideMode : 'AUTO';
   const savedHubsObj = typeof SavedHubsManager !== 'undefined' ? SavedHubsManager.getHubs() : {};
   const hubSig = `${savedHubsObj.home?.stopKey || ''}_${savedHubsObj.work?.stopKey || ''}`;
-  const sigKey = `${activeAppMode}|${centerStop.stopKey}|${activeClusterSubStopKey}|${candidatePairs.length}|${stopDirectionFilterMode}|${currentLang}|${smartSig}|${hubOv}|${hubSig}`;
+  const sigKey = `${activeAppMode}|${centerStop.stopKey}|${activeClusterSubStopKey}|${candidatePairs.length}|${stopDirectionFilterMode}|${currentLang}|${smartSig}|${smartEnSig}|${hubOv}|${hubSig}`;
   if (!isSilentRefresh || lastRenderedCenterStopKey !== sigKey || !listEl.querySelector('.route-list-item')) {
     lastRenderedCenterStopKey = sigKey;
     listEl.innerHTML = smartTop.html + bayFilterBarHtml + `<div id="mainRouteCardsWrap">` + candidatePairs.map((pair, idx) => {
@@ -4893,6 +4956,8 @@ async function renderMainNearby(isSilentRefresh = false) {
   }
 
   const myToken = ++mainNearbyRenderToken;
+  let srFirstArr = null;
+  const resolvedNearbyArrivals = [];
 
   const smartReturnPromise = smartTop.smartReturnCand ? (async () => {
     const sr = smartTop.smartReturnCand;
@@ -4900,8 +4965,10 @@ async function renderMainNearby(isSilentRefresh = false) {
     if (myToken !== mainNearbyRenderToken || currentView !== 'main') return;
     const etaCol = document.getElementById('smart-return-eta-col');
     const subLine = document.getElementById('smart-return-sub-line');
+    const srCard = document.getElementById('smartReturnCard');
     if (!etaCol) return;
     if (arrs[0]) {
+      srFirstArr = { targetMs: arrs[0].targetMs, groupKey: sr.returnGroup.key };
       const ui = formatEtaUI(arrs[0], sr.returnGroup);
       const nowMs = Date.now();
       const followUps = arrs.slice(1, 3).map(nx => {
@@ -4913,6 +4980,11 @@ async function renderMainNearby(isSilentRefresh = false) {
       if (subLine && arrs[0].loadEstimate) {
         const stopLabel = getStopName(sr.returnStop);
         subLine.innerHTML = `${formatLoadPillHtml(arrs[0].loadEstimate, true)}<span>${isZh ? `上車站：${escapeHtml(stopLabel)}` : `Board @ ${escapeHtml(stopLabel)}`}</span>`;
+      }
+      // If imminent (<= 20m), reveal immediately without waiting for all nearby cards
+      const srWaitMins = (arrs[0].targetMs - nowMs) / 60000;
+      if (srCard && srWaitMins <= (SmartReturnManager.MAX_WAIT_WITH_IMMINENT_LOCAL_MINS || 20)) {
+        srCard.style.display = '';
       }
     } else {
       etaCol.innerHTML = `<div class="eta-time" style="color:var(--text-sub);">-</div>`;
@@ -4936,6 +5008,12 @@ async function renderMainNearby(isSilentRefresh = false) {
       const isDiffBayFromHeader = getBaseStopNameKey(st.stopName_e) !== centerBase;
 
       if (arrs[0]) {
+        const stLat = parseFloat(st.latitude ?? st.lat), stLon = parseFloat(st.longitude ?? st.lon);
+        const pairDistM = (lastKnownPos?.hasLiveFix && isValidRailOrFerryCoord(stLat, stLon))
+          ? Math.round(calculateDistanceKm(lastKnownPos.lat, lastKnownPos.lon, stLat, stLon) * 1000)
+          : null;
+        resolvedNearbyArrivals.push({ targetMs: arrs[0].targetMs, distM: pairDistM, groupKey: g.key });
+
         const ui = formatEtaUI(arrs[0], g);
         const nowMs = Date.now();
         const nextFollowUps = arrs.slice(1, 3).map(nx => {
@@ -4966,6 +5044,20 @@ async function renderMainNearby(isSilentRefresh = false) {
   ]);
 
   if (myToken !== mainNearbyRenderToken || currentView !== 'main') return;
+
+  if (smartTop.smartReturnCand) {
+    const srCard = document.getElementById('smartReturnCard');
+    if (srCard) {
+      const check = (typeof SmartReturnManager !== 'undefined' && SmartReturnManager.shouldSuppressByWaitTime)
+        ? SmartReturnManager.shouldSuppressByWaitTime(srFirstArr, resolvedNearbyArrivals, smartTop.smartReturnCand.rawDistM, Date.now())
+        : { suppress: false };
+      if (check.suppress) {
+        srCard.remove();
+      } else {
+        srCard.style.display = '';
+      }
+    }
+  }
 
   const wrapEl = document.getElementById('mainRouteCardsWrap');
   if (wrapEl) {
@@ -6163,6 +6255,23 @@ function syncSettingsModalLabels() {
   setV('settingValWorkHub', hubs.work
     ? `${isZh ? (hubs.work.nameTc || hubs.work.nameEn) : hubs.work.nameEn} ›`
     : (isZh ? '設定車站 ›' : 'Set Stop ›'));
+
+  const qrEnabled = (typeof SmartReturnManager !== 'undefined' && SmartReturnManager.isEnabled)
+    ? SmartReturnManager.isEnabled()
+    : false;
+  setV('settingRowLblQuickReturn', isZh ? '↩️ 快捷回程建議' : '↩️ Quick Return Suggestions');
+  setV('settingRowSubQuickReturn', isZh
+    ? '預設關閉 · 僅於已設屋企站或常搭3次以上回程時顯示'
+    : 'Off by default · Shown for saved Home or 3+ repeat trips');
+  const qrValEl = document.getElementById('settingValQuickReturn');
+  if (qrValEl) {
+    qrValEl.innerText = qrEnabled ? (isZh ? '開啟' : 'On') : (isZh ? '關閉' : 'Off');
+    qrValEl.classList.toggle('on', qrEnabled);
+  }
+  const qrSwitchEl = document.getElementById('settingSwitchQuickReturn');
+  if (qrSwitchEl) qrSwitchEl.classList.toggle('on', qrEnabled);
+  const qrRowEl = document.getElementById('quickReturnToggleRow');
+  if (qrRowEl) qrRowEl.setAttribute('aria-checked', qrEnabled ? 'true' : 'false');
 
   setV('settingRowLblTutorial', isZh ? '🖼️ 圖解教學' : '🖼️ Visual Guide');
   setV('settingValTutorial', isZh ? '圖解 ›' : 'View ›');

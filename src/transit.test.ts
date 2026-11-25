@@ -145,6 +145,7 @@ function loadHardcodeAndPlannerSandbox(overrides: Record<string, any> = {}) {
       parseHkGpsCoordinates,
       findOppositeDirectionGroup,
       SavedHubsManager,
+      SmartReturnManager,
       buildPlannerLegRoadTrafficTagHtml,
     });`,
     ctx
@@ -3623,6 +3624,135 @@ test('PWA update mechanism: public/sw.js SKIP_WAITING lifecycle, Settings Force 
   swListeners.controllerchange();
   swListeners.controllerchange(); // second fire must be ignored
   assert.equal(reloadCount, 1, 'controllerchange must reload cleanly exactly once');
+});
+
+test('SmartReturnManager & index.html: tight Quick Return confidence threshold (Home anchor or 3+ time-window trips), distance & 20m-vs-5m guardrails, and Settings toggle clean-plate OFF default', () => {
+  const html = fs.readFileSync('index.html', 'utf8');
+
+  // 1. Settings modal has Quick Return Suggestions toggle and main header stays untouched
+  const settingsSlice = html.slice(html.indexOf('id="settingsModal"'), html.indexOf('id="aboutModal"'));
+  assert.ok(settingsSlice.includes('id="quickReturnToggleRow"'), 'Settings modal must include Quick Return Suggestions toggle row');
+  assert.ok(settingsSlice.includes('role="switch"') && settingsSlice.includes('aria-checked="false"'), 'Quick Return toggle must default to aria-checked="false"');
+  assert.ok(settingsSlice.includes('Quick Return Suggestions'), 'Settings toggle must display "Quick Return Suggestions"');
+  assert.ok(settingsSlice.includes('onclick="toggleQuickReturnSuggestions()"'), 'Settings toggle must invoke toggleQuickReturnSuggestions()');
+
+  const headerSlice = html.slice(html.indexOf('<div class="app-switcher">'), html.indexOf('<!-- 1. MAIN VIEW -->'));
+  assert.ok(headerSlice.length > 0 && !headerSlice.includes('quickReturnToggle') && !headerSlice.includes('Quick Return'), 'Main top header must remain untouched without Quick Return buttons');
+
+  // 2. Build realistic E36 scenario (Hong Lok Road <-> Tung Chung / Airport, Yu Tung Court vs Tung Chung Fire Station)
+  const stopHongLok = { stopKey: 'LWB_HONGLOK', stopName_e: 'Hong Lok Road', name_tc: '康樂路', latitude: 22.4443, longitude: 114.0272, mode: 'BUS' };
+  const stopTcFire = { stopKey: 'NLB_TCFIRE', stopName_e: 'Tung Chung Fire Station, Shun Tung Road', name_tc: '東涌消防局, 順東路', latitude: 22.28603, longitude: 113.941057, mode: 'BUS' };
+  const stopYuTung = { stopKey: 'LWB_YUTUNG', stopName_e: 'Yu Tung Court', name_tc: '裕東苑', latitude: 22.28690, longitude: 113.94180, mode: 'BUS' };
+  const stopAirport = { stopKey: 'LWB_AIRPORT', stopName_e: 'Airport (Ground Transportation Centre)', name_tc: '機場(地面運輸中心)', latitude: 22.3145, longitude: 113.9366, mode: 'BUS' };
+
+  const e36Out = { key: 'LWB_E36_O', routeNo: 'E36', company: 'LWB', mode: 'BUS', routeIds: ['LWB_E36_O_1'], dest_e: 'Airport', dest_tc: '機場' };
+  const e36In = { key: 'LWB_E36_I', routeNo: 'E36', company: 'LWB', mode: 'BUS', routeIds: ['LWB_E36_I_1'], dest_e: 'Pat Heung Road', dest_tc: '八鄉路' };
+
+  const stopsByGroup: Record<string, any[]> = {
+    LWB_E36_O: [stopHongLok, stopYuTung, stopAirport],
+    LWB_E36_I: [stopAirport, stopYuTung, stopHongLok],
+  };
+
+  const memStore: Record<string, string> = {};
+  const sb = loadHardcodeAndPlannerSandbox({
+    groupedRoutes: [e36Out, e36In],
+    getStopsForGroup: (g: any) => stopsByGroup[g?.key] || [],
+    SafeStorage: {
+      getItem: (k: string) => (Object.prototype.hasOwnProperty.call(memStore, k) ? memStore[k] : null),
+      setItem: (k: string, v: string) => { memStore[k] = String(v); },
+    },
+    bookmarkedStops: [],
+    stripPlatformCodeFromDisplay: (s: string) => String(s || ''),
+    isCircularRoute: () => false,
+    document: { cookie: '', addEventListener: () => {}, getElementById: () => null, querySelectorAll: () => [] },
+  });
+  const sr = sb.SmartReturnManager;
+  const hubs = sb.SavedHubsManager;
+
+  // Helper timestamps in HKT (UTC+8): e.g., 2026-11-25 19:07 HKT = 11:07 UTC
+  const hktMs = (day: number, hour: number, min: number) => Date.UTC(2026, 10, day, hour - 8, min, 0);
+  const now1907 = hktMs(25, 19, 7);
+  const outbound1700 = hktMs(25, 17, 0); // 2h07m earlier -> passes 45m–12h dwell gate
+
+  // User standing ~61m south of Tung Chung Fire Station (~135m from Yu Tung Court)
+  const userNearTcFire = { lat: 22.28550, lon: 113.94105, hasLiveFix: true, acc: 15 };
+  // User standing right beside Yu Tung Court (~25m away)
+  const userNearYuTung = { lat: 22.28675, lon: 113.94170, hasLiveFix: true, acc: 15 };
+
+  // A. Clean Plate Default: OFF when no Home stop is saved
+  assert.equal(sr.isEnabled(), false, 'Quick Return Suggestions must default to OFF when no Home stop/route is saved');
+  sr.recordInboundTrip(e36Out, stopHongLok, stopsByGroup.LWB_E36_O, outbound1700);
+  assert.equal(sr.evaluateCandidate(userNearYuTung, { centerStop: stopYuTung }, now1907), null, 'Must not trigger when clean-plate default is OFF');
+
+  // B. User turns toggle ON, but only 1 tap (one-off trip) -> STILL SUPPRESSED (high-confidence gate)
+  sr.setEnabled(true);
+  assert.equal(sr.isEnabled(), true);
+  assert.equal(sr.evaluateCandidate(userNearYuTung, { centerStop: stopYuTung }, now1907), null, 'Single one-off trip must NEVER trigger Quick Return');
+
+  // Rapid repeated taps within 10 minutes in one sitting must deduplicate to 1 trip, not 3
+  sr.recordInboundTrip(e36In, stopYuTung, stopsByGroup.LWB_E36_I, hktMs(22, 19, 0));
+  sr.recordInboundTrip(e36In, stopYuTung, stopsByGroup.LWB_E36_I, hktMs(22, 19, 4));
+  sr.recordInboundTrip(e36In, stopYuTung, stopsByGroup.LWB_E36_I, hktMs(22, 19, 8));
+  assert.equal(sr.countTripsInTimeWindow(e36In, now1907), 1, 'Repeated taps within 30 mins must deduplicate into 1 trip');
+  // Re-record today's outbound trip as latest trip
+  sr.recordInboundTrip(e36Out, stopHongLok, stopsByGroup.LWB_E36_O, outbound1700);
+  assert.equal(sr.evaluateCandidate(userNearYuTung, { centerStop: stopYuTung }, now1907), null, 'Only 1 return trip logged -> must remain suppressed');
+
+  // Log 2 more distinct evening trips on E36 return (total = 3 in ~19:00 window)
+  sr.recordInboundTrip(e36In, stopYuTung, stopsByGroup.LWB_E36_I, hktMs(23, 18, 45));
+  sr.recordInboundTrip(e36In, stopYuTung, stopsByGroup.LWB_E36_I, hktMs(24, 19, 30));
+  sr.recordInboundTrip(e36Out, stopHongLok, stopsByGroup.LWB_E36_O, outbound1700);
+  assert.equal(sr.countTripsInTimeWindow(e36In, now1907), 3, '3 distinct sessions in ±2h window must count as 3');
+
+  // Outside time-of-day window (e.g., 11:00 HKT vs 19:00 logged trips) -> suppressed!
+  const outbound0900 = hktMs(25, 9, 0);
+  const now1100 = hktMs(25, 11, 0);
+  sr.recordInboundTrip(e36Out, stopHongLok, stopsByGroup.LWB_E36_O, outbound0900);
+  assert.equal(sr.evaluateCandidate(userNearYuTung, { centerStop: stopYuTung }, now1100), null, '3+ trips in evening window must NOT trigger at 11:00 AM');
+
+  // Inside similar time-of-day window (19:07 HKT) AND standing right at Yu Tung Court -> triggers!
+  sr.recordInboundTrip(e36Out, stopHongLok, stopsByGroup.LWB_E36_O, outbound1700);
+  const candRepeat = sr.evaluateCandidate(userNearYuTung, { centerStop: stopYuTung }, now1907);
+  assert.ok(candRepeat && candRepeat.returnGroup.key === 'LWB_E36_I' && candRepeat.confidenceReason === 'REPEAT_HISTORY', '3+ logged return trips in similar time window at active stop must pass');
+
+  // C. Distance Guardrail: Exact screenshot scenario (active stop = Tung Chung Fire Station ~59m vs boarding stop = Yu Tung Court ~174m)
+  const candFarther = sr.evaluateCandidate(userNearTcFire, { centerStop: stopTcFire }, now1907);
+  assert.equal(candFarther, null, 'Must suppress Quick Return when boarding stop (Yu Tung Court) is farther away than active stop group (Tung Chung Fire Station)');
+
+  // D. Explicit Home Anchor: Reset history & pref to clean plate, save Home Stop = Hong Lok Road
+  memStore[sr.historyStorageKey] = '[]';
+  memStore[sr.prefStorageKey] = '';
+  assert.equal(sr.isEnabled(), false, 'Before saving Home stop, clean-plate default is OFF');
+  hubs.setHub('home', stopHongLok, 'BUS', true);
+  assert.equal(sr.isEnabled(), true, 'Saving an explicit Home stop enables Quick Return default unless manually turned OFF');
+  sr.recordInboundTrip(e36Out, stopHongLok, stopsByGroup.LWB_E36_O, outbound1700);
+  const candHome = sr.evaluateCandidate(userNearYuTung, { centerStop: stopYuTung }, now1907);
+  assert.ok(candHome && candHome.confidenceReason === 'HOME_ANCHOR', 'Explicit Home stop anchor allows Quick Return back to Home even with 0 repeat logs');
+
+  // Explicit Settings OFF overrides saved Home anchor
+  sr.setEnabled(false);
+  assert.equal(sr.isEnabled(), false);
+  assert.equal(sr.evaluateCandidate(userNearYuTung, { centerStop: stopYuTung }, now1907), null, 'Manual Settings OFF must suppress Quick Return even when Home stop is saved');
+
+  // E. Imminent Departure & Wait-Time Guardrail (>20m wait while closer frequent routes arrive within <=5m)
+  const srEta29m = { targetMs: now1907 + 29 * 60000, groupKey: 'LWB_E36_I' };
+  const srEta12m = { targetMs: now1907 + 12 * 60000, groupKey: 'LWB_E36_I' };
+  const localImminent = [
+    { targetMs: now1907 + 1 * 60000, distM: 61, groupKey: 'LWB_E31_O' },
+    { targetMs: now1907 + 2 * 60000, distM: 73, groupKey: 'NLB_38_O' },
+  ];
+  const localSlowOnly = [
+    { targetMs: now1907 + 14 * 60000, distM: 61, groupKey: 'LWB_E31_O' },
+  ];
+
+  const sup29m = sr.shouldSuppressByWaitTime(srEta29m, localImminent, 127, now1907);
+  assert.equal(sup29m.suppress, true, 'Must suppress 29m (>20m) Quick Return when closer routes at current stop arrive within 5m');
+
+  const keep12m = sr.shouldSuppressByWaitTime(srEta12m, localImminent, 127, now1907);
+  assert.equal(keep12m.suppress, false, 'Must NOT suppress 12m (<=20m) Quick Return');
+
+  const keep29mNoImminent = sr.shouldSuppressByWaitTime(srEta29m, localSlowOnly, 127, now1907);
+  assert.equal(keep29mNoImminent.suppress, false, 'Must NOT suppress 29m Quick Return if no closer route arrives within 5m');
 });
 
 

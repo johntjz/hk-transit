@@ -2544,16 +2544,16 @@ function pointToSegmentDistanceKm(pLat, pLon, aLat, aLon, bLat, bLon) {
 
 function isExpresswayOrTunnelDetector(det) {
   const road = `${det?.id || ''} ${det?.roadEn || ''} ${det?.roadTc || ''}`;
-  return /highway|expressway|bypass|tunnel|bridge|corridor|trunk\s*road|tsing\s*ma|ting\s*kau|lantau\s*link|north\s*lantau|tuen\s*mun\s*rd|tuen\s*mun\s*road|tolo|fanling|san\s*tin|yuen\s*long\s*hwy|\bylh\b|kong\s*sham|penny's\s*bay|tsing\s*sha|west\s*kowloon|island\s*eastern|tseung\s*kwan\s*o|route\s*\d|公路|幹線|繞道|隧道|大橋|走廊|青馬|汀九|北大嶼山|吐露港|元朗公路|屯門公路/i.test(road);
+  return /highway|expressway|bypass|tunnel|bridge|corridor|trunk\s*road|tsing\s*ma|ting\s*kau|lantau\s*link|north\s*lantau|tuen\s*mun\s*rd|tuen\s*mun\s*road|\btmr\b|tolo|fanling|san\s*tin|yuen\s*long\s*hwy|\bylh\b|kong\s*sham|penny's\s*bay|tsing\s*sha|west\s*kowloon|island\s*eastern|tseung\s*kwan\s*o|route\s*\d|公路|幹線|繞道|隧道|大橋|走廊|青馬|汀九|北大嶼山|吐露港|元朗公路|屯門公路/i.test(road);
 }
 
-// Parallel local arterial / Light Rail stop detectors (e.g. Castle Peak Rd / TDSCPRHSK10004)
-// must NEVER leak onto expressway/highway bus spans (e.g. E36 along Yuen Long Highway).
+// Parallel local arterial / Light Rail / frontage-lane detectors (e.g. Castle Peak Rd / TDSCPRHSK10004)
+// must NEVER leak onto expressway/highway bus spans (e.g. E36 along Tuen Mun Road & Yuen Long Highway).
 function isOffCorridorLocalArterialDetector(det) {
-  const id = String(det?.id || '').toUpperCase();
+  const idStr = `${det?.id || ''} ${det?.camKey || ''}`.toUpperCase();
   const road = `${det?.roadEn || ''} ${det?.roadTc || ''}`;
-  if (/^(?:TDS)?CPR[A-Z0-9]*/.test(id)) return true;
-  if (/castle\s*peak\s*r(?:oa)?d|\bcpr\s*[-/]|light\s*rail\s*stop|\blrt\s*stop|青山公路|輕鐵站/i.test(road)) {
+  if (/(?:^|\b)(?:TDS)?CPR[A-Z0-9]*/.test(idStr)) return true;
+  if (/castle\s*peak\s*r(?:oa)?d|\bcpr\s*[-/]|light\s*rail|\blrt\s*stop|frontage\s*r(?:oa)?d|service\s*r(?:oa)?d|青山公路|輕鐵|輔助道路/i.test(road)) {
     return true;
   }
   return false;
@@ -2721,36 +2721,85 @@ function findOppositeDirectionGroup(group, routesList = []) {
   return best;
 }
 
+function _estimateDetectorDelayMins(det) {
+  if (!det) return 0;
+  const spd = Number(det.spd);
+  const occ = Number(det.occ) || 0;
+  const tier = det.tier || 'SMOOTH';
+  if (tier === 'JAMMED' || (Number.isFinite(spd) && spd < 15)) {
+    if (Number.isFinite(spd) && spd < 10) return 18;
+    if ((Number.isFinite(spd) && spd < 15) || occ >= 75) return 15;
+    return 10;
+  }
+  if (tier === 'SLOW' || (Number.isFinite(spd) && spd < 46)) {
+    if ((Number.isFinite(spd) && spd <= 24) || occ >= 65) return 9;
+    if ((Number.isFinite(spd) && spd <= 28) || occ >= 55) return 8;
+    return 4;
+  }
+  return 0;
+}
+
+function _shortRoadNameForVerdict(det, isZh = false) {
+  const raw = isZh ? (det?.roadTc || det?.roadEn || '') : (det?.roadEn || det?.roadTc || '');
+  if (!raw) return isZh ? '主要幹道' : 'corridor';
+  if (isZh) {
+    return String(raw)
+      .replace(/\s*[-–—]\s*(北行|南行|東行|西行).*$/i, '')
+      .replace(/\s*近.*$/, '')
+      .replace(/\s*\(\d+\)\s*$/, '')
+      .trim() || raw;
+  }
+  let cleaned = String(raw)
+    .replace(/\bYLH\s*\/.*$/i, 'Yuen Long Highway')
+    .replace(/\bTMR\s*\/.*$/i, 'Tuen Mun Road')
+    .replace(/\s*[-–—]\s*(North|South|East|West)bound.*$/i, '')
+    .replace(/\s+near\s+.*$/i, '')
+    .replace(/\s*\(\d+\)\s*$/, '')
+    .trim();
+  if (!cleaned) cleaned = raw;
+  return cleaned;
+}
+
 function summarizeDetectorBucket(hits) {
   if (!hits || !hits.length) return null;
   let spdSum = 0;
   let minSpd = Infinity;
+  let worstSpd = Infinity;
   let maxOcc = 0;
+  let maxDelay = -1;
   let worstDet = hits[0].det;
   let worstHit = hits[0];
   let jamCount = 0;
   let slowCount = 0;
 
+  // Rank all valid corridor detectors across the full inter-stop leg by highest delay -> lowest speed -> highest occupancy
   for (const h of hits) {
     const d = h.det;
     const spd = Number(d.spd);
     const occ = Number(d.occ) || 0;
-    spdSum += Number.isFinite(spd) ? spd : 50;
-    if (Number.isFinite(spd) && spd < minSpd) {
-      minSpd = spd;
-      worstDet = d;
-      worstHit = h;
-    } else if (Number.isFinite(spd) && spd === minSpd && occ > (Number(worstDet.occ) || 0)) {
+    const delay = _estimateDetectorDelayMins(d);
+    const effSpd = Number.isFinite(spd) ? spd : 50;
+    spdSum += effSpd;
+    if (effSpd < minSpd) minSpd = effSpd;
+
+    const worseThanBest =
+      (delay > maxDelay) ||
+      (delay === maxDelay && effSpd < worstSpd) ||
+      (delay === maxDelay && effSpd === worstSpd && occ > (Number(worstDet?.occ) || 0));
+
+    if (worseThanBest) {
+      maxDelay = delay;
+      worstSpd = effSpd;
       worstDet = d;
       worstHit = h;
     }
     if (occ > maxOcc) maxOcc = occ;
-    if (d.tier === 'JAMMED') jamCount++;
-    else if (d.tier === 'SLOW') slowCount++;
+    if (d.tier === 'JAMMED' || effSpd < 15) jamCount++;
+    else if (d.tier === 'SLOW' || effSpd < 46) slowCount++;
   }
 
   const avgSpd = Math.round(spdSum / hits.length);
-  const effMinSpd = Number.isFinite(minSpd) ? Math.round(minSpd) : avgSpd;
+  const effMinSpd = Number.isFinite(worstDet?.spd) ? Math.round(Number(worstDet.spd)) : (Number.isFinite(minSpd) ? Math.round(minSpd) : avgSpd);
   let status = 'SMOOTH';
   if (jamCount > 0 && (worstDet.tier === 'JAMMED' || effMinSpd < 24 || avgSpd < 30)) {
     status = 'JAMMED';
@@ -2764,6 +2813,7 @@ function summarizeDetectorBucket(hits) {
     avgSpd,
     minSpd: effMinSpd,
     maxOcc: Math.round(maxOcc),
+    estDelayMins: Math.max(0, maxDelay),
     status,
     worstDet,
     representativeDet: repHit.det,
@@ -2772,7 +2822,7 @@ function summarizeDetectorBucket(hits) {
   };
 }
 
-// Synthesize human decision guidance directly from live TD detector speed & occupancy telemetry (zero cognitive counting of cars needed).
+// Synthesize clear "Bus vs. MTR" decision guidance directly from live TD corridor telemetry.
 function synthesizeTrafficDecision(same, opp = null, isZh = false) {
   if (!same && !opp) return null;
 
@@ -2781,45 +2831,81 @@ function synthesizeTrafficDecision(same, opp = null, isZh = false) {
     const occ = Number(same.worstDet?.occ ?? same.maxOcc ?? 0);
     const densityEn = occ >= 70 ? 'Bumper-to-bumper' : (occ >= 38 ? 'Heavy flow' : (occ >= 18 ? 'Moderate flow' : 'Light flow'));
     const densityTc = occ >= 70 ? '車龍緩慢' : (occ >= 38 ? '車流擠迫' : (occ >= 18 ? '車流適中' : '車流稀疏'));
+    const roadShortEn = _shortRoadNameForVerdict(same.worstDet || same.representativeDet, false);
+    const roadShortTc = _shortRoadNameForVerdict(same.worstDet || same.representativeDet, true);
+    const estDelay = Number.isFinite(same.estDelayMins) ? same.estDelayMins : _estimateDetectorDelayMins({ spd, occ, tier: same.status });
 
-    if (same.status === 'JAMMED') {
-      const severe = spd <= 15 || occ >= 75;
-      const delayEn = severe ? '+10–18m' : '+7–12m';
-      const delayTc = severe ? '慢 10–18 分鐘' : '慢 7–12 分鐘';
+    // Tier 1: Severe jam (+13m+ or < 15 km/h) -> Switch to MTR
+    const isSevereJam = (same.status === 'JAMMED' && (spd < 15 || occ >= 75 || estDelay >= 13)) || (same.status !== 'SMOOTH' && spd > 0 && spd < 15);
+    if (isSevereJam) {
+      const dispMins = Math.max(13, estDelay || 15);
+      const delayEn = `+${dispMins}m`;
+      const delayTc = `+${dispMins} 分鐘`;
       return {
         tone: 'jammed',
-        verdictEn: `Traffic jam · Expect ${delayEn}`,
-        verdictTc: `前路擠塞 · 預計${delayTc}`,
-        actionEn: severe ? 'Consider MTR or allow extra buffer' : 'Allow extra travel time',
-        actionTc: severe ? '建議改乘港鐵或預留額外時間' : '請預留額外車程時間',
+        modeRec: 'SWITCH_MTR',
+        estDelayMins: dispMins,
+        verdictEn: `Switch to MTR · Heavy jam on ${roadShortEn} (${delayEn})`,
+        verdictTc: `改乘港鐵 · ${roadShortTc}嚴重擠塞 (${delayTc})`,
+        actionEn: `Heavy jam (${spd} km/h) — MTR avoids highway gridlock`,
+        actionTc: `路面嚴重擠塞 (${spd} km/h)，建議改乘港鐵更快捷穩定`,
         delayLabelEn: delayEn,
         delayLabelTc: delayTc,
         densityEn,
         densityTc
       };
     }
+
+    // Tier 2: Moderate delay (+6–12m) -> Bus delayed · MTR may be faster
+    const isModerateDelay = same.status === 'JAMMED' || (same.status === 'SLOW' && (spd <= 28 || occ >= 55 || estDelay >= 6));
+    if (isModerateDelay) {
+      const dispMins = Math.max(6, Math.min(12, estDelay || (same.status === 'JAMMED' ? 10 : 8)));
+      const delayEn = `+${dispMins}m`;
+      const delayTc = `+${dispMins} 分鐘`;
+      return {
+        tone: same.status === 'JAMMED' ? 'jammed' : 'slow',
+        modeRec: 'MTR_FASTER',
+        estDelayMins: dispMins,
+        verdictEn: `Bus delayed (${delayEn}) · MTR may be faster`,
+        verdictTc: `巴士延誤 (${delayTc}) · 港鐵或較快`,
+        actionEn: `Congestion on ${roadShortEn} (${spd} km/h) — compare MTR option`,
+        actionTc: `${roadShortTc}車流緩慢 (${spd} km/h)，建議比較港鐵車程`,
+        delayLabelEn: delayEn,
+        delayLabelTc: delayTc,
+        densityEn,
+        densityTc
+      };
+    }
+
+    // Tier 3: Minor slowdown (+2–5m) -> Take Bus · Corridor moving (+2–5m)
     if (same.status === 'SLOW') {
-      const delayEn = spd <= 30 ? '+4–8m' : '+2–5m';
-      const delayTc = spd <= 30 ? '慢 4–8 分鐘' : '慢 2–5 分鐘';
+      const delayEn = '+2–5m';
+      const delayTc = '+2–5 分鐘';
       return {
         tone: 'slow',
-        verdictEn: `Slow traffic · Expect ${delayEn}`,
-        verdictTc: `前路車多 · 預計${delayTc}`,
-        actionEn: 'Moving steadily with minor slowdowns',
-        actionTc: '行車稍慢，仍維持移動',
+        modeRec: 'TAKE_BUS',
+        estDelayMins: 4,
+        verdictEn: `Take Bus · Corridor moving (${delayEn})`,
+        verdictTc: `可乘巴士 · 路段尚算暢順 (${delayTc})`,
+        actionEn: `Minor slowdown on ${roadShortEn} (${spd} km/h) — bus still moving steadily`,
+        actionTc: `${roadShortTc}稍為車多 (${spd} km/h)，整體維持穩定移動`,
         delayLabelEn: delayEn,
         delayLabelTc: delayTc,
         densityEn,
         densityTc
       };
     }
+
+    // Tier 4: Clear (+0m) -> Take Bus · Corridor clear
     const oppJam = opp && opp.status === 'JAMMED';
     return {
       tone: 'smooth',
-      verdictEn: oppJam ? 'Clear your side · No delay' : 'Clear ahead · No delay',
-      verdictTc: oppJam ? '你方向暢通 · 無延誤' : '前路暢通 · 無延誤',
-      actionEn: oppJam ? 'Jam is only on the opposite carriageway' : 'Normal travel time expected',
-      actionTc: oppJam ? '擠塞僅在對面行車線，不受影響' : '路面順暢，按正常車程出行',
+      modeRec: 'TAKE_BUS',
+      estDelayMins: 0,
+      verdictEn: oppJam ? 'Take Bus · Your side clear (No delay)' : 'Take Bus · Corridor clear (No delay)',
+      verdictTc: oppJam ? '可乘巴士 · 你方向暢通 (無延誤)' : '可乘巴士 · 前路暢通 (無延誤)',
+      actionEn: oppJam ? 'Jam is only on the opposite carriageway — no delay on your side' : 'Normal travel time expected',
+      actionTc: oppJam ? '擠塞僅在對面行車線，你方向不受影響' : '路面順暢，按正常車程出行',
       delayLabelEn: 'No delay',
       delayLabelTc: '無延誤',
       densityEn,
@@ -2831,8 +2917,10 @@ function synthesizeTrafficDecision(same, opp = null, isZh = false) {
   const oppJam = opp.status === 'JAMMED';
   return {
     tone: 'smooth',
-    verdictEn: oppJam ? `Opposite bound jammed (${opp.minSpd} km/h)` : `Nearby road clear (~${opp.avgSpd} km/h)`,
-    verdictTc: oppJam ? `僅對面線擠塞 (${opp.minSpd} km/h)` : `鄰近路面暢通 (約 ${opp.avgSpd} km/h)`,
+    modeRec: 'TAKE_BUS',
+    estDelayMins: 0,
+    verdictEn: oppJam ? `Take Bus · Opposite bound jammed (${opp.minSpd} km/h)` : `Take Bus · Nearby road clear (~${opp.avgSpd} km/h)`,
+    verdictTc: oppJam ? `可乘巴士 · 僅對面線擠塞 (${opp.minSpd} km/h)` : `可乘巴士 · 鄰近路面暢通 (約 ${opp.avgSpd} km/h)`,
     actionEn: oppJam ? 'Opposite carriageway congested; monitor return leg' : 'Nearby road flowing normally',
     actionTc: oppJam ? '對面線擠塞，回程時請留意' : '鄰近路段交通暢順',
     delayLabelEn: 'No delay',
@@ -3088,9 +3176,9 @@ function inferDirectionalRoadTrafficForStops(stops, startIdx = 0, detectors = []
   const endIdx = Math.min(stops.length, fromIdx + effLookahead + 1);
 
   const snappedAhead = roadPolylinePoints
-    ? _buildRoadSnappedSegments(stops, fromIdx, endIdx, roadPolylinePoints, 22.0)
+    ? _buildRoadSnappedSegments(stops, fromIdx, endIdx, roadPolylinePoints, 26.0)
     : null;
-  const aheadSegs = snappedAhead || _buildStopPairSegments(stops, fromIdx, endIdx, 6.5, 18.0);
+  const aheadSegs = snappedAhead || _buildStopPairSegments(stops, fromIdx, endIdx, 6.5, 22.0);
   const { sameHits, oppHits } = _matchDetectorsAlongSegments(aheadSegs, detectors);
   const sameSide = summarizeDetectorBucket(sameHits);
   const oppSide = summarizeDetectorBucket(oppHits);
@@ -3102,9 +3190,9 @@ function inferDirectionalRoadTrafficForStops(stops, startIdx = 0, detectors = []
   if (fromIdx > 0) {
     const upStart = Math.max(0, fromIdx - 2);
     const snappedUp = roadPolylinePoints
-      ? _buildRoadSnappedSegments(stops, upStart, fromIdx + 1, roadPolylinePoints, 22.0)
+      ? _buildRoadSnappedSegments(stops, upStart, fromIdx + 1, roadPolylinePoints, 26.0)
       : null;
-    const upSegs = snappedUp || _buildStopPairSegments(stops, upStart, fromIdx + 1, 14.0, 18.0);
+    const upSegs = snappedUp || _buildStopPairSegments(stops, upStart, fromIdx + 1, 14.0, 22.0);
     if (upSegs.length) {
       const upMatched = _matchDetectorsAlongSegments(upSegs, detectors);
       const upSummary = summarizeDetectorBucket(upMatched.sameHits);
@@ -3153,11 +3241,13 @@ function getDirectionalRoadSummary(stops, startIdx, detectors, isZh = false, loo
     const appDecision = synthesizeTrafficDecision(approaching, null, isZh);
     const focusDet = approaching.worstDet || approaching.representativeDet || null;
     const roadLabel = focusDet ? (isZh ? (focusDet.roadTc || focusDet.roadEn) : (focusDet.roadEn || focusDet.roadTc)) : '';
+    const roadShort = _shortRoadNameForVerdict(focusDet, isZh);
     const betweenLabel = _formatBetweenStopsLabel(approaching.betweenStops, isZh);
-    const isJam = approaching.status === 'JAMMED';
-    const headline = isZh
-      ? (isJam ? `來車路段擠塞 · 預計${appDecision.delayLabelTc}` : `來車路段車多 · 預計${appDecision.delayLabelTc}`)
-      : (isJam ? `Incoming bus in jam · Expect ${appDecision.delayLabelEn}` : `Incoming bus slowed · Expect ${appDecision.delayLabelEn}`);
+    const headline = appDecision.modeRec === 'SWITCH_MTR'
+      ? (isZh ? `改乘港鐵 · 來車於${roadShort}嚴重擠塞 (${appDecision.delayLabelTc})` : `Switch to MTR · Incoming bus in jam on ${roadShort} (${appDecision.delayLabelEn})`)
+      : (appDecision.modeRec === 'MTR_FASTER'
+        ? (isZh ? `來車延誤 (${appDecision.delayLabelTc}) · 港鐵或較快` : `Incoming bus delayed (${appDecision.delayLabelEn}) · MTR may be faster`)
+        : (isZh ? `可乘巴士 · 來車稍慢 (${appDecision.delayLabelTc})` : `Take Bus · Incoming bus moving (${appDecision.delayLabelEn})`));
 
     const detailParts = [`${approaching.minSpd} km/h`];
     if (focusDet?.occ > 0) {
@@ -3172,6 +3262,7 @@ function getDirectionalRoadSummary(stops, startIdx, detectors, isZh = false, loo
     return {
       ...res,
       tone: appDecision.tone,
+      modeRec: appDecision.modeRec,
       headline,
       detail: detailParts.join(' · '),
       actionTip: isZh ? '班次正途經擠塞路段前來，候車時間或會延長' : 'Incoming bus is passing through congestion before your stop — expect longer wait',
@@ -3219,6 +3310,7 @@ function getDirectionalRoadSummary(stops, startIdx, detectors, isZh = false, loo
   return {
     ...res,
     tone: decision.tone,
+    modeRec: decision.modeRec,
     headline,
     detail: detailParts.join(' · '),
     actionTip: isZh ? decision.actionTc : decision.actionEn,

@@ -2483,20 +2483,22 @@ test('hardcode.js & planner.js: directional road inference distinguishes smooth 
   const sumEn = sb.getDirectionalRoadSummary(e36Stops, 0, detectors, false, 14);
   assert.ok(sumEn, 'Expected directional road summary');
   assert.equal(sumEn.tone, 'smooth', 'Same-direction traffic is smooth despite opposite-side jam');
-  assert.ok(sumEn.headline.includes('Clear your side · No delay'), `Unexpected EN headline: ${sumEn.headline}`);
+  assert.equal(sumEn.modeRec, 'TAKE_BUS');
+  assert.ok(sumEn.headline.includes('Take Bus · Your side clear (No delay)'), `Unexpected EN headline: ${sumEn.headline}`);
   assert.ok(sumEn.detail.includes('Opp. bound jammed (22 km/h)'), `Unexpected EN detail: ${sumEn.detail}`);
 
   const sumZh = sb.getDirectionalRoadSummary(e36Stops, 0, detectors, true, 14);
-  assert.ok(sumZh.headline.includes('你方向暢通 · 無延誤'), `Unexpected ZH headline: ${sumZh.headline}`);
+  assert.ok(sumZh.headline.includes('可乘巴士 · 你方向暢通 (無延誤)'), `Unexpected ZH headline: ${sumZh.headline}`);
   assert.ok(sumZh.detail.includes('僅對面線塞車 (22 km/h)'), `Unexpected ZH detail: ${sumZh.detail}`);
 
-  // Opposite scenario: bus's OWN direction ahead is jammed (19 km/h)
+  // Opposite scenario: bus's OWN direction ahead is jammed (19 km/h, 94% occ -> severe jam -> Switch to MTR)
   const jammedDetectors = [
     { id: 'AID_NB_JAM', lat: 22.3465, lon: 113.9640, rot: 28, spd: 19, occ: 94, tier: 'JAMMED', roadEn: 'Tuen Mun Rd', roadTc: '屯門公路', camKey: 'TM108F' },
   ];
   const jammedSum = sb.getDirectionalRoadSummary(e36Stops, 0, jammedDetectors, false, 14);
   assert.equal(jammedSum.tone, 'jammed');
-  assert.ok(jammedSum.headline.includes('Traffic jam · Expect +10–18m'), `Unexpected jammed headline: ${jammedSum.headline}`);
+  assert.equal(jammedSum.modeRec, 'SWITCH_MTR');
+  assert.ok(jammedSum.headline.includes('Switch to MTR · Heavy jam on Tuen Mun Rd (+15m)'), `Unexpected jammed headline: ${jammedSum.headline}`);
   assert.ok(jammedSum.detail.includes('19 km/h'), `Unexpected jammed detail: ${jammedSum.detail}`);
 
   // Planner leg inline road badge when live detectors loaded
@@ -2729,11 +2731,11 @@ test('hardcode.js: detects curved Tuen Mun highway jams between two far-apart E3
   assert.equal(sumAtBbiEn.tone, 'jammed', 'Waiting at TM-CLK BBI must surface upstream Tuen Mun jam');
   assert.equal(sumAtBbiEn.isApproaching, true);
   assert.equal(sumAtBbiEn.focusDet?.id, 'AID_TM_WCR_WB');
-  assert.ok(sumAtBbiEn.headline.includes('Incoming bus in jam'), `Unexpected approaching headline: ${sumAtBbiEn.headline}`);
+  assert.ok(sumAtBbiEn.headline.includes('Switch to MTR · Incoming bus in jam'), `Unexpected approaching headline: ${sumAtBbiEn.headline}`);
   assert.ok(sumAtBbiEn.detail.includes('Ahead clear (~90 km/h)'), `Expected ahead-clear context alongside approaching jam: ${sumAtBbiEn.detail}`);
 
   const sumAtBbiZh = sb.getDirectionalRoadSummary(stops, tmClkIdx, detectors, true, 8);
-  assert.ok(sumAtBbiZh.headline.includes('來車路段擠塞'), `Unexpected ZH approaching headline: ${sumAtBbiZh.headline}`);
+  assert.ok(sumAtBbiZh.headline.includes('改乘港鐵') && sumAtBbiZh.headline.includes('來車'), `Unexpected ZH approaching headline: ${sumAtBbiZh.headline}`);
 
   // 3. Opposite-direction-only detector in Tuen Mun MUST NOT trigger a false same-direction jam
   const oppOnlyDetectors = [
@@ -2745,7 +2747,7 @@ test('hardcode.js: detects curved Tuen Mun highway jams between two far-apart E3
   assert.ok(oppOnlySum.headline.includes('Opposite bound jammed'), `Unexpected opp-only headline: ${oppOnlySum.headline}`);
 });
 
-test('map.js: enlarges clickable traffic arrows (34x34), separates HK left-hand North/South lanes, and badges N/S/E/W bounds clearly', () => {
+test('map.js: slim clickable traffic arrows (20-22px inside 32x32 hit area), zoom-15 smooth hiding, left-hand lane separation, and N/S/E/W bound badges', () => {
   const mapCode = fs.readFileSync('public/map.js', 'utf8');
   const addedPolylines: any[] = [];
   const addedMarkers: any[] = [];
@@ -2789,35 +2791,46 @@ test('map.js: enlarges clickable traffic arrows (34x34), separates HK left-hand 
   assert.equal(eb.shortLabel, '東');
   assert.equal(wb.shortLabel, '西');
 
-  // 2. Render opposing Northbound & Southbound detectors at the EXACT same coordinate
+  // 2. Render opposing Northbound (SMOOTH) & Southbound (JAMMED) detectors at the EXACT same coordinate at zoom 14
   ctx.window.__LIVE_TRAFFIC_DETECTORS__ = [
     { id: 'TMR_NB', lat: 22.3925, lon: 113.9768, rot: 15, spd: 72, occ: 16, tier: 'SMOOTH', roadEn: 'Tuen Mun Road', roadTc: '屯門公路', dir: 'Northbound', camKey: 'TM105F' },
     { id: 'TMR_SB', lat: 22.3925, lon: 113.9768, rot: 195, spd: 18, occ: 88, tier: 'JAMMED', roadEn: 'Tuen Mun Road', roadTc: '屯門公路', dir: 'Southbound', camKey: 'TM105F' },
   ];
-  const fakeMap = {
+  const fakeMapZ14 = {
     getBounds: () => ({ isValid: () => true, pad: () => ({ contains: () => true }) }),
     getZoom: () => 14,
   };
-  ctx.window.renderTrafficOverlayOnMap(fakeMap, true);
+  ctx.window.renderTrafficOverlayOnMap(fakeMapZ14, true);
 
-  assert.equal(addedMarkers.length, 2, 'Both Northbound and Southbound detectors must render directional arrow markers at zoom 14');
-  const sbMarker = addedMarkers[0]; // JAMMED sorted first
-  const nbMarker = addedMarkers[1];
+  // At zoom 14 (< 15), smooth flow renders ONLY as a clean left-hand offset road stripe while JAMMED renders the clickable arrow badge
+  assert.equal(addedPolylines.length, 4, 'Both carriageways must still draw left-hand offset road stripes (2 casings + 2 flow lines)');
+  assert.equal(addedMarkers.length, 1, 'Below zoom 15, smooth arrow badges must be hidden so only JAMMED/SLOW bottleneck arrows show');
+  const sbMarkerZ14 = addedMarkers[0];
+  assert.deepEqual(Array.from(sbMarkerZ14.opts.icon.iconSize), [32, 32], 'Slim 20-22px badge must sit inside transparent 32x32 hit area');
+  assert.ok(sbMarkerZ14.opts.icon.html.includes('width="22"'), 'Jammed chevron SVG should be compact 22px');
+  assert.ok(sbMarkerZ14.opts.icon.html.includes('>S<') && sbMarkerZ14.opts.icon.html.includes('#7C3AED'), 'Southbound arrow must display distinct S badge');
+  assert.ok(sbMarkerZ14.opts.zIndexOffset <= 150, `Traffic arrow zIndexOffset (${sbMarkerZ14.opts.zIndexOffset}) must stay strictly below stop markers (320)`);
 
-  // Generous 34x34 clickable hit area (up from 14x14)
-  assert.deepEqual(Array.from(sbMarker.opts.icon.iconSize), [34, 34]);
-  assert.deepEqual(Array.from(nbMarker.opts.icon.iconSize), [34, 34]);
-  assert.ok(sbMarker.opts.icon.html.includes('>S<') && sbMarker.opts.icon.html.includes('#7C3AED'), 'Southbound arrow must display distinct S badge');
-  assert.ok(nbMarker.opts.icon.html.includes('>N<') && nbMarker.opts.icon.html.includes('#1D4ED8'), 'Northbound arrow must display distinct N badge');
-
-  // Physically offset opposite bounds onto left-hand HK carriageways so polylines & arrows do NOT stack identically
+  // Physically offset opposite bounds onto left-hand HK carriageways so polylines do NOT stack identically
   const sbLine = addedPolylines[1]; // flowLine for SB
   const nbLine = addedPolylines[3]; // flowLine for NB
   const sbMidLon = (sbLine.latlngs[0][1] + sbLine.latlngs[1][1]) / 2;
   const nbMidLon = (nbLine.latlngs[0][1] + nbLine.latlngs[1][1]) / 2;
   assert.ok(Math.abs(sbMidLon - nbMidLon) > 0.0004, `Expected opposite carriageways to be laterally separated on map (dMidLon=${Math.abs(sbMidLon - nbMidLon)})`);
+
+  // 3. At zoom 16, both opposing tips sit >52px apart so BOTH Southbound JAMMED and Northbound SMOOTH arrows render cleanly
+  const fakeMapZ16 = {
+    getBounds: () => ({ isValid: () => true, pad: () => ({ contains: () => true }) }),
+    getZoom: () => 16,
+  };
+  ctx.window.renderTrafficOverlayOnMap(fakeMapZ16, true);
+  assert.equal(addedMarkers.length, 2, 'At zoom 16 (>52px separation), both JAMMED SB and SMOOTH NB directional arrows render');
+  const sbMarker = addedMarkers[0];
+  const nbMarker = addedMarkers[1];
+  assert.ok(nbMarker.opts.icon.html.includes('width="20"'), 'Smooth chevron SVG should be compact 20px');
+  assert.ok(nbMarker.opts.icon.html.includes('>N<') && nbMarker.opts.icon.html.includes('#1D4ED8'), 'Northbound arrow must display distinct N badge');
   const dMarkerLat = Math.abs(sbMarker.latlng[0] - nbMarker.latlng[0]);
-  assert.ok(dMarkerLat > 0.0015, `Expected N/S arrow tips to be well separated for easy tapping (dMarkerLat=${dMarkerLat})`);
+  assert.ok(dMarkerLat > 0.001, `Expected N/S arrow tips to be well separated for easy tapping (dMarkerLat=${dMarkerLat})`);
 
   // Popup displays crisp directional bound pill
   const sbPopup = sbMarker.popupFn();
@@ -3021,6 +3034,252 @@ test('index.html: Saved Bookmarks cleanly truncates long destinations with .rout
   assert.equal(ctx.formatCompactBookmarkDest('Tuen Mun Public Transport Interchange', false), 'Tuen Mun PTI');
   assert.equal(ctx.formatCompactBookmarkDest('東涌站巴士總站', true), '東涌站總站');
 });
+
+test('map.js: route-scoped traffic filtering hides off-route & opposite-smooth detectors, enforces >=52px arrow spacing, and keeps stop markers above traffic arrows', () => {
+  const mapCode = fs.readFileSync('public/map.js', 'utf8');
+  const addedPolylines: any[] = [];
+  const addedMarkers: any[] = [];
+  const fakeLayerGroup = {
+    addTo() { return this; },
+    clearLayers() { addedPolylines.length = 0; addedMarkers.length = 0; },
+    hasLayer() { return false; },
+  };
+  const fakeDetailMap = {
+    getBounds: () => ({ isValid: () => true, pad: () => ({ contains: () => true }) }),
+    getZoom: () => 15,
+  };
+  const ctx: any = {
+    window: { trafficLayerEnabled: true, mapInstance: fakeDetailMap },
+    document: { getElementById: () => null },
+    currentLang: 'en',
+    escapeHtml: (s: string) => String(s ?? ''),
+    escapeJsAttr: (s: string) => String(s ?? ''),
+    // Mirror hardcode.js return shape ({ distKm, t }) so object-unwrapping is covered
+    pointToSegmentDistanceKm: (pLat: number, pLon: number, aLat: number, aLon: number, bLat: number, bLon: number) => {
+      const cosLat = Math.max(0.2, Math.cos(((aLat + bLat) / 2) * Math.PI / 180));
+      const ax = aLon * 111.32 * cosLat, ay = aLat * 110.574;
+      const bx = bLon * 111.32 * cosLat, by = bLat * 110.574;
+      const px = pLon * 111.32 * cosLat, py = pLat * 110.574;
+      const dx = bx - ax, dy = by - ay;
+      const lenSq = dx * dx + dy * dy;
+      const rawT = lenSq > 1e-9 ? ((px - ax) * dx + (py - ay) * dy) / lenSq : 0;
+      const t = Math.max(0, Math.min(1, rawT));
+      return { distKm: Math.hypot(px - (ax + t * dx), py - (ay + t * dy)), t: rawT };
+    },
+    L: {
+      layerGroup: () => fakeLayerGroup,
+      polyline: (latlngs: any, opts: any) => {
+        const obj = { latlngs, opts, popupFn: null as any, addTo() { addedPolylines.push(obj); return obj; }, bindTooltip() { return obj; }, bindPopup(fn: any) { obj.popupFn = fn; return obj; } };
+        return obj;
+      },
+      divIcon: (opts: any) => opts,
+      marker: (latlng: any, opts: any) => {
+        const obj = { latlng, opts, popupFn: null as any, addTo() { addedMarkers.push(obj); return obj; }, bindTooltip() { return obj; }, bindPopup(fn: any) { obj.popupFn = fn; return obj; } };
+        return obj;
+      },
+    },
+  };
+  vm.createContext(ctx);
+  vm.runInContext(mapCode, ctx);
+  ctx.window.mapInstance = fakeDetailMap;
+
+  // Active E36 road-snapped highway corridor (southwest-bound ~225° along YLH)
+  const e36ToAirportCoords = [
+    [22.4440, 114.0140],
+    [22.4385, 114.0075],
+    [22.4290, 113.9975],
+    [22.4150, 113.9870],
+  ];
+  ctx.window._setDetailCorridorMetaForTest({
+    groupKey: 'LWB_E36_O',
+    mode: 'BUS',
+    isBusRoute: true,
+    isRoadSnapped: true,
+    coords: e36ToAirportCoords,
+  });
+
+  ctx.window.__LIVE_TRAFFIC_DETECTORS__ = [
+    // 1. Off-route Kong Sham Western Highway (~3km away) — MUST BE HIDDEN
+    { id: 'KSWH_OFF', lat: 22.4450, lon: 113.9720, rot: 200, spd: 80, occ: 10, tier: 'SMOOTH', roadEn: 'Kong Sham Western Highway' },
+    // 2. Off-route Castle Peak Rd Hung Shui Kiu (~550m away) — MUST BE HIDDEN even if SLOW
+    { id: 'CPR_OFF', lat: 22.4342, lon: 113.9921, rot: 225, spd: 32, occ: 25, tier: 'SLOW', roadEn: 'Castle Peak Rd - Hung Shui Kiu' },
+    // 3. On-corridor YLH opposite direction (NE ~45°), SMOOTH — MUST BE HIDDEN
+    { id: 'YLH_OPP_SMOOTH', lat: 22.4338, lon: 114.0025, rot: 45, spd: 84, occ: 11, tier: 'SMOOTH', roadEn: 'YLH Eastbound' },
+    // 4. On-corridor YLH opposite direction (NE ~45°), JAMMED — MUST STAY VISIBLE (bottleneck warning)
+    { id: 'YLH_OPP_JAM', lat: 22.4215, lon: 113.9920, rot: 38, spd: 12, occ: 92, tier: 'JAMMED', roadEn: 'YLH Eastbound Jam' },
+    // 5. Dense caterpillar chain of 4 same-direction detectors on YLH (~60m apart = ~14px at zoom 15) — ONLY 1 (prioritizing SLOW) should render an arrow!
+    { id: 'YLH_SAME_1', lat: 22.4338, lon: 114.0025, rot: 225, spd: 82, occ: 12, tier: 'SMOOTH', roadEn: 'YLH Westbound 1' },
+    { id: 'YLH_SAME_2_SLOW', lat: 22.4334, lon: 114.0021, rot: 225, spd: 28, occ: 55, tier: 'SLOW', roadEn: 'YLH Westbound Slow' },
+    { id: 'YLH_SAME_3', lat: 22.4330, lon: 114.0017, rot: 225, spd: 80, occ: 14, tier: 'SMOOTH', roadEn: 'YLH Westbound 3' },
+    { id: 'YLH_SAME_4', lat: 22.4326, lon: 114.0013, rot: 225, spd: 81, occ: 13, tier: 'SMOOTH', roadEn: 'YLH Westbound 4' },
+    // 6. On-corridor same-direction SMOOTH well separated (~1.8km down YLH, >350px away) — renders cleanly at zoom 15
+    { id: 'YLH_SAME_FAR', lat: 22.4412, lon: 114.0108, rot: 225, spd: 85, occ: 9, tier: 'SMOOTH', roadEn: 'YLH Westbound Far' },
+  ];
+
+  // Filter verification (route-scoped: strictly <=150m, same travel direction only, off-route & opposite-bound excluded)
+  const filtered = ctx.window.filterTrafficDetectorsForMap(
+    ctx.window.__LIVE_TRAFFIC_DETECTORS__,
+    fakeDetailMap,
+    { isBusRoute: true, isRoadSnapped: true, hasHighwaySpan: true, coords: e36ToAirportCoords },
+    ''
+  );
+  const keptIds = filtered.map((x: any) => x.det.id);
+  assert.ok(!keptIds.includes('KSWH_OFF'), 'Off-route Kong Sham Western Hwy must be filtered out on E36 route map');
+  assert.ok(!keptIds.includes('CPR_OFF'), 'Off-route Castle Peak Rd must be filtered out on E36 route map');
+  assert.ok(!keptIds.includes('YLH_OPP_SMOOTH'), 'Opposite-direction SMOOTH detector on active corridor must be hidden');
+  assert.ok(!keptIds.includes('YLH_OPP_JAM'), 'Opposite-direction detector must not clutter active route map (surfaced in Verdict & Cam modal)');
+  assert.ok(keptIds.includes('YLH_SAME_2_SLOW') && keptIds.includes('YLH_SAME_FAR'), 'Same-direction corridor detectors must be retained for subtle road-flow stripes');
+
+  // Render at zoom 15 on active bus route:
+  // - Smooth detectors (YLH_SAME_FAR, YLH_SAME_1/3/4) draw subtle road stripes ONLY (ZERO smooth arrow badges even at zoom 15!)
+  // - Only the worst same-direction bottleneck (YLH_SAME_2_SLOW) renders a marker (1 marker total, <= 2 max)
+  ctx.window.renderTrafficOverlayOnMap(fakeDetailMap, true);
+  assert.equal(addedMarkers.length, 1, `Expected 1 bottleneck-only marker (YLH_SAME_2_SLOW) with zero smooth badges on route view, got ${addedMarkers.length}`);
+  assert.ok(addedPolylines.length >= 4, 'Subtle left-hand offset road-flow stripes must still render along the corridor');
+
+  const popupTexts = addedMarkers.map((m: any) => m.popupFn());
+  assert.ok(popupTexts.some((t: string) => t.includes('YLH Westbound Slow')), 'Prioritized SLOW bottleneck must render on route map');
+  assert.ok(!popupTexts.some((t: string) => t.includes('YLH Westbound Far')), 'Smooth-flow detectors must NEVER render circle/arrow badges on active bus route view');
+
+  // Verify every traffic arrow zIndexOffset sits strictly below numbered stop markers (320 / 650)
+  for (const m of addedMarkers) {
+    assert.ok(m.opts.zIndexOffset <= 140, `Expected traffic arrow zIndexOffset <= 140, got ${m.opts.zIndexOffset}`);
+  }
+  assert.ok(mapCode.includes('zIndexOffset: isAct ? 650 : 320'), 'Stop markers must sit at zIndexOffset 320 (normal) / 650 (active) strictly above traffic arrows');
+});
+
+test('Decision-first Transit: zero off-route clutter (<=2 bottlenecks on route map), 3-tier Bus-vs-MTR verdicts, and E36 Tuen Mun Rd (TDS90048) + YLH (TDS90067) worst-bottleneck ranking rejecting CPR-*', () => {
+  const sb = loadHardcodeAndPlannerSandbox();
+
+  // --- AC 2: 3-tier plain-English & ZH Bus-vs-MTR Decision Verdicts ---
+  const dMinor = sb.synthesizeTrafficDecision({
+    status: 'SLOW', avgSpd: 38, minSpd: 38, maxOcc: 32, estDelayMins: 4,
+    worstDet: { id: 'TDS90048', spd: 38, occ: 32, tier: 'SLOW', roadEn: 'Tuen Mun Road near San Hui Market - Northbound', roadTc: '屯門公路近新墟街市 - 北行' }
+  }, null, false);
+  assert.equal(dMinor.modeRec, 'TAKE_BUS');
+  assert.equal(dMinor.verdictEn, 'Take Bus · Corridor moving (+2–5m)');
+
+  const dMod = sb.synthesizeTrafficDecision({
+    status: 'SLOW', avgSpd: 26, minSpd: 26, maxOcc: 58, estDelayMins: 8,
+    worstDet: { id: 'TDS90048', spd: 26, occ: 58, tier: 'SLOW', roadEn: 'Tuen Mun Road near San Hui Market - Northbound', roadTc: '屯門公路近新墟街市 - 北行' }
+  }, null, false);
+  assert.equal(dMod.modeRec, 'MTR_FASTER');
+  assert.equal(dMod.verdictEn, 'Bus delayed (+8m) · MTR may be faster');
+
+  const dSevere = sb.synthesizeTrafficDecision({
+    status: 'JAMMED', avgSpd: 12, minSpd: 12, maxOcc: 88, estDelayMins: 15,
+    worstDet: { id: 'TDS90048', spd: 12, occ: 88, tier: 'JAMMED', roadEn: 'Tuen Mun Road near San Hui Market - Northbound', roadTc: '屯門公路近新墟街市 - 北行' }
+  }, null, false);
+  assert.equal(dSevere.modeRec, 'SWITCH_MTR');
+  assert.equal(dSevere.verdictEn, 'Switch to MTR · Heavy jam on Tuen Mun Road (+15m)');
+  assert.ok(dSevere.verdictTc.includes('改乘港鐵') && dSevere.verdictTc.includes('屯門公路'));
+
+  // --- AC 3: E36 (TM-CLK Tunnel BBI -> Fung Chi Tsuen) keeps BOTH Tuen Mun Road (TDS90048) & YLH (TDS90067),
+  // rejects Castle Peak Rd (TDSCPRHSK10004 / CPR-*), and surfaces whichever main carriageway is slower/more delayed ---
+  const e36Stops = [
+    { stopId: 'E36_10', stopName_e: 'Yu Tung Court', latitude: '22.2882', longitude: '113.9436' },
+    { stopId: 'E36_11', stopName_e: 'Tuen Mun Chek Lap Kok Tunnel BBI', latitude: '22.3716', longitude: '113.9636' },
+    { stopId: 'E36_12', stopName_e: 'Fung Chi Tsuen', latitude: '22.4455', longitude: '114.0172' },
+    { stopId: 'E36_13', stopName_e: 'Yuen Long Plaza', latitude: '22.4447', longitude: '114.0243' },
+  ];
+  // Realistic road-snapped polyline along TM-CLK -> Lung Fu Rd -> Tuen Mun Road (through San Hui Market) -> YLH (Shap Pat Heung Int) -> Fung Chi Tsuen
+  const e36RealPolyline = [
+    [22.2882, 113.9436],
+    [22.3716, 113.9636],
+    [22.3860, 113.9720],
+    [22.3930, 113.9765], // Tuen Mun Road approaching San Hui Market (~15° NNE)
+    [22.4000, 113.9784], // Tuen Mun Road past San Hui Market (~15° NNE)
+    [22.4150, 113.9870],
+    [22.4290, 113.9975], // YLH eastbound (~45° NE)
+    [22.4385, 114.0075], // YLH Shap Pat Heung Int (~45° NE)
+    [22.4455, 114.0172],
+    [22.4447, 114.0243],
+  ];
+
+  // Case A: Castle Peak Rd jammed at 8 km/h (MUST BE REJECTED), Tuen Mun Rd slow at 38 km/h, YLH smooth at 82 km/h -> TDS90048 wins!
+  const detCaseA = [
+    { id: 'TDSCPRHSK10004', lat: 22.4342, lon: 113.9921, rot: 45, spd: 8, occ: 95, tier: 'JAMMED', roadEn: 'Castle Peak Rd-Hung Shui Kiu near Hung Shui Kiu Light Rail Stop - Northbound', camKey: 'TDSCPRHSK10004' },
+    { id: 'TDS90048', lat: 22.3965, lon: 113.9775, rot: 15, spd: 38, occ: 32, tier: 'SLOW', roadEn: 'Tuen Mun Road near San Hui Market - Northbound', roadTc: '屯門公路近新墟街市 - 北行', camKey: 'TDS90048' },
+    { id: 'TDS90067', lat: 22.4338, lon: 114.0025, rot: 46, spd: 82, occ: 12, tier: 'SMOOTH', roadEn: 'YLH/Shap Pat Heung Int - Eastbound (1)', roadTc: '元朗公路近十八鄉交匯處 - 東行 (1)', camKey: 'TDS90067' },
+  ];
+  const sumA = sb.getDirectionalRoadSummary(e36Stops, 0, detCaseA, false, 8, e36RealPolyline);
+  assert.equal(sumA.focusDet?.id, 'TDS90048', 'When TMR is slower than YLH, TDS90048 must win while CPR-* is rejected');
+  assert.equal(sumA.headline, 'Take Bus · Corridor moving (+2–5m)');
+
+  // Case B: Tuen Mun Rd slow at 38 km/h, YLH severely jammed at 11 km/h -> TDS90067 wins with Switch to MTR verdict!
+  const detCaseB = [
+    detCaseA[0],
+    detCaseA[1],
+    { ...detCaseA[2], spd: 11, occ: 90, tier: 'JAMMED' },
+  ];
+  const sumB = sb.getDirectionalRoadSummary(e36Stops, 0, detCaseB, false, 8, e36RealPolyline);
+  assert.equal(sumB.focusDet?.id, 'TDS90067', 'When YLH is jammed worse than TMR, TDS90067 must win');
+  assert.equal(sumB.modeRec, 'SWITCH_MTR');
+  assert.ok(sumB.headline.includes('Switch to MTR · Heavy jam on Yuen Long Highway (+15m)'), `Unexpected YLH severe jam headline: ${sumB.headline}`);
+
+  // --- AC 1: Zoomed-out E36 map hides Sha Tin / Ma On Shan / Tsuen Wan off-route badges and caps route bottlenecks to <= 2 ---
+  const mapCode = fs.readFileSync('public/map.js', 'utf8');
+  const addedMarkers: any[] = [];
+  const fakeLayerGroup = { addTo() { return this; }, clearLayers() { addedMarkers.length = 0; }, hasLayer() { return false; } };
+  const fakeDetailMap = { getBounds: () => ({ isValid: () => true, pad: () => ({ contains: () => true }) }), getZoom: () => 11 };
+  const fakeBrowseMap = { getBounds: () => ({ isValid: () => true, pad: () => ({ contains: () => true }) }), getZoom: () => 12 };
+  const mapCtx: any = {
+    window: { trafficLayerEnabled: true },
+    document: { getElementById: () => null },
+    currentLang: 'en',
+    escapeHtml: (s: string) => String(s ?? ''),
+    escapeJsAttr: (s: string) => String(s ?? ''),
+    isOffCorridorLocalArterialDetector: sb.isOffCorridorLocalArterialDetector,
+    pointToSegmentDistanceKm: sb.pointToSegmentDistanceKm,
+    L: {
+      layerGroup: () => fakeLayerGroup,
+      polyline: () => ({ addTo() { return this; }, bindTooltip() { return this; }, bindPopup() { return this; } }),
+      divIcon: (opts: any) => opts,
+      marker: (latlng: any, opts: any) => {
+        const obj = { latlng, opts, popupFn: null as any, addTo() { addedMarkers.push(obj); return obj; }, bindTooltip() { return obj; }, bindPopup(fn: any) { obj.popupFn = fn; return obj; } };
+        return obj;
+      },
+    },
+  };
+  vm.createContext(mapCtx);
+  vm.runInContext(mapCode, mapCtx);
+  mapCtx.window.mapInstance = fakeDetailMap;
+  mapCtx.window.browseMapInstance = fakeBrowseMap;
+  mapCtx.window._setDetailCorridorMetaForTest({
+    groupKey: 'LWB_E36_I',
+    mode: 'BUS',
+    isBusRoute: true,
+    hasHighwaySpan: true,
+    isRoadSnapped: true,
+    coords: e36RealPolyline,
+  });
+
+  mapCtx.window.__LIVE_TRAFFIC_DETECTORS__ = [
+    // Off-route regional jams in Sha Tin, Ma On Shan, Tsuen Wan — MUST BE 100% HIDDEN on E36 route map
+    { id: 'ST_JAM', lat: 22.3820, lon: 114.1950, rot: 30, spd: 10, occ: 92, tier: 'JAMMED', roadEn: 'Sha Tin Road' },
+    { id: 'MOS_JAM', lat: 22.4240, lon: 114.2320, rot: 40, spd: 12, occ: 88, tier: 'JAMMED', roadEn: 'Ma On Shan Bypass' },
+    { id: 'TW_SLOW', lat: 22.3700, lon: 114.1150, rot: 90, spd: 28, occ: 50, tier: 'SLOW', roadEn: 'Tsuen Wan Road' },
+    // Parallel Castle Peak Rd — MUST BE HIDDEN
+    detCaseA[0],
+    // 3 well-separated on-corridor bottlenecks on E36 (only top 2 worst should render!)
+    { id: 'TDS90048', lat: 22.3965, lon: 113.9775, rot: 15, spd: 14, occ: 85, tier: 'JAMMED', roadEn: 'Tuen Mun Road near San Hui Market - Northbound' },
+    { id: 'E36_MID_SLOW', lat: 22.3720, lon: 113.9638, rot: 18, spd: 34, occ: 40, tier: 'SLOW', roadEn: 'Lung Fu Road' },
+    { id: 'TDS90067', lat: 22.4338, lon: 114.0025, rot: 46, spd: 22, occ: 68, tier: 'SLOW', roadEn: 'YLH/Shap Pat Heung Int - Eastbound (1)' },
+  ];
+
+  // Zoom 11 route view: zero Sha Tin / Ma On Shan / Tsuen Wan / Castle Peak Rd badges, and capped at <= 2 worst bottlenecks
+  mapCtx.window.renderTrafficOverlayOnMap(fakeDetailMap, true);
+  assert.ok(addedMarkers.length >= 1 && addedMarkers.length <= 2, `Route view must render at most 2 worst bottlenecks, got ${addedMarkers.length}`);
+  const routePopups = addedMarkers.map((m: any) => m.popupFn()).join(' | ');
+  assert.ok(!routePopups.includes('Sha Tin') && !routePopups.includes('Ma On Shan') && !routePopups.includes('Tsuen Wan') && !routePopups.includes('Castle Peak'), `Off-route regional/local badges leaked onto E36 route map: ${routePopups}`);
+  assert.ok(routePopups.includes('Tuen Mun Road'), 'Worst bottleneck (Tuen Mun Road 14 km/h) must be visible on route map');
+
+  // General browse map (no active bus route selected) still shows regional Sha Tin / Ma On Shan / Tsuen Wan bottlenecks
+  mapCtx.window.renderTrafficOverlayOnMap(fakeBrowseMap, true);
+  const browsePopups = addedMarkers.map((m: any) => m.popupFn()).join(' | ');
+  assert.ok(browsePopups.includes('Sha Tin') || browsePopups.includes('Ma On Shan'), 'General browse map must still display regional traffic markers when no route is selected');
+});
+
 
 
 

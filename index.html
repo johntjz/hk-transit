@@ -566,18 +566,18 @@
     }
     .traffic-road-status-bar {
       display: flex; align-items: center; justify-content: space-between; gap: 10px;
-      margin: 2px 2px 5px 2px; padding: 7px 10px; border-radius: 10px;
-      background: var(--bg-surface); border: 1px solid var(--border-color);
+      margin: 2px 2px 5px 2px; padding: 8px 11px; border-radius: 10px;
+      background: rgba(22, 163, 74, 0.06); border: 1px solid var(--border-color);
       border-left: 3.5px solid #16A34A; cursor: pointer; text-align: left;
       transition: background-color 0.15s ease;
     }
     .traffic-road-status-bar:hover { filter: brightness(0.97); }
-    .traffic-road-status-bar.tone-slow { border-left-color: #D97706; }
-    .traffic-road-status-bar.tone-jammed { border-left-color: #DC2626; }
+    .traffic-road-status-bar.tone-slow { border-left-color: #D97706; background: rgba(245, 158, 11, 0.08); }
+    .traffic-road-status-bar.tone-jammed { border-left-color: #DC2626; background: rgba(220, 38, 38, 0.09); }
     .traffic-road-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
-    .traffic-road-headline { font-size: 0.75rem; font-weight: 700; color: var(--text-main); font-variant-numeric: tabular-nums; line-height: 1.25; }
+    .traffic-road-headline { font-size: 0.79rem; font-weight: 800; color: var(--text-main); font-variant-numeric: tabular-nums; line-height: 1.25; }
     .traffic-road-sub { font-size: 0.69rem; font-weight: 500; color: var(--text-sub); font-variant-numeric: tabular-nums; line-height: 1.3; }
-    .traffic-road-cta { font-size: 0.68rem; font-weight: 700; color: var(--ios-blue); white-space: nowrap; flex-shrink: 0; }
+    .traffic-road-cta { font-size: 0.70rem; font-weight: 700; color: var(--ios-blue); white-space: nowrap; flex-shrink: 0; }
     .map-traffic-chip-btn {
       position: absolute; bottom: 14px; left: 10px; z-index: 650;
       padding: 5px 11px; border-radius: 999px;
@@ -5272,10 +5272,21 @@ window.openTrafficDecisionModal = function(detId, oppDetId = '', segmentNote = '
     actionTip: ''
   };
   if (isApproaching && (dec.tone === 'jammed' || dec.tone === 'slow')) {
-    const isJam = dec.tone === 'jammed';
-    dec.verdict = isZh
-      ? (isJam ? `來車路段擠塞 · 預計${dec.delayLabel}` : `來車路段車多 · 預計${dec.delayLabel}`)
-      : (isJam ? `Incoming bus in jam · Expect ${dec.delayLabel}` : `Incoming bus slowed · Expect ${dec.delayLabel}`);
+    const modeRec = rawDec?.modeRec || (dec.tone === 'jammed' ? 'SWITCH_MTR' : 'TAKE_BUS');
+    const shortRoad = roadName.replace(/\s*[-–—]\s*(North|South|East|West)bound.*$/i, '').replace(/\s+near\s+.*$/i, '').trim() || roadName;
+    if (modeRec === 'SWITCH_MTR') {
+      dec.verdict = isZh
+        ? `改乘港鐵 · 來車於${shortRoad}嚴重擠塞 (${dec.delayLabel})`
+        : `Switch to MTR · Incoming bus in jam on ${shortRoad} (${dec.delayLabel})`;
+    } else if (modeRec === 'MTR_FASTER') {
+      dec.verdict = isZh
+        ? `來車延誤 (${dec.delayLabel}) · 港鐵或較快`
+        : `Incoming bus delayed (${dec.delayLabel}) · MTR may be faster`;
+    } else {
+      dec.verdict = isZh
+        ? `可乘巴士 · 來車稍慢 (${dec.delayLabel})`
+        : `Take Bus · Incoming bus moving (${dec.delayLabel})`;
+    }
     dec.actionTip = isZh
       ? '班次正途經擠塞路段前來，候車時間或會延長'
       : 'Incoming bus is passing through congestion before your stop — expect longer wait';

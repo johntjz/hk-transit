@@ -9,6 +9,7 @@ window.xferMapInstance = null;
 var detailPolylineLayer = null;
 var mapMarkers = {};
 var currentDetailRoadCoords = [];
+var currentDetailCorridorMeta = null;
 var detailMapHeightState = 0;
 var isDetailGpsLocked = false;
 
@@ -275,6 +276,211 @@ function buildTrafficDetectorPopupHtml(det, isZh) {
   `;
 }
 
+function _mapBearingDeg(lat1, lon1, lat2, lon2) {
+  if (typeof computeBearingDeg === 'function') return computeBearingDeg(lat1, lon1, lat2, lon2);
+  const toRad = Math.PI / 180;
+  const dLon = (lon2 - lon1) * toRad;
+  const y = Math.sin(dLon) * Math.cos(lat2 * toRad);
+  const x = Math.cos(lat1 * toRad) * Math.sin(lat2 * toRad) - Math.sin(lat1 * toRad) * Math.cos(lat2 * toRad) * Math.cos(dLon);
+  return ((Math.atan2(y, x) * 180 / Math.PI) + 360) % 360;
+}
+
+function _mapAngDiffDeg(a, b) {
+  if (typeof angularDiffDeg === 'function') return angularDiffDeg(a, b);
+  const d = Math.abs(((Number(a) || 0) - (Number(b) || 0)) % 360);
+  return d > 180 ? 360 - d : d;
+}
+
+function _mapPointToSegDistKm(pLat, pLon, aLat, aLon, bLat, bLon) {
+  if (typeof pointToSegmentDistanceKm === 'function') {
+    const res = pointToSegmentDistanceKm(pLat, pLon, aLat, aLon, bLat, bLon);
+    if (res && typeof res === 'object' && Number.isFinite(res.distKm)) return res.distKm;
+    if (Number.isFinite(res)) return res;
+  }
+  const cosLat = Math.max(0.2, Math.cos(((aLat + bLat) / 2) * Math.PI / 180));
+  const ax = aLon * 111.111 * cosLat, ay = aLat * 111.111;
+  const bx = bLon * 111.111 * cosLat, by = bLat * 111.111;
+  const px = pLon * 111.111 * cosLat, py = pLat * 111.111;
+  const dx = bx - ax, dy = by - ay;
+  const lenSq = dx * dx + dy * dy;
+  let t = lenSq > 1e-12 ? ((px - ax) * dx + (py - ay) * dy) / lenSq : 0;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+
+function _computeCorridorBbox(coords, padDeg = 0.004) {
+  let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity;
+  for (let i = 0; i < coords.length; i++) {
+    const la = Number(coords[i]?.[0]), lo = Number(coords[i]?.[1]);
+    if (!Number.isFinite(la) || !Number.isFinite(lo)) continue;
+    if (la < minLat) minLat = la;
+    if (la > maxLat) maxLat = la;
+    if (lo < minLon) minLon = lo;
+    if (lo > maxLon) maxLon = lo;
+  }
+  if (!Number.isFinite(minLat)) return null;
+  return { minLat: minLat - padDeg, maxLat: maxLat + padDeg, minLon: minLon - padDeg, maxLon: maxLon + padDeg };
+}
+
+function _stopsHaveHighwaySpan(stops) {
+  if (!Array.isArray(stops) || stops.length < 2) return false;
+  const bbiRe = /tunnel|toll\s*plaza|\bbbi\b|highway|interchange|tsing\s*ma|lantau\s*link|轉車站|隧道|收費廣場|公路/i;
+  for (let i = 0; i < stops.length - 1; i++) {
+    const a = stops[i], b = stops[i + 1];
+    const aName = `${a?.stopName_e || ''} ${a?.name_tc || ''}`;
+    const bName = `${b?.stopName_e || ''} ${b?.name_tc || ''}`;
+    if (bbiRe.test(aName) || bbiRe.test(bName)) return true;
+    const la1 = parseFloat(a?.latitude ?? a?.lat), lo1 = parseFloat(a?.longitude ?? a?.lon);
+    const la2 = parseFloat(b?.latitude ?? b?.lat), lo2 = parseFloat(b?.longitude ?? b?.lon);
+    if (Number.isFinite(la1) && Number.isFinite(lo1) && Number.isFinite(la2) && Number.isFinite(lo2)) {
+      if (typeof calculateDistanceKm === 'function' && calculateDistanceKm(la1, lo1, la2, lo2) >= 2.0) return true;
+    }
+  }
+  return false;
+}
+
+function matchDetectorToRouteCorridor(det, routeCoords, isRoadSnapped = true, precomputedBbox = null, hasHighwaySpan = false) {
+  if (!det || !Number.isFinite(det.lat) || !Number.isFinite(det.lon) || !Array.isArray(routeCoords) || routeCoords.length < 2) {
+    return { matched: false, relation: 'none', distKm: Infinity };
+  }
+  // Strictly <= 150m corridor radius on active bus routes so off-route regional districts (Sha Tin, Ma On Shan, Tsuen Wan, parallel arterials) never leak onto the route map.
+  const maxRadiusKm = isRoadSnapped ? 0.12 : 0.15;
+  const sameTolDeg = isRoadSnapped ? 42 : 48;
+  const oppMinDeg = isRoadSnapped ? 138 : 132;
+
+  if (precomputedBbox) {
+    if (det.lat < precomputedBbox.minLat || det.lat > precomputedBbox.maxLat || det.lon < precomputedBbox.minLon || det.lon > precomputedBbox.maxLon) {
+      return { matched: false, relation: 'none', distKm: Infinity };
+    }
+  }
+
+  const isLocalArterial = (typeof isOffCorridorLocalArterialDetector === 'function')
+    ? isOffCorridorLocalArterialDetector(det)
+    : false;
+  if (hasHighwaySpan && isLocalArterial) {
+    return { matched: false, relation: 'none', distKm: Infinity };
+  }
+
+  let bestSameDistKm = Infinity;
+  let bestOppDistKm = Infinity;
+  const detRot = Number(det.rot);
+  const hasRot = Number.isFinite(detRot);
+
+  for (let i = 0; i < routeCoords.length - 1; i++) {
+    const a = routeCoords[i], b = routeCoords[i + 1];
+    if (!a || !b) continue;
+    const aLat = Number(a[0]), aLon = Number(a[1]), bLat = Number(b[0]), bLon = Number(b[1]);
+    if (!Number.isFinite(aLat) || !Number.isFinite(aLon) || !Number.isFinite(bLat) || !Number.isFinite(bLon)) continue;
+
+    // Fast segment bounding-box reject before computing perpendicular distance
+    const segPad = 0.0018;
+    if (det.lat < Math.min(aLat, bLat) - segPad || det.lat > Math.max(aLat, bLat) + segPad) continue;
+    if (det.lon < Math.min(aLon, bLon) - segPad || det.lon > Math.max(aLon, bLon) + segPad) continue;
+
+    const dLatM = (bLat - aLat) * 111111;
+    const dLonM = (bLon - aLon) * 111111 * Math.cos(((aLat + bLat) / 2) * Math.PI / 180);
+    const segLenM = Math.hypot(dLatM, dLonM);
+    if (segLenM < 5) continue;
+
+    if (isLocalArterial && segLenM >= 1200) continue;
+
+    const distKm = _mapPointToSegDistKm(det.lat, det.lon, aLat, aLon, bLat, bLon);
+    if (distKm > maxRadiusKm) continue;
+
+    if (!hasRot) {
+      if (distKm < bestSameDistKm) bestSameDistKm = distKm;
+      continue;
+    }
+
+    const segBearing = _mapBearingDeg(aLat, aLon, bLat, bLon);
+    const ang = _mapAngDiffDeg(detRot, segBearing);
+    if (ang <= sameTolDeg) {
+      if (distKm < bestSameDistKm) bestSameDistKm = distKm;
+    } else if (ang >= oppMinDeg) {
+      if (distKm < bestOppDistKm) bestOppDistKm = distKm;
+    }
+  }
+
+  if (bestSameDistKm <= maxRadiusKm) {
+    return { matched: true, relation: 'same', distKm: bestSameDistKm };
+  }
+  if (bestOppDistKm <= maxRadiusKm) {
+    return { matched: true, relation: 'opp', distKm: bestOppDistKm };
+  }
+  return { matched: false, relation: 'none', distKm: Math.min(bestSameDistKm, bestOppDistKm) };
+}
+
+function filterTrafficDetectorsForMap(detectors, targetMap, corridorMeta = null, focusedDetId = '') {
+  if (!Array.isArray(detectors) || !detectors.length || !targetMap) return [];
+  const bounds = targetMap.getBounds ? targetMap.getBounds() : null;
+  if (!bounds || (typeof bounds.isValid === 'function' && !bounds.isValid())) return [];
+  const padded = typeof bounds.pad === 'function' ? bounds.pad(0.22) : bounds;
+
+  const isDetailBusScoped = Boolean(
+    corridorMeta &&
+    corridorMeta.isBusRoute &&
+    Array.isArray(corridorMeta.coords) &&
+    corridorMeta.coords.length >= 2
+  );
+  const corridorBbox = isDetailBusScoped
+    ? _computeCorridorBbox(corridorMeta.coords, 0.0022)
+    : null;
+
+  const kept = [];
+  for (let i = 0; i < detectors.length; i++) {
+    const d = detectors[i];
+    if (!d || !Number.isFinite(d.lat) || !Number.isFinite(d.lon)) continue;
+    const isFocused = Boolean(focusedDetId && d.id === focusedDetId);
+    if (!isFocused && !padded.contains([d.lat, d.lon])) continue;
+
+    if (isDetailBusScoped) {
+      const m = matchDetectorToRouteCorridor(
+        d,
+        corridorMeta.coords,
+        corridorMeta.isRoadSnapped,
+        corridorBbox,
+        Boolean(corridorMeta.hasHighwaySpan)
+      );
+      if (!m.matched && !isFocused) continue;
+      // On active bus route view, keep ONLY the bus's travel direction so opposite-bound icons never clutter the route
+      // (opposite-bound jam callouts remain surfaced in the Verdict & Cam modal).
+      if (!isFocused && m.relation !== 'same') continue;
+      kept.push({ det: d, relation: m.matched ? m.relation : 'focused', isFocused });
+    } else {
+      kept.push({ det: d, relation: 'global', isFocused });
+    }
+  }
+  return kept;
+}
+
+function projectDetectorToScreenPx(targetMap, lat, lon, zoom = 13) {
+  if (targetMap && typeof targetMap.latLngToContainerPoint === 'function') {
+    try {
+      const pt = targetMap.latLngToContainerPoint([lat, lon]);
+      if (pt && Number.isFinite(pt.x) && Number.isFinite(pt.y)) {
+        return { x: pt.x, y: pt.y };
+      }
+    } catch (e) {}
+  }
+  const z = Number.isFinite(zoom) ? zoom : 13;
+  const scale = 256 * Math.pow(2, z);
+  const x = ((lon + 180) / 360) * scale;
+  const sinLat = Math.max(-0.9999, Math.min(0.9999, Math.sin(lat * Math.PI / 180)));
+  const y = (0.5 - Math.log((1 + sinLat) / (1 - sinLat)) / (4 * Math.PI)) * scale;
+  return { x, y };
+}
+
+function _bringLayerGroupToFront(layer) {
+  if (!layer) return;
+  try {
+    if (typeof layer.eachLayer === 'function') {
+      layer.eachLayer((sub) => { if (sub && typeof sub.bringToFront === 'function') sub.bringToFront(); });
+    } else if (typeof layer.bringToFront === 'function') {
+      layer.bringToFront();
+    }
+  } catch (e) {}
+}
+
 function renderTrafficOverlayOnMap(targetMap, forceRedraw = false) {
   if (!targetMap || typeof L === 'undefined') return;
   let layerGroup = _trafficLayerByMap.get(targetMap);
@@ -298,34 +504,73 @@ function renderTrafficOverlayOnMap(targetMap, forceRedraw = false) {
   const detectors = window.__LIVE_TRAFFIC_DETECTORS__;
   if (!window.trafficLayerEnabled || !Array.isArray(detectors) || !detectors.length) return;
 
-  const bounds = targetMap.getBounds();
-  if (!bounds || !bounds.isValid()) return;
-  const padded = bounds.pad(0.22);
-  const zoom = targetMap.getZoom() || 13;
+  const zoom = targetMap.getZoom ? (targetMap.getZoom() || 13) : 13;
   const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
-
-  const inView = [];
-  for (let i = 0; i < detectors.length; i++) {
-    const d = detectors[i];
-    if (!Number.isFinite(d.lat) || !Number.isFinite(d.lon)) continue;
-    if (padded.contains([d.lat, d.lon])) inView.push(d);
+  const isDetailMap = Boolean(window.mapInstance && targetMap === window.mapInstance);
+  const activeCorridor = isDetailMap ? currentDetailCorridorMeta : null;
+  // Never dump regional highway traffic overlays onto rail or ferry route detail maps
+  if (isDetailMap && activeCorridor && !activeCorridor.isBusRoute) {
+    if (detailPolylineLayer) _bringLayerGroupToFront(detailPolylineLayer);
+    return;
   }
-  if (!inView.length) return;
+  const isDetailBusScoped = Boolean(
+    isDetailMap &&
+    activeCorridor &&
+    activeCorridor.isBusRoute &&
+    Array.isArray(activeCorridor.coords) &&
+    activeCorridor.coords.length >= 2
+  );
+  const focusedDetId = isDetailMap ? String(window.__FOCUSED_TRAFFIC_DET_ID__ || '') : '';
 
-  // Prioritize JAMMED & SLOW segments so bottlenecks never get dropped by density caps
-  const prio = (t) => (t === 'JAMMED' ? 0 : (t === 'SLOW' ? 1 : 2));
-  inView.sort((a, b) => prio(a.tier) - prio(b.tier));
+  const candidates = filterTrafficDetectorsForMap(detectors, targetMap, activeCorridor, focusedDetId);
+  if (!candidates.length) {
+    if (isDetailMap && detailPolylineLayer) _bringLayerGroupToFront(detailPolylineLayer);
+    return;
+  }
 
-  const maxDraw = zoom <= 11 ? 150 : (zoom <= 13 ? 250 : 380);
-  const segHalfMeters = zoom <= 12 ? 165 : (zoom <= 14 ? 115 : 80);
+  // Prioritize: focused detector -> worst severity/delay -> lowest live speed -> highest occupancy -> camera-equipped
+  const tierPrio = (t) => (t === 'JAMMED' ? 0 : (t === 'SLOW' ? 1 : 2));
+  const relPrio = (r) => (r === 'same' ? 0 : (r === 'global' ? 1 : 2));
+  const delayScore = (det) => {
+    if (typeof _estimateDetectorDelayMins === 'function') return _estimateDetectorDelayMins(det);
+    if (det.tier === 'JAMMED') return 15;
+    if (det.tier === 'SLOW') return 5;
+    return 0;
+  };
+  candidates.sort((a, b) => {
+    if (a.isFocused !== b.isFocused) return a.isFocused ? -1 : 1;
+    const tp = tierPrio(a.det.tier) - tierPrio(b.det.tier);
+    if (tp !== 0) return tp;
+    const dd = delayScore(b.det) - delayScore(a.det);
+    if (dd !== 0) return dd;
+    const aSpd = Number.isFinite(Number(a.det.spd)) ? Number(a.det.spd) : 99;
+    const bSpd = Number.isFinite(Number(b.det.spd)) ? Number(b.det.spd) : 99;
+    if (aSpd !== bSpd) return aSpd - bSpd;
+    const occDiff = (Number(b.det.occ) || 0) - (Number(a.det.occ) || 0);
+    if (occDiff !== 0) return occDiff;
+    const rp = relPrio(a.relation) - relPrio(b.relation);
+    if (rp !== 0) return rp;
+    return (b.det.camKey ? 1 : 0) - (a.det.camKey ? 1 : 0);
+  });
+
+  const maxDraw = isDetailBusScoped
+    ? 180
+    : (zoom <= 11 ? 140 : (zoom <= 13 ? 220 : 320));
+  const segHalfMeters = zoom <= 12 ? 155 : (zoom <= 14 ? 105 : 75);
   // Hong Kong drives on the LEFT: offset each carriageway slightly to the left of its heading
   // so Northbound vs Southbound (and Eastbound vs Westbound) physically separate instead of overlapping.
-  const laneOffsetMeters = zoom >= 15 ? 14 : (zoom >= 13 ? 28 : 46);
-  const selected = inView.slice(0, maxDraw);
+  const laneOffsetMeters = zoom >= 15 ? 14 : (zoom >= 13 ? 26 : 42);
+  const MIN_ARROW_SPACING_PX = 52;
+  const MIN_OPP_BOTTLENECK_SPACING_PX = 36;
+  const MAX_ROUTE_BOTTLENECK_MARKERS = 2;
+  const selected = candidates.slice(0, maxDraw);
+  const placedArrows = [];
+  let placedRouteBottlenecks = 0;
 
-  selected.forEach((d) => {
+  selected.forEach(({ det: d, isFocused }) => {
     const isJam = d.tier === 'JAMMED';
     const isSlow = d.tier === 'SLOW';
+    const isBottleneck = isJam || isSlow;
     const col = isJam ? '#DC2626' : (isSlow ? '#F59E0B' : '#16A34A');
     const boundMeta = classifyTrafficBoundMeta(d.rot, d.dir, isZh);
 
@@ -335,18 +580,19 @@ function renderTrafficOverlayOnMap(targetMap, forceRedraw = false) {
     const pStart = projectPointMeters(cLat, cLon, (d.rot + 180) % 360, segHalfMeters);
     const pEnd = projectPointMeters(cLat, cLon, d.rot, segHalfMeters);
 
+    // Clean left-hand offset road stripe (subtle for smooth flow, prominent for bottlenecks)
     L.polyline([pStart, pEnd], {
       color: '#FFFFFF',
-      weight: isJam ? 9.5 : (isSlow ? 8.2 : 5.6),
-      opacity: isJam || isSlow ? 0.90 : 0.72,
+      weight: isJam ? 8.6 : (isSlow ? 7.4 : (isDetailBusScoped ? 4.2 : 4.8)),
+      opacity: isBottleneck ? 0.88 : (isDetailBusScoped ? 0.50 : 0.62),
       lineCap: 'round',
       interactive: false
     }).addTo(layerGroup);
 
     const flowLine = L.polyline([pStart, pEnd], {
       color: col,
-      weight: isJam ? 5.8 : (isSlow ? 4.8 : 3.6),
-      opacity: isJam ? 0.96 : (isSlow ? 0.90 : 0.78),
+      weight: isJam ? 5.2 : (isSlow ? 4.2 : (isDetailBusScoped ? 2.6 : 3.0)),
+      opacity: isJam ? 0.94 : (isSlow ? 0.88 : (isDetailBusScoped ? 0.58 : 0.70)),
       lineCap: 'round'
     }).addTo(layerGroup);
 
@@ -355,27 +601,74 @@ function renderTrafficOverlayOnMap(targetMap, forceRedraw = false) {
     flowLine.bindPopup(() => buildTrafficDetectorPopupHtml(d, isZh), { closeButton: true, maxWidth: 270 });
     detMarkerMap.set(d.id, flowLine);
 
-    // Larger, high-contrast directional arrow + upright N/S/E/W bound badge inside a generous 34x34 tap target
-    if (isJam || isSlow || zoom >= 13) {
-      const svgSize = isJam ? 24 : (isSlow ? 22 : 20);
-      const badgeSize = isJam ? 14 : 13;
-      const arrowHtml = `
-        <div class="traffic-dir-marker-hit" style="width:34px;height:34px;display:flex;align-items:center;justify-content:center;position:relative;cursor:pointer;">
-          <svg width="${svgSize}" height="${svgSize}" viewBox="0 0 24 24" style="transform:rotate(${d.rot}deg);display:block;filter:drop-shadow(0 1.5px 3px rgba(0,0,0,0.48));">
-            <circle cx="12" cy="12" r="10.5" fill="rgba(255,255,255,0.95)" stroke="${col}" stroke-width="1.8"/>
-            <path d="M12 4.2 L18.2 17.4 L12 14.2 L5.8 17.4 Z" fill="${col}" stroke="#FFFFFF" stroke-width="0.9" stroke-linejoin="round"/>
-          </svg>
-          <span style="position:absolute;right:0;bottom:0;min-width:${badgeSize}px;height:${badgeSize}px;padding:0 2.5px;border-radius:999px;background:${boundMeta.badgeBg};color:#FFFFFF;border:1.5px solid #FFFFFF;font-size:8.5px;font-weight:900;line-height:${badgeSize - 3}px;text-align:center;box-shadow:0 1px 2px rgba(0,0,0,0.4);pointer-events:none;">${escapeHtml(boundMeta.shortLabel)}</span>
-        </div>`;
-      const arrowMarker = L.marker(pEnd, {
-        icon: L.divIcon({ className: '', html: arrowHtml, iconSize: [34, 34], iconAnchor: [17, 17] }),
-        zIndexOffset: isJam ? 520 : (isSlow ? 400 : 180)
-      }).addTo(layerGroup);
-      arrowMarker.bindTooltip(tipTxt, { direction: 'top', offset: [0, -10], className: 'kmb-map-stop-label' });
-      arrowMarker.bindPopup(() => buildTrafficDetectorPopupHtml(d, isZh), { closeButton: true, maxWidth: 270 });
-      detMarkerMap.set(`${d.id}_arrow`, arrowMarker);
+    // Minimalist route-view markers vs general browse map markers:
+    // - On active bus route view (drawRouteOnMap): NEVER render smooth-flow detector circles/badges at any zoom level,
+    //   and cap bottleneck markers to at most the 1-2 worst slowdowns/jams along the route corridor.
+    // - On general browse map (no active route selected): hide smooth arrows below zoom 15 and enforce >= 52px spacing.
+    const arrowEligible = isDetailBusScoped
+      ? (isFocused || (isBottleneck && placedRouteBottlenecks < MAX_ROUTE_BOTTLENECK_MARKERS))
+      : (isFocused || isBottleneck || zoom >= 15);
+    if (arrowEligible) {
+      const ptPx = projectDetectorToScreenPx(targetMap, pEnd[0], pEnd[1], zoom);
+      let tooClose = false;
+      if (!isFocused) {
+        for (let k = 0; k < placedArrows.length; k++) {
+          const prev = placedArrows[k];
+          const dx = ptPx.x - prev.x;
+          const dy = ptPx.y - prev.y;
+          const distPx = Math.hypot(dx, dy);
+          // Allow two distinct opposite-bound bottlenecks to sit slightly closer (36px) without overlapping their 21-22px badges
+          const isOppBottleneckPair = isBottleneck && prev.isBottleneck && _mapAngDiffDeg(d.rot, prev.rot) >= 135;
+          const minReqPx = isOppBottleneckPair ? MIN_OPP_BOTTLENECK_SPACING_PX : MIN_ARROW_SPACING_PX;
+          if (distPx < minReqPx) {
+            tooClose = true;
+            break;
+          }
+        }
+      }
+
+      if (!tooClose) {
+        placedArrows.push({ x: ptPx.x, y: ptPx.y, isBottleneck, rot: Number(d.rot) || 0 });
+        if (isDetailBusScoped && isBottleneck && !isFocused) {
+          placedRouteBottlenecks++;
+        }
+
+        // Slim 20-22px visual chevron badge + compact upright N/S/E/W label inside transparent 32x32 hit area
+        const svgSize = isJam ? 22 : (isSlow ? 21 : 20);
+        const badgeFill = isJam ? '#DC2626' : (isSlow ? '#D97706' : 'rgba(255,255,255,0.94)');
+        const badgeStroke = isBottleneck ? '#FFFFFF' : '#16A34A';
+        const chevronFill = isBottleneck ? '#FFFFFF' : '#16A34A';
+        const arrowHtml = `
+          <div class="traffic-dir-marker-hit" style="width:32px;height:32px;display:flex;align-items:center;justify-content:center;position:relative;cursor:pointer;">
+            <svg width="${svgSize}" height="${svgSize}" viewBox="0 0 24 24" style="transform:rotate(${d.rot}deg);display:block;filter:drop-shadow(0 1px 2.5px rgba(0,0,0,0.42));">
+              <circle cx="12" cy="12" r="10.2" fill="${badgeFill}" stroke="${badgeStroke}" stroke-width="${isBottleneck ? '1.8' : '1.6'}"/>
+              <path d="M12 4.6 L17.6 16.8 L12 13.8 L6.4 16.8 Z" fill="${chevronFill}" stroke="${isBottleneck ? 'none' : '#FFFFFF'}" stroke-width="${isBottleneck ? '0' : '0.6'}" stroke-linejoin="round"/>
+            </svg>
+            <span style="position:absolute;right:1px;bottom:1px;min-width:11px;height:11px;padding:0 2px;border-radius:999px;background:${boundMeta.badgeBg};color:#FFFFFF;border:1.2px solid #FFFFFF;font-size:7.5px;font-weight:900;line-height:8.6px;text-align:center;box-shadow:0 1px 2px rgba(0,0,0,0.36);pointer-events:none;">${escapeHtml(boundMeta.shortLabel)}</span>
+          </div>`;
+        const arrowMarker = L.marker(pEnd, {
+          icon: L.divIcon({ className: '', html: arrowHtml, iconSize: [32, 32], iconAnchor: [16, 16] }),
+          // Keep traffic arrows strictly below numbered stop markers (320 / 650) and planner pins (700+)
+          zIndexOffset: isJam ? 140 : (isSlow ? 110 : 70)
+        }).addTo(layerGroup);
+        arrowMarker.bindTooltip(tipTxt, { direction: 'top', offset: [0, -8], className: 'kmb-map-stop-label' });
+        arrowMarker.bindPopup(() => buildTrafficDetectorPopupHtml(d, isZh), { closeButton: true, maxWidth: 270 });
+        detMarkerMap.set(`${d.id}_arrow`, arrowMarker);
+      }
     }
   });
+
+  // Always keep active route polyline cleanly above road traffic stripes
+  if (isDetailMap && detailPolylineLayer) {
+    _bringLayerGroupToFront(detailPolylineLayer);
+  } else if (window.xferMapInstance && targetMap === window.xferMapInstance && Array.isArray(xferMapLegPolylines) && xferMapLegPolylines.length) {
+    xferMapLegPolylines.forEach((entry) => {
+      try {
+        if (entry.casing?.bringToFront) entry.casing.bringToFront();
+        if (entry.poly?.bringToFront) entry.poly.bringToFront();
+      } catch (e) {}
+    });
+  }
 }
 
 function bindTrafficRefreshOnMapMove(targetMap) {
@@ -393,13 +686,6 @@ function syncTrafficOverlaysAllMaps() {
   if (window.browseMapInstance) renderTrafficOverlayOnMap(window.browseMapInstance, true);
   if (window.xferMapInstance) {
     renderTrafficOverlayOnMap(window.xferMapInstance, true);
-    // Keep planned transit route lines & stops cleanly on top of green traffic background strokes
-    xferMapLegPolylines.forEach((entry) => {
-      try {
-        if (entry.casing?.bringToFront) entry.casing.bringToFront();
-        if (entry.poly?.bringToFront) entry.poly.bringToFront();
-      } catch (e) {}
-    });
   }
 }
 
@@ -424,6 +710,7 @@ function focusTrafficDetectorOnDetailMap(lat, lon, detId = '') {
     window.trafficLayerEnabled = true;
     if (typeof window.syncTrafficToggleButtonsUI === 'function') window.syncTrafficToggleButtonsUI();
   }
+  window.__FOCUSED_TRAFFIC_DET_ID__ = String(detId || '');
   const mapEl = document.getElementById('map-container');
   if (mapEl) mapEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 
@@ -435,7 +722,7 @@ function focusTrafficDetectorOnDetailMap(lat, lon, detId = '') {
     clearTimeout(_trafficMoveTimerByMap.get(window.mapInstance));
     renderTrafficOverlayOnMap(window.mapInstance, true);
     const detMap = _trafficMarkersByMap.get(window.mapInstance);
-    const layer = detMap?.get(detId) || detMap?.get(`${detId}_arrow`);
+    const layer = detMap?.get(`${detId}_arrow`) || detMap?.get(detId);
     if (layer && typeof layer.openPopup === 'function') {
       layer.openPopup([lat, lon]);
     }
@@ -447,10 +734,14 @@ function focusTrafficDetectorOnDetailMap(lat, lon, detId = '') {
 }
 
 window.classifyTrafficBoundMeta = classifyTrafficBoundMeta;
+window.matchDetectorToRouteCorridor = matchDetectorToRouteCorridor;
+window.filterTrafficDetectorsForMap = filterTrafficDetectorsForMap;
+window.projectDetectorToScreenPx = projectDetectorToScreenPx;
 window.renderTrafficOverlayOnMap = renderTrafficOverlayOnMap;
 window.syncTrafficOverlaysAllMaps = syncTrafficOverlaysAllMaps;
 window.toggleTrafficLayerOverlay = toggleTrafficLayerOverlay;
 window.focusTrafficDetectorOnDetailMap = focusTrafficDetectorOnDetailMap;
+window._setDetailCorridorMetaForTest = function(meta) { currentDetailCorridorMeta = meta; };
 
 window.attachStandardMapLayers = function(targetMap) {
   if (!targetMap || typeof L === 'undefined') return;
@@ -954,6 +1245,18 @@ function drawRouteOnMap(group, activeStopIdx = 0) {
   const isBusRoute = !group?.mode || group.mode === 'BUS';
   const cachedRoadCoords = isBusRoute ? getCachedBusRoutePolyline(group, stops) : null;
   currentDetailRoadCoords = cachedRoadCoords || polyPts;
+  if (currentDetailCorridorMeta?.groupKey !== (group?.key || '')) {
+    window.__FOCUSED_TRAFFIC_DET_ID__ = '';
+  }
+  const hasHighwaySpan = isBusRoute && _stopsHaveHighwaySpan(stops);
+  currentDetailCorridorMeta = {
+    groupKey: group?.key || '',
+    mode: group?.mode || 'BUS',
+    isBusRoute,
+    hasHighwaySpan,
+    isRoadSnapped: Boolean(cachedRoadCoords && cachedRoadCoords.length >= 2),
+    coords: currentDetailRoadCoords
+  };
 
   const lineStyle = { color: routeAccent, weight: 5, opacity: 0.92, lineJoin: 'round', lineCap: 'round' };
   const myGeomToken = ++_detailGeomToken;
@@ -993,7 +1296,17 @@ function drawRouteOnMap(group, activeStopIdx = 0) {
           try { window.mapInstance.removeLayer(detailPolylineLayer); } catch (e) {}
         }
         currentDetailRoadCoords = roadCoords;
+        currentDetailCorridorMeta = {
+          groupKey: group?.key || '',
+          mode: group?.mode || 'BUS',
+          isBusRoute: true,
+          hasHighwaySpan,
+          isRoadSnapped: true,
+          coords: roadCoords
+        };
         detailPolylineLayer = buildDetailBusPolylineLayer(roadCoords, stops, curActive, routeAccent).addTo(window.mapInstance);
+        // Re-run route-scoped traffic filtering against the exact road-snapped highway corridor
+        renderTrafficOverlayOnMap(window.mapInstance, true);
         if (typeof window.onBusRouteGeometryReady === 'function') {
           window.onBusRouteGeometryReady(group.key);
         }
@@ -1014,7 +1327,7 @@ function drawRouteOnMap(group, activeStopIdx = 0) {
         html: `<div style="width:${isAct ? 22 : 16}px;height:${isAct ? 22 : 16}px;background:${bgCol};color:${fgCol};border:2.5px solid ${bdrCol};border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:0.56rem;font-weight:800;box-shadow:0 2px 6px rgba(0,0,0,0.35);">${idx + 1}</div>`,
         iconSize: [22, 22], iconAnchor: [11, 11]
       }),
-      zIndexOffset: isAct ? 600 : 200
+      zIndexOffset: isAct ? 650 : 320
     }).addTo(window.mapInstance);
     m.bindTooltip(`${idx + 1}. ${getStopName(s)}`, { direction: 'top', offset: [0, -8], className: 'kmb-map-stop-label' });
     m.on('click', () => expandStop(idx, false, false, false));
@@ -1032,7 +1345,7 @@ function drawRouteOnMap(group, activeStopIdx = 0) {
       window.mapInstance.fitBounds(L.latLngBounds(fitPts), { paddingTopLeft: [36, 36], paddingBottomRight: [36, 44], maxZoom: 16 });
     } catch (e) {}
   }
-  renderTrafficOverlayOnMap(window.mapInstance);
+  renderTrafficOverlayOnMap(window.mapInstance, true);
 }
 
 function highlightActiveStopMarkerOnMap(activeIdx) {
@@ -1044,6 +1357,7 @@ function highlightActiveStopMarkerOnMap(activeIdx) {
   if (isBusRoute && Array.isArray(currentDetailRoadCoords) && currentDetailRoadCoords.length > stops.length && detailPolylineLayer) {
     try { window.mapInstance.removeLayer(detailPolylineLayer); } catch (e) {}
     detailPolylineLayer = buildDetailBusPolylineLayer(currentDetailRoadCoords, stops, activeIdx, routeAccent).addTo(window.mapInstance);
+    _bringLayerGroupToFront(detailPolylineLayer);
   }
   Object.entries(mapMarkers).forEach(([idxStr, m]) => {
     const idx = Number(idxStr);
@@ -1056,6 +1370,7 @@ function highlightActiveStopMarkerOnMap(activeIdx) {
       html: `<div style="width:${isAct ? 22 : 16}px;height:${isAct ? 22 : 16}px;background:${bgCol};color:${fgCol};border:2.5px solid ${bdrCol};border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:0.56rem;font-weight:800;box-shadow:0 2px 6px rgba(0,0,0,0.35);">${idx + 1}</div>`,
       iconSize: [22, 22], iconAnchor: [11, 11]
     }));
+    if (typeof m.setZIndexOffset === 'function') m.setZIndexOffset(isAct ? 650 : 320);
     if (isAct && stops[idx]) m.openTooltip();
   });
 }

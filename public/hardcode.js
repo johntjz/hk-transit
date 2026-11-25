@@ -2543,8 +2543,20 @@ function pointToSegmentDistanceKm(pLat, pLon, aLat, aLon, bLat, bLon) {
 }
 
 function isExpresswayOrTunnelDetector(det) {
+  const road = `${det?.id || ''} ${det?.roadEn || ''} ${det?.roadTc || ''}`;
+  return /highway|expressway|bypass|tunnel|bridge|corridor|trunk\s*road|tsing\s*ma|ting\s*kau|lantau\s*link|north\s*lantau|tuen\s*mun\s*rd|tuen\s*mun\s*road|tolo|fanling|san\s*tin|yuen\s*long\s*hwy|\bylh\b|kong\s*sham|penny's\s*bay|tsing\s*sha|west\s*kowloon|island\s*eastern|tseung\s*kwan\s*o|route\s*\d|公路|幹線|繞道|隧道|大橋|走廊|青馬|汀九|北大嶼山|吐露港|元朗公路|屯門公路/i.test(road);
+}
+
+// Parallel local arterial / Light Rail stop detectors (e.g. Castle Peak Rd / TDSCPRHSK10004)
+// must NEVER leak onto expressway/highway bus spans (e.g. E36 along Yuen Long Highway).
+function isOffCorridorLocalArterialDetector(det) {
+  const id = String(det?.id || '').toUpperCase();
   const road = `${det?.roadEn || ''} ${det?.roadTc || ''}`;
-  return /highway|expressway|bypass|tunnel|bridge|corridor|trunk\s*road|tsing\s*ma|ting\s*kau|lantau\s*link|north\s*lantau|tuen\s*mun\s*rd|tuen\s*mun\s*road|tolo|fanling|san\s*tin|yuen\s*long\s*hwy|kong\s*sham|penny's\s*bay|tsing\s*sha|west\s*kowloon|island\s*eastern|tseung\s*kwan\s*o|route\s*\d|公路|幹線|繞道|隧道|大橋|走廊|青馬|汀九|北大嶼山|吐露港/i.test(road);
+  if (/^(?:TDS)?CPR[A-Z0-9]*/.test(id)) return true;
+  if (/castle\s*peak\s*r(?:oa)?d|\bcpr\s*[-/]|light\s*rail\s*stop|\blrt\s*stop|青山公路|輕鐵站/i.test(road)) {
+    return true;
+  }
+  return false;
 }
 
 // Parse pasted Hong Kong GPS coordinates in DMS (e.g. 22°26'24.1"N 114°03'42.6"E), DDM, or decimal (22.4400, 114.0618).
@@ -2835,6 +2847,7 @@ function _matchDetectorsAlongSegments(segments, detectors) {
     return { sameHits: [], oppHits: [] };
   }
 
+  const isRoadSnapped = segments.some(s => Boolean(s.isRoadSnapped));
   let minLat = 90, maxLat = -90, minLon = 180, maxLon = -180;
   let maxSegHopKm = 0;
   for (let i = 0; i < segments.length; i++) {
@@ -2843,14 +2856,14 @@ function _matchDetectorsAlongSegments(segments, detectors) {
     maxLat = Math.max(maxLat, s.la1, s.la2);
     minLon = Math.min(minLon, s.lo1, s.lo2);
     maxLon = Math.max(maxLon, s.lo1, s.lo2);
-    if (s.hopKm > maxSegHopKm) maxSegHopKm = s.hopKm;
+    const effHop = Number(s.parentHopKm || s.hopKm || 0);
+    if (effHop > maxSegHopKm) maxSegHopKm = effHop;
   }
 
-  const hasHighwaySpan = segments.some(s => s.hopKm >= 1.25 || s.isBbiSeg);
-  // Curved long inter-stop highway spans (e.g. E36 Yuen Long Park <-> TM-CLK Tunnel BBI across Tuen Mun Rd / Wong Chu Rd)
-  // can curve 0.6–1.9 km off the straight chord between Stop A and Stop B.
-  const latPad = maxSegHopKm >= 2.0 ? 0.024 : 0.0045;
-  const lonPad = maxSegHopKm >= 2.0 ? 0.026 : 0.0055;
+  const hasHighwaySpan = segments.some(s => (Number(s.parentHopKm || s.hopKm || 0) >= 1.25) || s.isBbiSeg);
+  // When road-snapped polyline geometry is available, enforce a tight 60m corridor lock instead of wide straight-chord fallbacks.
+  const latPad = isRoadSnapped ? 0.0014 : (maxSegHopKm >= 2.0 ? 0.024 : 0.0045);
+  const lonPad = isRoadSnapped ? 0.0016 : (maxSegHopKm >= 2.0 ? 0.026 : 0.0055);
   const sameHits = [];
   const oppHits = [];
 
@@ -2862,6 +2875,7 @@ function _matchDetectorsAlongSegments(segments, detectors) {
     }
 
     const isExpDet = isExpresswayOrTunnelDetector(det);
+    const isLocalArterial = isOffCorridorLocalArterialDetector(det);
     if (isExpDet && !hasHighwaySpan) continue;
 
     let bestSeg = null;
@@ -2869,16 +2883,22 @@ function _matchDetectorsAlongSegments(segments, detectors) {
     let bestAheadKm = 0;
     for (let j = 0; j < segments.length; j++) {
       const seg = segments[j];
+      const spanKm = Number(seg.parentHopKm || seg.hopKm || 0);
       // Expressway/tunnel detectors may ONLY match actual long highway spans or BBI/tunnel stops — never local short town hops (e.g. NLB 3M)
-      if (isExpDet && seg.hopKm < 1.25 && !seg.isBbiSeg) continue;
+      if (isExpDet && spanKm < 1.25 && !seg.isBbiSeg) continue;
+      // Road-corridor consistency: never snap parallel local/LRT arterial detectors (e.g. Castle Peak Rd / CPR-HSK) onto a long highway/BBI span
+      if (isLocalArterial && (spanKm >= 2.0 || seg.isBbiSeg)) continue;
 
       const proj = pointToSegmentDistanceKm(det.lat, det.lon, seg.la1, seg.lo1, seg.la2, seg.lo2);
-      const tMargin = seg.hopKm >= 2.0 ? 0.06 : 0.12;
+      const tMargin = seg.isRoadSnapped ? 0.18 : (seg.hopKm >= 2.0 ? 0.06 : 0.12);
       if (proj.t < -tMargin || proj.t > 1 + tMargin) continue;
 
       let maxCorridorRadius;
-      if (seg.hopKm >= 2.0) {
-        // Scale corridor width gently for curved expressways between far-apart highway stops (capped at 2.0 km)
+      if (seg.isRoadSnapped) {
+        // Strict corridor lock: <= 60m perpendicular distance to fixed road-snapped polyline
+        maxCorridorRadius = 0.06;
+      } else if (seg.hopKm >= 2.0) {
+        // Fallback before async road polyline loads: gently curved highway chord, still guarded against local arterials above
         maxCorridorRadius = Math.min(2.0, Math.max(0.45, seg.hopKm * 0.22));
       } else {
         maxCorridorRadius = isExpDet ? 0.20 : (seg.hopKm > 1.0 ? 0.22 : 0.14);
@@ -2893,9 +2913,10 @@ function _matchDetectorsAlongSegments(segments, detectors) {
 
     if (!bestSeg) continue;
     const ang = angularDiffDeg(bestSeg.brg, det.rot);
-    // Allow wider bearing tolerance on curved long inter-stop highway spans (e.g. Wong Chu Rd / Lung Fu Rd bends)
-    // while keeping opposite carriageway strictly separated (>= 115 deg).
-    const sameMaxAng = bestSeg.hopKm >= 3.0 ? 65 : (isExpDet ? 42 : 48);
+    // Road-snapped polyline enforces tight ±30 deg heading alignment (opposite bound >= 150 deg).
+    const sameMaxAng = bestSeg.isRoadSnapped
+      ? 30
+      : (bestSeg.hopKm >= 3.0 ? 65 : (isExpDet ? 42 : 48));
     const oppMinAng = 180 - sameMaxAng;
     const hitObj = {
       det,
@@ -2937,8 +2958,10 @@ function _buildStopPairSegments(stops, startIdx, endIdxExclusive, maxCumKm = 6.5
       segIdx: idx - startIdx,
       la1, lo1, la2, lo2,
       hopKm,
+      parentHopKm: hopKm,
       cumKm,
       isBbiSeg,
+      isRoadSnapped: false,
       brg: computeBearingDeg(la1, lo1, la2, lo2),
       betweenStops: {
         fromSeq: idx + 1,
@@ -2955,21 +2978,119 @@ function _buildStopPairSegments(stops, startIdx, endIdxExclusive, maxCumKm = 6.5
   return segments;
 }
 
+// Project ordered stops onto a road-snapped polyline (CSDI ROUTE_BUS / deterministic OSRM)
+// and emit dense micro-segments tagged with their enclosing (fromStop -> toStop) span.
+function _buildRoadSnappedSegments(stops, startIdx, endIdxExclusive, roadPolylinePoints, maxCumKm = 18.0) {
+  if (!Array.isArray(roadPolylinePoints) || roadPolylinePoints.length < 3) return null;
+  const bbiStopRe = /tunnel|toll\s*plaza|\bbbi\b|highway|interchange|tsing\s*ma|lantau\s*link|轉車站|隧道|收費廣場|公路/i;
+
+  const stopPolyIdx = new Map();
+  let searchFrom = 0;
+  let matchedCount = 0;
+  let totalChecked = 0;
+
+  for (let idx = startIdx; idx < endIdxExclusive; idx++) {
+    const s = stops[idx];
+    const sLat = parseFloat(s?.latitude ?? s?.lat);
+    const sLon = parseFloat(s?.longitude ?? s?.lon);
+    if (!Number.isFinite(sLat) || !Number.isFinite(sLon)) continue;
+    totalChecked++;
+
+    let bestI = -1;
+    let bestKm = Infinity;
+    for (let p = searchFrom; p < roadPolylinePoints.length; p++) {
+      const pt = roadPolylinePoints[p];
+      if (!Array.isArray(pt) || pt.length < 2) continue;
+      const dKm = _haversineKm(sLat, sLon, pt[0], pt[1]);
+      if (dKm < bestKm) {
+        bestKm = dKm;
+        bestI = p;
+      }
+    }
+    if (bestI >= 0 && bestKm <= 0.55) {
+      stopPolyIdx.set(idx, bestI);
+      searchFrom = bestI;
+      matchedCount++;
+    }
+  }
+
+  if (totalChecked < 2 || matchedCount < Math.max(2, Math.ceil(totalChecked * 0.6))) {
+    return null;
+  }
+
+  const segments = [];
+  let cumKm = 0;
+  for (let idx = startIdx; idx < endIdxExclusive - 1; idx++) {
+    const pStart = stopPolyIdx.get(idx);
+    const pEnd = stopPolyIdx.get(idx + 1);
+    if (pStart === undefined || pEnd === undefined || pEnd <= pStart) continue;
+
+    const a = stops[idx], b = stops[idx + 1];
+    const laA = parseFloat(a?.latitude ?? a?.lat), loA = parseFloat(a?.longitude ?? a?.lon);
+    const laB = parseFloat(b?.latitude ?? b?.lat), loB = parseFloat(b?.longitude ?? b?.lon);
+    const chordKm = (Number.isFinite(laA) && Number.isFinite(laB)) ? _haversineKm(laA, loA, laB, loB) : 0;
+    const aName = `${a?.stopName_e || ''} ${a?.name_tc || ''}`;
+    const bName = `${b?.stopName_e || ''} ${b?.name_tc || ''}`;
+    const isBbiSeg = bbiStopRe.test(aName) || bbiStopRe.test(bName);
+
+    let spanRoadKm = 0;
+    for (let p = pStart; p < pEnd; p++) {
+      const c1 = roadPolylinePoints[p], c2 = roadPolylinePoints[p + 1];
+      spanRoadKm += _haversineKm(c1[0], c1[1], c2[0], c2[1]);
+    }
+    const parentHopKm = Math.max(chordKm, spanRoadKm);
+    const effLimit = (parentHopKm >= 2.0 || isBbiSeg) ? maxCumKm : 6.5;
+    if (segments.length > 0 && cumKm > effLimit) break;
+
+    const betweenStops = {
+      fromSeq: idx + 1,
+      toSeq: idx + 2,
+      fromNameEn: _stripStopPlatformSuffix(a?.stopName_e || a?.name_tc || ''),
+      fromNameTc: _stripStopPlatformSuffix(a?.name_tc || a?.stopName_e || ''),
+      toNameEn: _stripStopPlatformSuffix(b?.stopName_e || b?.name_tc || ''),
+      toNameTc: _stripStopPlatformSuffix(b?.name_tc || b?.stopName_e || ''),
+      hopKm: Number(parentHopKm.toFixed(1))
+    };
+
+    for (let p = pStart; p < pEnd; p++) {
+      const c1 = roadPolylinePoints[p], c2 = roadPolylinePoints[p + 1];
+      const segKm = _haversineKm(c1[0], c1[1], c2[0], c2[1]);
+      if (segKm < 0.008) continue;
+      segments.push({
+        segIdx: segments.length,
+        la1: c1[0], lo1: c1[1],
+        la2: c2[0], lo2: c2[1],
+        hopKm: segKm,
+        parentHopKm,
+        cumKm,
+        isBbiSeg,
+        isRoadSnapped: true,
+        brg: computeBearingDeg(c1[0], c1[1], c2[0], c2[1]),
+        betweenStops
+      });
+      cumKm += segKm;
+    }
+  }
+
+  return segments.length >= 2 ? segments : null;
+}
+
 // Compare bus route forward stop sequence against HKSAR live traffic detectors' compass Rotation.
-// Uses true perpendicular distance to upcoming segments + expressway guard so local/Lantau buses (e.g. NLB 3M)
-// never falsely match an overhead/adjacent expressway (e.g. North Lantau Highway) they do not travel on,
-// while scaling corridor radius & bearing tolerance on curved long inter-stop highway legs (e.g. E36 through Tuen Mun)
-// and also checking the immediately upstream approaching segment for active jams/slowdowns.
-function inferDirectionalRoadTrafficForStops(stops, startIdx = 0, detectors = [], lookaheadStops = 8) {
+// Uses road-snapped fixed bus polyline (<=60m, ±30deg) when available, with expressway + parallel-arterial guards
+// so local roads (Castle Peak Rd / CPR-HSK) never falsely snap onto highway routes (E36 along Yuen Long Highway).
+function inferDirectionalRoadTrafficForStops(stops, startIdx = 0, detectors = [], lookaheadStops = 8, roadPolylinePoints = null) {
   if (!Array.isArray(stops) || stops.length < 2 || !Array.isArray(detectors) || !detectors.length) {
-    return { sameSide: null, oppSide: null, approaching: null, hasLive: false, capturedAt: '' };
+    return { sameSide: null, oppSide: null, approaching: null, hasLive: false, capturedAt: '', usedRoadPolyline: false };
   }
 
   const fromIdx = Math.max(0, Math.min(stops.length - 2, Number(startIdx) || 0));
   const effLookahead = Math.max(2, Math.min(14, Number(lookaheadStops) || 8));
   const endIdx = Math.min(stops.length, fromIdx + effLookahead + 1);
 
-  const aheadSegs = _buildStopPairSegments(stops, fromIdx, endIdx, 6.5, 18.0);
+  const snappedAhead = roadPolylinePoints
+    ? _buildRoadSnappedSegments(stops, fromIdx, endIdx, roadPolylinePoints, 22.0)
+    : null;
+  const aheadSegs = snappedAhead || _buildStopPairSegments(stops, fromIdx, endIdx, 6.5, 18.0);
   const { sameHits, oppHits } = _matchDetectorsAlongSegments(aheadSegs, detectors);
   const sameSide = summarizeDetectorBucket(sameHits);
   const oppSide = summarizeDetectorBucket(oppHits);
@@ -2980,7 +3101,10 @@ function inferDirectionalRoadTrafficForStops(stops, startIdx = 0, detectors = []
   let approaching = null;
   if (fromIdx > 0) {
     const upStart = Math.max(0, fromIdx - 2);
-    const upSegs = _buildStopPairSegments(stops, upStart, fromIdx + 1, 14.0, 18.0);
+    const snappedUp = roadPolylinePoints
+      ? _buildRoadSnappedSegments(stops, upStart, fromIdx + 1, roadPolylinePoints, 22.0)
+      : null;
+    const upSegs = snappedUp || _buildStopPairSegments(stops, upStart, fromIdx + 1, 14.0, 18.0);
     if (upSegs.length) {
       const upMatched = _matchDetectorsAlongSegments(upSegs, detectors);
       const upSummary = summarizeDetectorBucket(upMatched.sameHits);
@@ -2995,7 +3119,8 @@ function inferDirectionalRoadTrafficForStops(stops, startIdx = 0, detectors = []
     oppSide,
     approaching,
     hasLive: Boolean(sameSide || oppSide || approaching),
-    capturedAt: ''
+    capturedAt: '',
+    usedRoadPolyline: Boolean(snappedAhead)
   };
 }
 
@@ -3009,8 +3134,8 @@ function _formatBetweenStopsLabel(betweenStops, isZh = false) {
   return `Between ${betweenStops.fromNameEn} → ${betweenStops.toNameEn}`;
 }
 
-function getDirectionalRoadSummary(stops, startIdx, detectors, isZh = false, lookaheadStops = 8) {
-  const res = inferDirectionalRoadTrafficForStops(stops, startIdx, detectors, lookaheadStops);
+function getDirectionalRoadSummary(stops, startIdx, detectors, isZh = false, lookaheadStops = 8, roadPolylinePoints = null) {
+  const res = inferDirectionalRoadTrafficForStops(stops, startIdx, detectors, lookaheadStops, roadPolylinePoints);
   if (!res.hasLive || (!res.sameSide && !res.oppSide && !res.approaching)) return null;
 
   const same = res.sameSide;
@@ -3063,7 +3188,7 @@ function getDirectionalRoadSummary(stops, startIdx, detectors, isZh = false, loo
   const primary = same || opp;
   const focusDet = (same?.status === 'JAMMED' || same?.status === 'SLOW')
     ? same.worstDet
-    : (opp?.status === 'JAMMED' ? opp.worstDet : (primary?.representativeDet || null));
+    : (same?.representativeDet || same?.worstDet || (opp?.status === 'JAMMED' ? opp.worstDet : (primary?.representativeDet || null)));
 
   const decision = synthesizeTrafficDecision(same, opp, isZh);
   const roadLabel = focusDet ? (isZh ? (focusDet.roadTc || focusDet.roadEn) : (focusDet.roadEn || focusDet.roadTc)) : '';
@@ -3135,6 +3260,7 @@ if (typeof window !== 'undefined') {
   window.angularDiffDeg = angularDiffDeg;
   window.pointToSegmentDistanceKm = pointToSegmentDistanceKm;
   window.isExpresswayOrTunnelDetector = isExpresswayOrTunnelDetector;
+  window.isOffCorridorLocalArterialDetector = isOffCorridorLocalArterialDetector;
   window.parseHkGpsCoordinates = parseHkGpsCoordinates;
   window.findOppositeDirectionGroup = findOppositeDirectionGroup;
   window.synthesizeTrafficDecision = synthesizeTrafficDecision;
@@ -3189,6 +3315,7 @@ if (typeof module !== 'undefined' && module.exports) {
     angularDiffDeg,
     pointToSegmentDistanceKm,
     isExpresswayOrTunnelDetector,
+    isOffCorridorLocalArterialDetector,
     parseHkGpsCoordinates,
     findOppositeDirectionGroup,
     synthesizeTrafficDecision,

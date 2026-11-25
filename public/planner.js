@@ -3551,6 +3551,9 @@ function resolveStaticDownstreamLegWindow(group, earliestBoardMs, driveSec, boar
     isLive: false,
     signalType: 'HEADWAY_PROJ',
     headwayMins: Math.round(hwSec / 60),
+    headwaySec: hwSec,
+    candidateDeps: [],
+    selectedDepIdx: 0,
     hasSignal: true,
     isDeadGhost: false,
     vesselClass: null,
@@ -3718,26 +3721,70 @@ async function resolveLiveOrStaticLegWindow(group, boardStopKey, earliestBoardMs
         };
       }
 
-      const valid = arrs.find(a => a.targetMs >= earliestBoardMs - (isFirstLeg ? 30000 : 20000));
-      if (valid) {
-        const depMs = Math.max(earliestBoardMs, valid.targetMs);
-        let effDriveSec = driveSec;
+      const sortedArrs = Array.isArray(arrs)
+        ? [...arrs]
+            .filter(a => Number.isFinite(a?.targetMs))
+            .sort((a, b) => a.targetMs - b.targetMs)
+        : [];
+
+      const computeEffDriveSec = (a) => {
+        let eff = driveSec;
         if (group?.mode === 'FERRY') {
-          const rmkDur = String(valid.remark || '').match(/(?:~|約)(\d+)\s*(?:m|分)/i);
-          if (rmkDur) effDriveSec = Number(rmkDur[1]) * 60;
-          else if (valid.vesselClass === 'ORD') effDriveSec = (group.ferryMeta?.durOrd || 55) * 60;
-          else if (valid.vesselClass === 'FAST') effDriveSec = (group.ferryMeta?.durFast || group.ferryMeta?.dur || 35) * 60;
+          const rmkDur = String(a?.remark || '').match(/(?:~|約)(\d+)\s*(?:m|分)/i);
+          if (rmkDur) eff = Number(rmkDur[1]) * 60;
+          else if (a?.vesselClass === 'ORD') eff = (group.ferryMeta?.durOrd || 55) * 60;
+          else if (a?.vesselClass === 'FAST') eff = (group.ferryMeta?.durFast || group.ferryMeta?.dur || 35) * 60;
         }
+        return eff;
+      };
+
+      const minCandMs = (isFirstLeg && xferTimeMode === 'NOW')
+        ? (now - 15000)
+        : (earliestBoardMs - (isFirstLeg ? 30000 : 20000));
+      const candidateDeps = [];
+      for (const a of sortedArrs) {
+        if (a.targetMs < minCandMs) continue;
+        if (candidateDeps.length && Math.abs(a.targetMs - candidateDeps[candidateDeps.length - 1].depMs) < 45000) continue;
+        const cDepMs = a.targetMs;
+        const cEffDrive = computeEffDriveSec(a);
+        const cLoad = a.loadEstimate || inferPlannerLegLoad(
+          group,
+          boardStopObj,
+          getHongKongNow(cDepMs),
+          isHongKongHolidayFareDay(getHongKongNow(cDepMs)),
+          0,
+          { vesselClass: a.vesselClass, alightStopObj, isSched: Boolean(a.isSched) }
+        );
+        candidateDeps.push({
+          depMs: cDepMs,
+          effDriveSec: cEffDrive,
+          isLive: !a.isSched,
+          signalType: a.isSched ? 'SCHED' : 'LIVE',
+          vesselClass: a.vesselClass || null,
+          loadEstimate: cLoad
+        });
+        if (candidateDeps.length >= 6) break;
+      }
+
+      const defaultMinBoardMs = earliestBoardMs - (isFirstLeg ? 30000 : 20000);
+      const selectedIdx = candidateDeps.findIndex(c => c.depMs >= defaultMinBoardMs);
+      if (selectedIdx >= 0) {
+        const chosen = candidateDeps[selectedIdx];
+        const depMs = Math.max(earliestBoardMs, chosen.depMs);
+        const hwSec = getPeriodHeadwaySecs(group, depMs, sortedArrs);
         return {
           depMs,
-          arrMs: depMs + effDriveSec * 1000,
-          isLive: !valid.isSched,
-          signalType: valid.isSched ? 'SCHED' : 'LIVE',
-          headwayMins: Math.round(getPeriodHeadwaySecs(group, depMs, arrs) / 60),
+          arrMs: depMs + chosen.effDriveSec * 1000,
+          isLive: chosen.isLive,
+          signalType: chosen.signalType,
+          headwayMins: Math.round(hwSec / 60),
+          headwaySec: hwSec,
+          candidateDeps,
+          selectedDepIdx: selectedIdx,
           hasSignal: true,
           isDeadGhost: false,
-          vesselClass: valid.vesselClass || null,
-          loadEstimate: valid.loadEstimate || inferPlannerLegLoad(group, boardStopObj, getHongKongNow(depMs), isHongKongHolidayFareDay(getHongKongNow(depMs)), 0, { vesselClass: valid.vesselClass, alightStopObj, isSched: Boolean(valid.isSched) })
+          vesselClass: chosen.vesselClass || null,
+          loadEstimate: chosen.loadEstimate
         };
       }
     } catch (e) {}
@@ -3746,7 +3793,7 @@ async function resolveLiveOrStaticLegWindow(group, boardStopKey, earliestBoardMs
       if (group?.mode === 'FERRY') {
         const ferrySlot = resolveStaticFerrySlot(group, earliestBoardMs, driveSec);
         if (ferrySlot) return ferrySlot;
-        return { depMs: earliestBoardMs, arrMs: earliestBoardMs + driveSec * 1000, isLive: false, signalType: 'NO_SERVICE', headwayMins: 0, hasSignal: false, isDeadGhost: true, vesselClass: null, loadEstimate: null };
+        return { depMs: earliestBoardMs, arrMs: earliestBoardMs + driveSec * 1000, isLive: false, signalType: 'NO_SERVICE', headwayMins: 0, headwaySec: 0, candidateDeps: [], selectedDepIdx: 0, hasSignal: false, isDeadGhost: true, vesselClass: null, loadEstimate: null };
       }
       const opKey = getOperatorAuditKeyForGroup(group);
       const opSt = SignalHealthMonitor.byOperator[opKey];
@@ -3758,6 +3805,9 @@ async function resolveLiveOrStaticLegWindow(group, boardStopKey, earliestBoardMs
           isLive: false,
           signalType: 'NO_SERVICE',
           headwayMins: 0,
+          headwaySec: 0,
+          candidateDeps: [],
+          selectedDepIdx: 0,
           hasSignal: false,
           isDeadGhost: true,
           vesselClass: null,
@@ -3769,6 +3819,145 @@ async function resolveLiveOrStaticLegWindow(group, boardStopKey, earliestBoardMs
 
   return resolveStaticDownstreamLegWindow(group, earliestBoardMs, driveSec, boardStopObj, alightStopObj);
 }
+
+function findConnectingLegWindow(candidateDeps, minBoardMs, driveSec, headwaySec = 480, fallbackSigType = 'HEADWAY_PROJ') {
+  const safeDriveSec = Math.max(60, Number(driveSec) || 180);
+  const safeHwSec = Math.max(120, Number(headwaySec) || 480);
+  if (Array.isArray(candidateDeps) && candidateDeps.length) {
+    const match = candidateDeps.find(c => Number.isFinite(c?.depMs) && c.depMs >= minBoardMs - 20000);
+    if (match) {
+      const depMs = Math.max(minBoardMs, match.depMs);
+      const effDrive = Math.max(60, Number(match.effDriveSec) || safeDriveSec);
+      return {
+        depMs,
+        arrMs: depMs + effDrive * 1000,
+        isLive: Boolean(match.isLive),
+        signalType: match.signalType || fallbackSigType,
+        loadEstimate: match.loadEstimate || null
+      };
+    }
+    const anchor = candidateDeps[candidateDeps.length - 1];
+    if (Number.isFinite(anchor?.depMs)) {
+      const steps = Math.max(1, Math.ceil((minBoardMs - anchor.depMs) / (safeHwSec * 1000)));
+      const depMs = anchor.depMs + steps * safeHwSec * 1000;
+      const effDrive = Math.max(60, Number(anchor.effDriveSec) || safeDriveSec);
+      return {
+        depMs,
+        arrMs: depMs + effDrive * 1000,
+        isLive: false,
+        signalType: 'HEADWAY_PROJ',
+        loadEstimate: anchor.loadEstimate || null
+      };
+    }
+  }
+  const waitSec = Math.min(900, Math.round(safeHwSec * 0.50));
+  const depMs = minBoardMs + waitSec * 1000;
+  return {
+    depMs,
+    arrMs: depMs + safeDriveSec * 1000,
+    isLive: false,
+    signalType: 'HEADWAY_PROJ',
+    loadEstimate: null
+  };
+}
+
+function recalculatePlannerCardForFirstLegDep(card, newDepIdx, refStartMs) {
+  if (!card?.item) return false;
+  const item = card.item;
+  const cands1 = Array.isArray(item.candidateDeps1) ? item.candidateDeps1 : [];
+  if (newDepIdx < 0 || newDepIdx >= cands1.length) return false;
+
+  const cand1 = cands1[newDepIdx];
+  if (!cand1 || !Number.isFinite(cand1.depMs)) return false;
+
+  const safeRefMs = Number.isFinite(refStartMs) ? refStartMs : Date.now();
+  item.selectedDepIdx1 = newDepIdx;
+  item.sigType1 = cand1.signalType || item.sigType1;
+  if (cand1.loadEstimate) item.load1 = cand1.loadEstimate;
+  item.isBoardNowRush = cand1.depMs < (safeRefMs + (Number(item.accessWalkSec) || 0) * 1000 - 30000);
+
+  if (card.type === 'DIRECT') {
+    const effDriveSec = Math.max(60, Number(cand1.effDriveSec) || Number(item.driveSec) || 180);
+    item.driveSec = effDriveSec;
+    item.liveDepMs = cand1.depMs;
+    item.liveArrMs = cand1.depMs + (effDriveSec + (Number(item.egressWalkSec) || 0)) * 1000;
+    item.totalMins = Math.max(2, Math.round((item.liveArrMs - safeRefMs) / 60000));
+    return true;
+  }
+
+  if (card.type === 'XFER') {
+    const node = item.xferStopNodes?.[0];
+    if (!node) return false;
+    const leg1DriveSec = Math.max(60, Number(cand1.effDriveSec) || Number(node.leg1DriveSec) || 180);
+    const leg1ArrMs = cand1.depMs + leg1DriveSec * 1000;
+    const xfer1BufSec = Math.max(60, Number(item.xfer1BufSec) || 180);
+    const w2 = findConnectingLegWindow(
+      item.candidateDeps2,
+      leg1ArrMs + xfer1BufSec * 1000,
+      node.leg2DriveSec || 180,
+      item.headwaySec2 || ((item.hw2 || 8) * 60),
+      item.sigType2 || 'HEADWAY_PROJ'
+    );
+
+    item.liveDep1Ms = cand1.depMs;
+    item.liveDep2Ms = w2.depMs;
+    item.sigType2 = w2.signalType || item.sigType2;
+    if (w2.loadEstimate) item.load2 = w2.loadEstimate;
+
+    const isLeg12RailToRail = item.leg1Group?.mode === 'MTR' && item.leg1Group?.company === 'MTR' && item.leg2Group?.mode === 'MTR' && item.leg2Group?.company === 'MTR';
+    const xfer1SlackMs = w2.depMs - leg1ArrMs - (Number(node.walkSec) || 0) * 1000;
+    item.tightTransfer1 = !isLeg12RailToRail && xfer1SlackMs < 240000;
+    item.tightTransfer1Mins = Math.max(1, Math.round(Math.max(0, xfer1SlackMs) / 60000));
+
+    let curArrMs = w2.arrMs;
+    (item.leg3Options || []).forEach((l3, idx) => {
+      const l3BufSec = Math.max(60, Number(l3.xferBufSec) || 180);
+      const w3 = findConnectingLegWindow(
+        l3.candidateDeps,
+        curArrMs + l3BufSec * 1000,
+        l3.driveSec || 180,
+        l3.headwaySec || ((l3.hwMins || 8) * 60),
+        l3.sigType || 'HEADWAY_PROJ'
+      );
+      const prevG = idx === 0 ? item.leg2Group : item.leg3Options[idx - 1].group;
+      const isRailToRail = prevG?.mode === 'MTR' && prevG?.company === 'MTR' && l3.group?.mode === 'MTR' && l3.group?.company === 'MTR';
+      const l3SlackMs = w3.depMs - curArrMs - (Number(l3.walkSec) || 0) * 1000;
+      l3.liveDepMs = w3.depMs;
+      l3.liveArrMs = w3.arrMs;
+      l3.sigType = w3.signalType || l3.sigType;
+      if (w3.loadEstimate) l3.loadEstimate = w3.loadEstimate;
+      l3.tightTransfer = !isRailToRail && l3SlackMs < 240000;
+      l3.tightTransferMins = Math.max(1, Math.round(Math.max(0, l3SlackMs) / 60000));
+      curArrMs = w3.arrMs;
+    });
+
+    item.liveArrMs = curArrMs + (Number(item.egressWalkSec) || 0) * 1000;
+    item.totalMins = Math.max(4, Math.round((item.liveArrMs - safeRefMs) / 60000));
+    return true;
+  }
+
+  return false;
+}
+
+function shiftPlannerCardDeparture(cardKey, delta) {
+  if (!lastXferSolvedSpec || !Array.isArray(lastXferSolvedSpec._unifiedCards)) return false;
+  const card = lastXferSolvedSpec._unifiedCards.find(c => c.key === cardKey);
+  if (!card?.item || !Array.isArray(card.item.candidateDeps1)) return false;
+  const curIdx = Number.isInteger(card.item.selectedDepIdx1) ? card.item.selectedDepIdx1 : 0;
+  const nextIdx = curIdx + Number(delta || 0);
+  const ok = recalculatePlannerCardForFirstLegDep(card, nextIdx, lastXferSolvedSpec._refStartMs || Date.now());
+  if (!ok) return false;
+  activeUnifiedCardKey = cardKey;
+  if (typeof lastXferSolvedSpec._repaintCards === 'function') {
+    lastXferSolvedSpec._repaintCards(true, true);
+  }
+  return true;
+}
+
+window.resolveLiveOrStaticLegWindow = resolveLiveOrStaticLegWindow;
+window.findConnectingLegWindow = findConnectingLegWindow;
+window.recalculatePlannerCardForFirstLegDep = recalculatePlannerCardForFirstLegDep;
+window.shiftPlannerCardDeparture = shiftPlannerCardDeparture;
 
 async function resolveFirstLegWindow(group, boardStopKey, earliestBoardMs, driveSec, boardStopObj = null, alightStopObj = null) {
   return resolveLiveOrStaticLegWindow(group, boardStopKey, earliestBoardMs, driveSec, boardStopObj, true, alightStopObj);
@@ -4028,7 +4217,10 @@ function buildPlannerLegRoadTrafficTagHtml(group, boardStopObj, alightStopObj, i
   }
   if (segStops.length < 2) return '';
 
-  const res = inferDirectionalRoadTrafficForStops(segStops, 0, detectors, segStops.length);
+  const roadPoly = (typeof window !== 'undefined' && window.__ROUTE_GEOM_CACHE__ && group?.key)
+    ? window.__ROUTE_GEOM_CACHE__[group.key]
+    : null;
+  const res = inferDirectionalRoadTrafficForStops(segStops, 0, detectors, segStops.length, roadPoly);
   if (!res?.sameSide) return '';
   const same = res.sameSide;
   const opp = res.oppSide;
@@ -4335,34 +4527,58 @@ async function renderTransferPlannerView() {
     return;
   }
   lastXferSolvedSpec = spec;
+  spec._refStartMs = refStartMs;
   activeUnifiedCardKey = '';
 
-  const paintUnifiedCards = (isFinalPass = false) => {
-    const unified = [];
-    if (spec.walkBikeDirectCard) {
-      unified.push({
-        type: 'WALK_BIKE',
-        idx: -1,
-        score: spec.walkBikeDirectCard.disruptionScore,
-        item: spec.walkBikeDirectCard,
-        key: 'WALK_BIKE_0',
-        isRailOrFerry: false
-      });
-    }
-    const resolvedDirects = collapseParallelDirectRoutes(spec.directRoutes, isFinalPass, xferTimeMode, xferSortPref);
-    resolvedDirects.forEach((dp, i) => {
-      if (dp.isDeadGhost) return;
-      const isRF = dp.group?.mode === 'FERRY' || (dp.group?.mode === 'MTR' && dp.group?.company === 'MTR');
-      unified.push({ type: 'DIRECT', idx: i, score: dp.disruptionScore, item: dp, key: `DIRECT_${dp.group?.key || i}`, isRailOrFerry: isRF });
-    });
-    spec.transferCorridors.forEach((cor, i) => {
-      if (cor.isDeadGhost) return;
-      unified.push({ type: 'XFER', idx: i, score: cor.disruptionScore, item: cor, key: `XFER_${i}`, isRailOrFerry: corridorHasRailOrFerryTrunk(cor) });
-    });
+  const renderFirstLegDepartureSwitcherHtml = (cardKey, candidateDeps, selectedIdx, zhFlag) => {
+    if (xferTimeMode !== 'NOW' || !Array.isArray(candidateDeps) || candidateDeps.length <= 1) return '';
+    const idx = Number.isInteger(selectedIdx) ? Math.max(0, Math.min(candidateDeps.length - 1, selectedIdx)) : 0;
+    const prevCand = idx > 0 ? candidateDeps[idx - 1] : null;
+    const nextCand = idx < candidateDeps.length - 1 ? candidateDeps[idx + 1] : null;
+    const prevLbl = prevCand
+      ? (zhFlag ? `‹ 早一班 ${formatHkArrivalClock(prevCand.depMs)}` : `‹ Earlier ${formatHkArrivalClock(prevCand.depMs)}`)
+      : (zhFlag ? '‹ 最早班' : '‹ Earlier');
+    const nextLbl = nextCand
+      ? (zhFlag ? `遲一班 ${formatHkArrivalClock(nextCand.depMs)} ›` : `Later ${formatHkArrivalClock(nextCand.depMs)} ›`)
+      : (zhFlag ? '尾班 ›' : 'Later ›');
+    return `
+      <div class="planner-dep-switcher" onclick="event.stopPropagation()">
+        <button type="button" class="planner-dep-step-btn" ${prevCand ? '' : 'disabled'} onclick="event.stopPropagation(); shiftPlannerCardDeparture('${escapeJsAttr(cardKey)}', -1);">${escapeHtml(prevLbl)}</button>
+        <button type="button" class="planner-dep-step-btn" ${nextCand ? '' : 'disabled'} onclick="event.stopPropagation(); shiftPlannerCardDeparture('${escapeJsAttr(cardKey)}', 1);">${escapeHtml(nextLbl)}</button>
+      </div>`;
+  };
 
-    applyCpmsFilterToUnifiedCards(unified);
-    const topCards = pruneDominatedPlannerCards(unified, xferSortPref, refStartMs);
-    spec._unifiedCards = topCards;
+  const paintUnifiedCards = (isFinalPass = false, preserveCardOrder = false) => {
+    let topCards;
+    if (preserveCardOrder && Array.isArray(spec._unifiedCards) && spec._unifiedCards.length) {
+      topCards = spec._unifiedCards;
+    } else {
+      const unified = [];
+      if (spec.walkBikeDirectCard) {
+        unified.push({
+          type: 'WALK_BIKE',
+          idx: -1,
+          score: spec.walkBikeDirectCard.disruptionScore,
+          item: spec.walkBikeDirectCard,
+          key: 'WALK_BIKE_0',
+          isRailOrFerry: false
+        });
+      }
+      const resolvedDirects = collapseParallelDirectRoutes(spec.directRoutes, isFinalPass, xferTimeMode, xferSortPref);
+      resolvedDirects.forEach((dp, i) => {
+        if (dp.isDeadGhost) return;
+        const isRF = dp.group?.mode === 'FERRY' || (dp.group?.mode === 'MTR' && dp.group?.company === 'MTR');
+        unified.push({ type: 'DIRECT', idx: i, score: dp.disruptionScore, item: dp, key: `DIRECT_${dp.group?.key || i}`, isRailOrFerry: isRF });
+      });
+      spec.transferCorridors.forEach((cor, i) => {
+        if (cor.isDeadGhost) return;
+        unified.push({ type: 'XFER', idx: i, score: cor.disruptionScore, item: cor, key: `XFER_${i}`, isRailOrFerry: corridorHasRailOrFerryTrunk(cor) });
+      });
+
+      applyCpmsFilterToUnifiedCards(unified);
+      topCards = pruneDominatedPlannerCards(unified, xferSortPref, refStartMs);
+      spec._unifiedCards = topCards;
+    }
 
     if (!topCards.length) {
       container.innerHTML = `<div class="text-center">${t('noRoutesFound')}</div>`;
@@ -4474,11 +4690,15 @@ async function renderTransferPlannerView() {
         const allNotices = [...(dp.fareNotices || []), ...collectLoadNoticesFromList([dp.load1])];
         const noticesHtml = renderSectionalNoticesHtml(allNotices);
 
+        const directLeaveTxt = dp.isBoardNowRush
+          ? (isZh ? '立即上車' : 'Board now')
+          : (waitMins >= 1 ? (isZh ? `${waitMins}分鐘後出發` : `Leave in ${waitMins}m`) : (isZh ? '立即出發' : 'Leave now'));
         const metaParts = [
-          waitMins >= 1 ? (isZh ? `${waitMins}分鐘後出發` : `Leave in ${waitMins}m`) : (isZh ? '立即出發' : 'Leave now'),
+          directLeaveTxt,
           `${isZh ? '抵達' : 'Arr'} ${arrClk}`,
           walkTotalMins >= 1 ? (isZh ? `步行${walkTotalMins}分` : `${walkTotalMins}m walk`) : null
         ].filter(Boolean).join(' · ');
+        const directSwitcherHtml = renderFirstLegDepartureSwitcherHtml(c.key, dp.candidateDeps1, dp.selectedDepIdx1, isZh);
         const liveMetaBadgeHtml = dp.sigType1 === 'LIVE'
           ? ` · <span class="planner-sig-live" style="white-space:nowrap;">● ${isZh ? '實時' : 'Real-time'}</span>`
           : '';
@@ -4536,6 +4756,7 @@ async function renderTransferPlannerView() {
                     <strong>${escapeHtml(badge)}</strong> → ${escapeHtml(alightDisp)} · ${rideMins}${t('minsUnit')} (${dp.stopsCount} ${isZh ? '站' : (dp.stopsCount === 1 ? 'stop' : 'stops')})
                   </div>
                   ${sigText ? `<div class="planner-step-sigs">${sigText}</div>` : ''}
+                  ${directSwitcherHtml}
                 </div>
                 <button type="button" class="planner-live-btn" title="${isZh ? '查看全線站點及未來班次' : 'View all route stops & next departures'}" aria-label="${isZh ? '站點班次' : 'Stops and ETA'}" onclick="event.stopPropagation(); openRouteDetail('${escapeJsAttr(dp.group.key)}', '${escapeJsAttr(dp.boardStopKey)}');">${isZh ? '站點班次 ›' : 'Stops & ETA ›'}</button>
               </div>
@@ -4576,12 +4797,16 @@ async function renderTransferPlannerView() {
       const walkTotalMins = Math.round(((cor.accessWalkSec || 0) + (cor.egressWalkSec || 0) + (cor.totalTransferWalkSec || 0)) / 60);
       const anyLive = cor.sigType1 === 'LIVE' || cor.sigType2 === 'LIVE';
 
+      const xferLeaveTxt = cor.isBoardNowRush
+        ? (isZh ? '立即上車' : 'Board now')
+        : (waitMins >= 1 ? (isZh ? `${waitMins}分鐘後出發` : `Leave in ${waitMins}m`) : (isZh ? '立即出發' : 'Leave now'));
       const metaParts = [
-        waitMins >= 1 ? (isZh ? `${waitMins}分鐘後出發` : `Leave in ${waitMins}m`) : (isZh ? '立即出發' : 'Leave now'),
+        xferLeaveTxt,
         `${isZh ? '抵達' : 'Arr'} ${arrClk}`,
         isZh ? `${xferCount}次轉乘` : `${xferCount} ${xferCount === 1 ? 'transfer' : 'transfers'}`,
         walkTotalMins >= 1 ? (isZh ? `步行${walkTotalMins}分` : `${walkTotalMins}m walk`) : null
       ].filter(Boolean).join(' · ');
+      const xferSwitcherHtml = renderFirstLegDepartureSwitcherHtml(c.key, cor.candidateDeps1, cor.selectedDepIdx1, isZh);
       const xferLiveBadgeHtml = anyLive
         ? ` · <span class="planner-sig-live" style="white-space:nowrap;">● ${isZh ? '實時' : 'Real-time'}</span>`
         : '';
@@ -4711,6 +4936,7 @@ async function renderTransferPlannerView() {
                   <strong>${escapeHtml(b1Badge)}</strong> → ${escapeHtml(alight1Disp)} · ${leg1Mins}${t('minsUnit')}
                 </div>
                 ${sig1Text ? `<div class="planner-step-sigs">${sig1Text}</div>` : ''}
+                ${xferSwitcherHtml}
               </div>
               <button type="button" class="planner-live-btn" title="${isZh ? '查看全線站點及未來班次' : 'View all route stops & next departures'}" aria-label="${isZh ? '站點班次' : 'Stops and ETA'}" onclick="event.stopPropagation(); openRouteDetail('${escapeJsAttr(cor.leg1Group.key)}', '${escapeJsAttr(cor.board1StopKey)}');">${isZh ? '站點班次 ›' : 'Stops & ETA ›'}</button>
             </div>
@@ -4743,6 +4969,7 @@ async function renderTransferPlannerView() {
     syncPlannerAlertBannerUI(activeCard || null);
   };
 
+  spec._repaintCards = paintUnifiedCards;
   paintUnifiedCards(false);
   const initialAutoPickedKey = activeUnifiedCardKey;
 
@@ -4792,6 +5019,10 @@ async function renderTransferPlannerView() {
 
       dp.sigType1 = w1.signalType;
       dp.hw1 = w1.headwayMins || 0;
+      dp.headwaySec1 = w1.headwaySec || (dp.hw1 * 60);
+      dp.candidateDeps1 = Array.isArray(w1.candidateDeps) ? w1.candidateDeps : [];
+      dp.selectedDepIdx1 = Number.isInteger(w1.selectedDepIdx) ? w1.selectedDepIdx : 0;
+      dp.isBoardNowRush = false;
       dp.load1 = w1.loadEstimate || dp.load1;
       const fareMeta = {};
       const legSpec = {
@@ -4857,6 +5088,7 @@ async function renderTransferPlannerView() {
         const w2 = await resolveLiveOrStaticLegWindow(cor.leg2Group, node.board2StopKey, w1.arrMs + xfer1BufSec * 1000, node.leg2DriveSec, node.board2StopObj, false, leg2AlightObj);
         let curArrMs = w2.arrMs;
         const w3List = [];
+        const l3BufList = [];
         for (let lIdx = 0; lIdx < (cor.leg3Options || []).length; lIdx++) {
           const l3 = cor.leg3Options[lIdx];
           const prevG = lIdx === 0 ? cor.leg2Group : cor.leg3Options[lIdx - 1].group;
@@ -4865,11 +5097,12 @@ async function renderTransferPlannerView() {
             { mtrCode: cor.xferMtrCodes?.[lIdx + 1] || '', isGoldenHub: isStrategicInterchangeHub(l3.boardStopObj) },
             l3.walkSec || 0
           );
+          l3BufList.push(l3BufSec);
           const w3 = await resolveLiveOrStaticLegWindow(l3.group, l3.boardStopKey, curArrMs + l3BufSec * 1000, l3.driveSec, l3.boardStopObj, false, l3.alightStopObj);
           w3List.push(w3);
           curArrMs = w3.arrMs;
         }
-        return { w1, w2, w3List, finalArrMs: curArrMs + cor.egressWalkSec * 1000, isDeadGhost: false };
+        return { w1, w2, w3List, xfer1BufSec, l3BufList, finalArrMs: curArrMs + cor.egressWalkSec * 1000, isDeadGhost: false };
       };
 
       const minValidStartMs = Date.now();
@@ -4898,10 +5131,16 @@ async function renderTransferPlannerView() {
         }
       }
 
-      const { w1, w2, w3List, finalArrMs } = solved;
+      const { w1, w2, w3List, xfer1BufSec, l3BufList, finalArrMs } = solved;
 
       cor.load1 = w1.loadEstimate || cor.load1;
       cor.load2 = w2.loadEstimate || cor.load2;
+      cor.candidateDeps1 = Array.isArray(w1.candidateDeps) ? w1.candidateDeps : [];
+      cor.selectedDepIdx1 = Number.isInteger(w1.selectedDepIdx) ? w1.selectedDepIdx : 0;
+      cor.isBoardNowRush = false;
+      cor.candidateDeps2 = Array.isArray(w2.candidateDeps) ? w2.candidateDeps : [];
+      cor.headwaySec2 = w2.headwaySec || ((w2.headwayMins || 8) * 60);
+      cor.xfer1BufSec = xfer1BufSec || 180;
 
       const allLegs = [
         { group: cor.leg1Group, boardStopObj: cor.board1StopObj, alightStopObj: node.alight1StopObj, driveSec: node.leg1DriveSec, walkAfterSec: node.walkSec || 0, stopsCount: node.leg1StopsCount, vesselClass: w1.vesselClass, loadEstimate: cor.load1 },
@@ -4914,6 +5153,9 @@ async function renderTransferPlannerView() {
         l3.liveArrMs = w3.arrMs;
         l3.sigType = w3.signalType;
         l3.hwMins = w3.headwayMins || 0;
+        l3.headwaySec = w3.headwaySec || ((w3.headwayMins || 8) * 60);
+        l3.candidateDeps = Array.isArray(w3.candidateDeps) ? w3.candidateDeps : [];
+        l3.xferBufSec = l3BufList?.[idx] || 180;
         l3.loadEstimate = w3.loadEstimate || l3.loadEstimate;
         const prevG = idx === 0 ? cor.leg2Group : cor.leg3Options[idx - 1].group;
         const isRailToRail = prevG?.mode === 'MTR' && prevG?.company === 'MTR' && l3.group?.mode === 'MTR' && l3.group?.company === 'MTR';

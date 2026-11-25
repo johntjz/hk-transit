@@ -938,6 +938,216 @@ async function handleTrafficLiveRequest() {
   );
 }
 
+function distSqDeg(a, b) {
+  const dLat = a[0] - b[0];
+  const dLon = a[1] - b[1];
+  return dLat * dLat + dLon * dLon;
+}
+
+function perpDistDegSq(p, a, b) {
+  const dx = b[1] - a[1];
+  const dy = b[0] - a[0];
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq <= 1e-12) return distSqDeg(p, a);
+  const t = Math.max(0, Math.min(1, ((p[1] - a[1]) * dx + (p[0] - a[0]) * dy) / lenSq));
+  const px = a[1] + t * dx;
+  const py = a[0] + t * dy;
+  return (p[0] - py) ** 2 + (p[1] - px) ** 2;
+}
+
+function simplifyPolylineCoords(pts, epsDeg = 0.00008, maxPts = 420) {
+  if (!Array.isArray(pts) || pts.length <= 2) return pts || [];
+  const dp = (arr, epsSq) => {
+    const keep = new Uint8Array(arr.length);
+    keep[0] = 1;
+    keep[arr.length - 1] = 1;
+    const stack = [[0, arr.length - 1]];
+    while (stack.length) {
+      const [s, e] = stack.pop();
+      let maxD = -1, maxIdx = -1;
+      for (let i = s + 1; i < e; i++) {
+        const d = perpDistDegSq(arr[i], arr[s], arr[e]);
+        if (d > maxD) { maxD = d; maxIdx = i; }
+      }
+      if (maxD > epsSq && maxIdx > s && maxIdx < e) {
+        keep[maxIdx] = 1;
+        stack.push([s, maxIdx], [maxIdx, e]);
+      }
+    }
+    const out = [];
+    for (let i = 0; i < arr.length; i++) if (keep[i]) out.push(arr[i]);
+    return out;
+  };
+  let curEps = epsDeg;
+  let res = dp(pts, curEps * curEps);
+  let guard = 0;
+  while (res.length > maxPts && guard < 4) {
+    curEps *= 1.65;
+    res = dp(pts, curEps * curEps);
+    guard++;
+  }
+  return res.map(p => [Number(p[0].toFixed(5)), Number(p[1].toFixed(5))]);
+}
+
+function stitchGeoJsonBusGeometry(geometry, origPt = null, destPt = null) {
+  if (!geometry || !Array.isArray(geometry.coordinates)) return [];
+  let parts = [];
+  if (geometry.type === 'LineString') {
+    parts = [geometry.coordinates];
+  } else if (geometry.type === 'MultiLineString') {
+    parts = geometry.coordinates;
+  } else {
+    return [];
+  }
+
+  const latLonParts = parts
+    .map(part => (Array.isArray(part) ? part : [])
+      .filter(c => Array.isArray(c) && c.length >= 2 && isValidHkCoord(c[1], c[0]))
+      .map(c => [Number(c[1]), Number(c[0])]))
+    .filter(p => p.length >= 2);
+
+  if (!latLonParts.length) return [];
+
+  const merged = [];
+  for (let i = 0; i < latLonParts.length; i++) {
+    let seg = latLonParts[i];
+    if (merged.length > 0) {
+      const prevEnd = merged[merged.length - 1];
+      const dStart = distSqDeg(prevEnd, seg[0]);
+      const dEnd = distSqDeg(prevEnd, seg[seg.length - 1]);
+      if (dEnd < dStart && dEnd < 0.000004) {
+        seg = [...seg].reverse();
+      }
+      const skipFirst = distSqDeg(prevEnd, seg[0]) < 1e-10 ? 1 : 0;
+      for (let k = skipFirst; k < seg.length; k++) merged.push(seg[k]);
+    } else {
+      for (let k = 0; k < seg.length; k++) merged.push(seg[k]);
+    }
+  }
+
+  if (merged.length >= 2 && origPt && destPt) {
+    const fwdScore = haversineKmWorker(merged[0][0], merged[0][1], origPt[0], origPt[1]) +
+      haversineKmWorker(merged[merged.length - 1][0], merged[merged.length - 1][1], destPt[0], destPt[1]);
+    const revScore = haversineKmWorker(merged[0][0], merged[0][1], destPt[0], destPt[1]) +
+      haversineKmWorker(merged[merged.length - 1][0], merged[merged.length - 1][1], origPt[0], origPt[1]);
+    if (revScore + 0.35 < fwdScore) {
+      merged.reverse();
+    }
+  }
+  return merged;
+}
+
+async function fetchCsdiBusRouteGeometry({ gtfsId, routeNo, company, bound, origPt, destPt }) {
+  const cleanId = String(gtfsId || '').replace(/\D/g, '');
+  const cleanRoute = String(routeNo || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const cleanCo = String(company || '').toUpperCase().replace(/[^A-Z]/g, '');
+  if (!cleanId && !cleanRoute) return null;
+  if (cleanCo.startsWith('GMB')) return null;
+
+  const where = cleanId
+    ? `ROUTE_ID=${cleanId}`
+    : (cleanCo
+      ? `ROUTE_NAMEE='${cleanRoute}' AND COMPANY_CODE LIKE '%${cleanCo}%'`
+      : `ROUTE_NAMEE='${cleanRoute}'`);
+
+  const baseUrl = 'https://portal.csdi.gov.hk/server/rest/services/common/td_rcd_1638844988873_41214/MapServer/0/query';
+  const qs = `where=${encodeURIComponent(where)}&outFields=ROUTE_ID,ROUTE_NAMEE,ROUTE_SEQ,COMPANY_CODE&outSR=4326&maxAllowableOffset=0.00009&f=geojson`;
+  const res = await fetchWithTimeout(`${baseUrl}?${qs}`, 4200, { Accept: 'application/json' }, 86400);
+  if (!res || !res.ok) return null;
+  const data = await res.json().catch(() => null);
+  const features = Array.isArray(data?.features) ? data.features : [];
+  if (!features.length) return null;
+
+  const targetSeq = bound === 'I' ? 2 : (bound === 'O' ? 1 : 0);
+  let bestCoords = null;
+  let bestScore = Infinity;
+
+  for (const feat of features) {
+    const coords = stitchGeoJsonBusGeometry(feat?.geometry, origPt, destPt);
+    if (coords.length < 2) continue;
+    let score = 0;
+    if (origPt && destPt) {
+      const dStart = haversineKmWorker(coords[0][0], coords[0][1], origPt[0], origPt[1]);
+      const dEnd = haversineKmWorker(coords[coords.length - 1][0], coords[coords.length - 1][1], destPt[0], destPt[1]);
+      score += dStart + dEnd;
+    } else if (targetSeq && Number(feat?.properties?.ROUTE_SEQ) !== targetSeq) {
+      score += 5.0;
+    }
+    const featCo = String(feat?.properties?.COMPANY_CODE || '').toUpperCase();
+    if (cleanCo && featCo && !featCo.includes(cleanCo)) score += 3.0;
+    if (score < bestScore) {
+      bestScore = score;
+      bestCoords = coords;
+    }
+  }
+
+  if (!bestCoords || bestCoords.length < 2) return null;
+  if (origPt && destPt && bestScore > 3.5) return null;
+  return simplifyPolylineCoords(bestCoords, 0.00008, 420);
+}
+
+async function fetchOsrmDeterministicBusGeometry(stopPts) {
+  if (!Array.isArray(stopPts) || stopPts.length < 2) return null;
+  const maxPerBatch = 24;
+  const allCoords = [];
+  for (let start = 0; start < stopPts.length - 1; start += (maxPerBatch - 1)) {
+    const batch = stopPts.slice(start, Math.min(stopPts.length, start + maxPerBatch));
+    if (batch.length < 2) break;
+    const coordStr = batch.map(p => `${p[1].toFixed(6)},${p[0].toFixed(6)}`).join(';');
+    const url = `https://router.project-osrm.org/route/v1/driving/${coordStr}?overview=full&geometries=geojson&alternatives=false&continue_straight=true&steps=false`;
+    const res = await fetchWithTimeout(url, 4200, { Accept: 'application/json' }, 86400);
+    if (!res || !res.ok) return null;
+    const data = await res.json().catch(() => null);
+    const raw = data?.routes?.[0]?.geometry?.coordinates;
+    if (!Array.isArray(raw) || raw.length < 2) return null;
+    const batchCoords = raw
+      .filter(c => Array.isArray(c) && c.length >= 2 && isValidHkCoord(c[1], c[0]))
+      .map(c => [Number(c[1]), Number(c[0])]);
+    if (!batchCoords.length) return null;
+    const skipFirst = (allCoords.length > 0 && distSqDeg(allCoords[allCoords.length - 1], batchCoords[0]) < 1e-8) ? 1 : 0;
+    for (let k = skipFirst; k < batchCoords.length; k++) allCoords.push(batchCoords[k]);
+  }
+  if (allCoords.length < 2) return null;
+  return simplifyPolylineCoords(allCoords, 0.00008, 420);
+}
+
+async function handleBusGeomRequest(urlObj) {
+  const gtfsId = (urlObj.searchParams.get('gtfsId') || '').trim();
+  const routeNo = (urlObj.searchParams.get('route') || '').trim();
+  const company = (urlObj.searchParams.get('company') || '').trim();
+  const bound = (urlObj.searchParams.get('bound') || '').trim().toUpperCase();
+  const rawStops = (urlObj.searchParams.get('stops') || '').trim();
+
+  const stopPts = rawStops
+    ? rawStops.split(';').map(pair => {
+        const [la, lo] = pair.split(',').map(Number);
+        return isValidHkCoord(la, lo) ? [la, lo] : null;
+      }).filter(Boolean).slice(0, 60)
+    : [];
+
+  const origPt = stopPts.length >= 2 ? stopPts[0] : null;
+  const destPt = stopPts.length >= 2 ? stopPts[stopPts.length - 1] : null;
+
+  let coords = null;
+  let source = '';
+  try {
+    coords = await fetchCsdiBusRouteGeometry({ gtfsId, routeNo, company, bound, origPt, destPt });
+    if (coords && coords.length >= 2) source = 'CSDI';
+  } catch (e) {}
+
+  if (!coords && stopPts.length >= 2) {
+    try {
+      coords = await fetchOsrmDeterministicBusGeometry(stopPts);
+      if (coords && coords.length >= 2) source = 'OSRM';
+    } catch (e) {}
+  }
+
+  return new Response(
+    JSON.stringify({ ok: Boolean(coords && coords.length >= 2), source: source || 'NONE', coords: coords || [] }),
+    { headers: { ...CORS_HEADERS, 'Cache-Control': 'public, max-age=86400' } }
+  );
+}
+
 export async function onRequest(context) {
   const { request } = context;
   if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS_HEADERS });
@@ -948,6 +1158,8 @@ export async function onRequest(context) {
   if (action === 'ferry_live') return handleFerryLiveRequest(url);
 
   if (action === 'traffic_live') return handleTrafficLiveRequest();
+
+  if (action === 'bus_geom') return handleBusGeomRequest(url);
 
   if (action === 'lrt_live') {
     const stId = String(url.searchParams.get('station_id') || '').replace(/\D/g, '');

@@ -681,10 +681,15 @@
     .route-no-text { font-weight: 800; font-size: 1.16rem; letter-spacing: -0.04em; color: var(--text-main); line-height: 1.05; font-variant-numeric: tabular-nums; }
     .route-co-tag { font-size: 0.62rem; font-weight: 600; letter-spacing: 0.03em; text-transform: uppercase; color: var(--text-sub); margin-top: 3px; }
     .route-info-col { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
-    .route-dest { font-size: 0.94rem; font-weight: 600; letter-spacing: -0.015em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-main); display: flex; align-items: baseline; gap: 4px; }
+    .route-dest { font-size: 0.94rem; font-weight: 600; letter-spacing: -0.015em; color: var(--text-main); display: flex; align-items: baseline; gap: 4px; min-width: 0; max-width: 100%; }
+    .route-dest-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .to-prefix { font-size: 0.76rem; font-weight: 400; color: var(--text-sub); flex-shrink: 0; }
     .route-sub { font-size: 0.75rem; color: var(--text-sub); font-weight: 400; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
     .route-eta-col { text-align: right; min-width: 90px; max-width: 124px; flex-shrink: 0; display: flex; flex-direction: column; align-items: flex-end; justify-content: center; gap: 3px; }
+    #favList .route-list-item { gap: 7px; padding: 11px 10px; }
+    #favList .route-no-col { min-width: 42px; max-width: 72px; }
+    #favList .route-eta-col { min-width: 58px; max-width: 82px; }
+    #favList .route-dest { font-size: 0.87rem; }
     .eta-time { font-size: 1.52rem; font-weight: 700; letter-spacing: -0.04em; color: var(--text-main); font-variant-numeric: tabular-nums; line-height: 1; }
     .eta-unit-sm { font-size: 0.76rem; font-weight: 500; color: var(--text-sub); margin-left: 1px; letter-spacing: 0; }
     .eta-clock-sub { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.71rem; font-weight: 600; color: var(--ios-blue); background: transparent; border: none; padding: 0; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 122px; }
@@ -1313,6 +1318,38 @@
       white-space: nowrap;
     }
     .planner-live-btn:hover { background: var(--ios-blue); color: #FFFFFF; border-color: var(--ios-blue); }
+    .planner-dep-switcher {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 6px;
+      flex-wrap: wrap;
+    }
+    .planner-dep-step-btn {
+      appearance: none;
+      padding: 4px 8px;
+      min-height: 26px;
+      border-radius: 6px;
+      border: 1px solid var(--border-color);
+      background: var(--bg-surface);
+      color: var(--ios-blue);
+      font-size: 0.71rem;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+    }
+    .planner-dep-step-btn:hover:not(:disabled) {
+      background: var(--ios-blue);
+      color: #FFFFFF;
+      border-color: var(--ios-blue);
+    }
+    .planner-dep-step-btn:disabled {
+      opacity: 0.36;
+      color: var(--text-sub);
+      cursor: default;
+    }
     .planner-step-link {
       align-self: center;
       font-size: 0.73rem;
@@ -3776,7 +3813,8 @@ function generateExpandedETAsHtml(arrs, group, stopKey, stopIdx) {
 
   let roadTrafficBannerHtml = '';
   if ((!group?.mode || group?.mode === 'BUS') && Array.isArray(window.__LIVE_TRAFFIC_DETECTORS__) && window.__LIVE_TRAFFIC_DETECTORS__.length && typeof getDirectionalRoadSummary === 'function') {
-    const roadSum = getDirectionalRoadSummary(stops, stopIdx, window.__LIVE_TRAFFIC_DETECTORS__, isZh, 8);
+    const roadPoly = (window.__ROUTE_GEOM_CACHE__ && group?.key) ? window.__ROUTE_GEOM_CACHE__[group.key] : null;
+    const roadSum = getDirectionalRoadSummary(stops, stopIdx, window.__LIVE_TRAFFIC_DETECTORS__, isZh, 8, roadPoly);
     if (roadSum && roadSum.headline) {
       const fDet = roadSum.focusDet;
       const oppDet = roadSum.oppDet;
@@ -6703,6 +6741,25 @@ function renderStopList() {
 // ============================================================================
 let favRenderToken = 0;
 
+function formatCompactBookmarkDest(destName, isZh = false) {
+  let txt = String(destName || '').trim();
+  if (!txt) return '';
+  if (isZh) {
+    txt = txt
+      .replace(/巴士總站/g, '總站')
+      .replace(/公共運輸交匯處/g, '交匯處');
+    return txt;
+  }
+  txt = txt
+    .replace(/\bPublic Transport Interchange\b/gi, 'PTI')
+    .replace(/\bBus Terminus\b/gi, 'B/T')
+    .replace(/\bFerry Pier\b/gi, 'Pier')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  return txt;
+}
+window.formatCompactBookmarkDest = formatCompactBookmarkDest;
+
 async function renderFavList(isSilentRefresh = false) {
   const listEl = document.getElementById('favList');
   if (!listEl) return;
@@ -6719,6 +6776,7 @@ async function renderFavList(isSilentRefresh = false) {
       if (!g) return '';
       const dispBadge = window.getDisplayRouteBadge ? window.getDisplayRouteBadge(g) : g.routeNo;
       const stName = stripPlatformCodeFromDisplay(currentLang === 'zh' && bm.stopName_tc ? bm.stopName_tc : bm.stopName_e);
+      const compactDest = formatCompactBookmarkDest(getRouteName(g), currentLang === 'zh');
       return `
         <div class="route-list-item ${g.mode === 'FERRY' ? 'ferry-card' : ''}" onclick="if(!isUserSelectingText())openRouteDetail('${escapeJsAttr(g.key)}', '${escapeJsAttr(bm.stopKey)}')">
           <div class="route-no-col">
@@ -6726,7 +6784,7 @@ async function renderFavList(isSilentRefresh = false) {
             <div class="route-co-tag">${escapeHtml(getCompanyName(g))}</div>
           </div>
           <div class="route-info-col">
-            <div class="route-dest"><span class="to-prefix">${t('to')}</span>${escapeHtml(getRouteName(g))}</div>
+            <div class="route-dest" title="${escapeHtml(getRouteName(g))}"><span class="to-prefix">${t('to')}</span><span class="route-dest-name">${escapeHtml(compactDest)}</span></div>
             <div class="route-sub" id="fav-sub-${idx}"><span>${escapeHtml(stName)}</span></div>
           </div>
           <div class="route-eta-col" id="fav-eta-${idx}">
@@ -7164,6 +7222,20 @@ async function syncEdgeTrafficCorridors() {
     }
   } catch (e) {}
 }
+
+window.onBusRouteGeometryReady = function(groupKey) {
+  try {
+    if (currentView === 'detail' && detailRouteGroup && detailRouteGroup.key === groupKey && detailExpandedStopIdx >= 0 && Array.isArray(detailLastFetchedArrs)) {
+      const stops = getStopsForGroup(detailRouteGroup, detailTargetStopKey);
+      const stObj = stops[detailExpandedStopIdx];
+      const stKey = stObj?.stopKey || getGlobalStopKey(stObj);
+      const expEl = document.getElementById(`detail-eta-expanded-${detailExpandedStopIdx}`);
+      if (expEl && stObj) {
+        expEl.innerHTML = generateExpandedETAsHtml(detailLastFetchedArrs, detailRouteGroup, stKey, detailExpandedStopIdx);
+      }
+    }
+  } catch (e) {}
+};
 
 async function executeSync(forceManual = false) {
   if (document.hidden && !forceManual) return;

@@ -36,6 +36,163 @@ var _trafficLayerByMap = new WeakMap();
 var _trafficMarkersByMap = new WeakMap();
 var _trafficMoveTimerByMap = new WeakMap();
 window.trafficLayerEnabled = true;
+window.__ROUTE_GEOM_CACHE__ = window.__ROUTE_GEOM_CACHE__ || {};
+var _busGeomInFlight = new Map();
+var _detailGeomToken = 0;
+
+function _readBusGeomStorageMap() {
+  try {
+    const raw = (typeof SafeStorage !== 'undefined' && SafeStorage?.getItem)
+      ? SafeStorage.getItem('transit_bus_geom_v1')
+      : (typeof localStorage !== 'undefined' ? localStorage.getItem('transit_bus_geom_v1') : null);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return (parsed && typeof parsed === 'object') ? parsed : {};
+  } catch (e) {
+    return {};
+  }
+}
+
+function _writeBusGeomStorageEntry(cacheKey, coords) {
+  if (!cacheKey || !Array.isArray(coords) || coords.length < 2) return;
+  try {
+    const store = _readBusGeomStorageMap();
+    store[cacheKey] = { ts: Date.now(), coords };
+    const keys = Object.keys(store);
+    if (keys.length > 26) {
+      keys.sort((a, b) => (store[a]?.ts || 0) - (store[b]?.ts || 0));
+      for (let i = 0; i < keys.length - 24; i++) delete store[keys[i]];
+    }
+    const serialized = JSON.stringify(store);
+    if (typeof SafeStorage !== 'undefined' && SafeStorage?.setItem) {
+      SafeStorage.setItem('transit_bus_geom_v1', serialized);
+    } else if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('transit_bus_geom_v1', serialized);
+    }
+  } catch (e) {}
+}
+
+function buildBusGeomCacheKey(group, stops = []) {
+  const co = String(group?.company || 'BUS').toUpperCase();
+  const rt = String(group?.routeNo || '').toUpperCase();
+  const bd = String(group?.tdBound || '').toUpperCase();
+  const gid = String(group?.gtfsId || '');
+  const gk = String(group?.key || '');
+  return `${co}|${rt}|${bd}|${gid}|${gk}|${Array.isArray(stops) ? stops.length : 0}`;
+}
+
+function getCachedBusRoutePolyline(group, stops = []) {
+  if (!group || (group.mode && group.mode !== 'BUS')) return null;
+  if (group.key && Array.isArray(window.__ROUTE_GEOM_CACHE__[group.key]) && window.__ROUTE_GEOM_CACHE__[group.key].length >= 2) {
+    return window.__ROUTE_GEOM_CACHE__[group.key];
+  }
+  const ck = buildBusGeomCacheKey(group, stops);
+  const store = _readBusGeomStorageMap();
+  const entry = store[ck];
+  if (entry && Array.isArray(entry.coords) && entry.coords.length >= 2) {
+    if (group.key) window.__ROUTE_GEOM_CACHE__[group.key] = entry.coords;
+    return entry.coords;
+  }
+  return null;
+}
+
+function _sampleBusStopCoordsForQuery(stops, maxWaypoints = 36) {
+  const valid = (Array.isArray(stops) ? stops : [])
+    .map(s => [parseFloat(s?.latitude ?? s?.lat), parseFloat(s?.longitude ?? s?.lon)])
+    .filter(p => isValidRailOrFerryCoord(p[0], p[1]));
+  if (valid.length <= maxWaypoints) return valid;
+  const out = [valid[0]];
+  const step = (valid.length - 1) / (maxWaypoints - 1);
+  for (let i = 1; i < maxWaypoints - 1; i++) {
+    out.push(valid[Math.round(i * step)]);
+  }
+  out.push(valid[valid.length - 1]);
+  return out;
+}
+
+async function fetchRoadSnappedBusPolyline(group, stops = []) {
+  if (!group || (group.mode && group.mode !== 'BUS')) return null;
+  if (!Array.isArray(stops) || stops.length < 2) return null;
+
+  const cached = getCachedBusRoutePolyline(group, stops);
+  if (cached) return cached;
+
+  const ck = buildBusGeomCacheKey(group, stops);
+  if (_busGeomInFlight.has(ck)) return _busGeomInFlight.get(ck);
+
+  const task = (async () => {
+    try {
+      const sampled = _sampleBusStopCoordsForQuery(stops, 36);
+      if (sampled.length < 2) return null;
+      const stopsParam = sampled.map(p => `${p[0].toFixed(5)},${p[1].toFixed(5)}`).join(';');
+      const params = new URLSearchParams({
+        action: 'bus_geom',
+        gtfsId: String(group.gtfsId || ''),
+        route: String(group.routeNo || ''),
+        company: String(group.company || ''),
+        bound: String(group.tdBound || ''),
+        stops: stopsParam
+      });
+      const workerBase = (typeof WORKER_BASE_URL !== 'undefined' && WORKER_BASE_URL) ? WORKER_BASE_URL : '/api/worker';
+      const ctrl = new AbortController();
+      const tid = setTimeout(() => ctrl.abort(), 5500);
+      const res = await fetch(`${workerBase}?${params.toString()}`, { signal: ctrl.signal });
+      clearTimeout(tid);
+      if (!res.ok) return null;
+      const data = await res.json().catch(() => null);
+      const coords = Array.isArray(data?.coords) ? data.coords : [];
+      if (coords.length < 2) return null;
+
+      // Sanity check endpoints sit within 2.5km of route origin & destination
+      const dStart = calculateDistanceKm(coords[0][0], coords[0][1], sampled[0][0], sampled[0][1]);
+      const dEnd = calculateDistanceKm(coords[coords.length - 1][0], coords[coords.length - 1][1], sampled[sampled.length - 1][0], sampled[sampled.length - 1][1]);
+      if (dStart > 2.5 || dEnd > 2.5) return null;
+
+      if (group.key) window.__ROUTE_GEOM_CACHE__[group.key] = coords;
+      _writeBusGeomStorageEntry(ck, coords);
+      return coords;
+    } catch (e) {
+      return null;
+    } finally {
+      _busGeomInFlight.delete(ck);
+    }
+  })();
+
+  _busGeomInFlight.set(ck, task);
+  return task;
+}
+
+function findNearestPolylineIndex(coords, lat, lon, minIdx = 0) {
+  if (!Array.isArray(coords) || !coords.length || !Number.isFinite(lat) || !Number.isFinite(lon)) return -1;
+  let bestI = -1;
+  let bestKm = Infinity;
+  const start = Math.max(0, Math.min(coords.length - 1, minIdx));
+  for (let i = start; i < coords.length; i++) {
+    const dKm = calculateDistanceKm(lat, lon, coords[i][0], coords[i][1]);
+    if (dKm < bestKm) {
+      bestKm = dKm;
+      bestI = i;
+    }
+  }
+  return bestKm <= 0.65 ? bestI : -1;
+}
+
+function sliceRoadPolylineBetweenStops(roadCoords, bStop, aStop) {
+  if (!Array.isArray(roadCoords) || roadCoords.length < 3 || !bStop || !aStop) return null;
+  const bPt = getStopLatLon(bStop);
+  const aPt = getStopLatLon(aStop);
+  if (!bPt || !aPt) return null;
+  const bIdx = findNearestPolylineIndex(roadCoords, bPt[0], bPt[1], 0);
+  if (bIdx < 0) return null;
+  const aIdx = findNearestPolylineIndex(roadCoords, aPt[0], aPt[1], bIdx);
+  if (aIdx <= bIdx) return null;
+  const slice = roadCoords.slice(bIdx, aIdx + 1);
+  return slice.length >= 2 ? slice : null;
+}
+
+window.getCachedBusRoutePolyline = getCachedBusRoutePolyline;
+window.fetchRoadSnappedBusPolyline = fetchRoadSnappedBusPolyline;
+window.sliceRoadPolylineBetweenStops = sliceRoadPolylineBetweenStops;
 
 function projectPointMeters(lat, lon, bearingDeg, meters) {
   const rad = (Number(bearingDeg) || 0) * Math.PI / 180;
@@ -726,6 +883,34 @@ function toggleDetailGpsLock() {
 function zoomMapIn() { window.mapInstance?.zoomIn(); }
 function zoomMapOut() { window.mapInstance?.zoomOut(); }
 
+function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) {
+  if (!Array.isArray(coords) || coords.length < 2) return null;
+  const layers = [];
+  const activeStop = stops?.[activeStopIdx];
+  const actLat = parseFloat(activeStop?.latitude ?? activeStop?.lat);
+  const actLon = parseFloat(activeStop?.longitude ?? activeStop?.lon);
+  const splitIdx = (activeStopIdx > 0 && Number.isFinite(actLat) && Number.isFinite(actLon))
+    ? findNearestPolylineIndex(coords, actLat, actLon, 0)
+    : 0;
+
+  if (splitIdx > 1 && splitIdx < coords.length - 1) {
+    const upstreamCoords = coords.slice(0, splitIdx + 1);
+    const activeCoords = coords.slice(splitIdx);
+    layers.push(
+      L.polyline(upstreamCoords, { color: '#FFFFFF', weight: 6.5, opacity: 0.60, lineJoin: 'round', lineCap: 'round', interactive: false }),
+      L.polyline(upstreamCoords, { color: routeAccent, weight: 4, opacity: 0.42, lineJoin: 'round', lineCap: 'round', interactive: false }),
+      L.polyline(activeCoords, { color: '#FFFFFF', weight: 8.5, opacity: 0.88, lineJoin: 'round', lineCap: 'round', interactive: false }),
+      L.polyline(activeCoords, { color: routeAccent, weight: 5.5, opacity: 0.96, lineJoin: 'round', lineCap: 'round' })
+    );
+  } else {
+    layers.push(
+      L.polyline(coords, { color: '#FFFFFF', weight: 8.2, opacity: 0.86, lineJoin: 'round', lineCap: 'round', interactive: false }),
+      L.polyline(coords, { color: routeAccent, weight: 5.2, opacity: 0.94, lineJoin: 'round', lineCap: 'round' })
+    );
+  }
+  return L.layerGroup(layers);
+}
+
 function drawRouteOnMap(group, activeStopIdx = 0) {
   if (typeof L === 'undefined') {
     if (typeof window.ensureLeafletLoaded === 'function') {
@@ -766,9 +951,12 @@ function drawRouteOnMap(group, activeStopIdx = 0) {
     .map(s => [parseFloat(s.latitude), parseFloat(s.longitude)])
     .filter(p => isValidRailOrFerryCoord(p[0], p[1]));
 
-  currentDetailRoadCoords = polyPts;
+  const isBusRoute = !group?.mode || group.mode === 'BUS';
+  const cachedRoadCoords = isBusRoute ? getCachedBusRoutePolyline(group, stops) : null;
+  currentDetailRoadCoords = cachedRoadCoords || polyPts;
 
   const lineStyle = { color: routeAccent, weight: 5, opacity: 0.92, lineJoin: 'round', lineCap: 'round' };
+  const myGeomToken = ++_detailGeomToken;
 
   if (group?.mode === 'MTR' && stops.length >= 4 && isParallelRailTerminusPair(stops[stops.length - 2]?.stopId, stops[stops.length - 1]?.stopId)) {
     const trunkStops = stops.slice(0, -2);
@@ -792,8 +980,25 @@ function drawRouteOnMap(group, activeStopIdx = 0) {
       L.polyline(branchAPts, lineStyle),
       L.polyline(branchBPts, { ...lineStyle, dashArray: '6, 6' })
     ]).addTo(window.mapInstance);
+  } else if (cachedRoadCoords && cachedRoadCoords.length >= 2) {
+    detailPolylineLayer = buildDetailBusPolylineLayer(cachedRoadCoords, stops, activeStopIdx, routeAccent).addTo(window.mapInstance);
   } else if (polyPts.length >= 2) {
-    detailPolylineLayer = L.polyline(polyPts, lineStyle).addTo(window.mapInstance);
+    detailPolylineLayer = L.polyline(polyPts, isBusRoute ? { ...lineStyle, opacity: 0.45, dashArray: '6, 6' } : lineStyle).addTo(window.mapInstance);
+    if (isBusRoute) {
+      fetchRoadSnappedBusPolyline(group, stops).then((roadCoords) => {
+        if (!roadCoords || myGeomToken !== _detailGeomToken || !window.mapInstance) return;
+        if (typeof detailRouteGroup !== 'undefined' && detailRouteGroup?.key !== group.key) return;
+        const curActive = (typeof detailExpandedStopIdx === 'number' && detailExpandedStopIdx >= 0) ? detailExpandedStopIdx : activeStopIdx;
+        if (detailPolylineLayer) {
+          try { window.mapInstance.removeLayer(detailPolylineLayer); } catch (e) {}
+        }
+        currentDetailRoadCoords = roadCoords;
+        detailPolylineLayer = buildDetailBusPolylineLayer(roadCoords, stops, curActive, routeAccent).addTo(window.mapInstance);
+        if (typeof window.onBusRouteGeometryReady === 'function') {
+          window.onBusRouteGeometryReady(group.key);
+        }
+      });
+    }
   }
 
   stops.forEach((s, idx) => {
@@ -820,10 +1025,11 @@ function drawRouteOnMap(group, activeStopIdx = 0) {
   syncDetailGpsLockBtnUI();
   updateUserMarkers();
 
-  if (polyPts.length >= 2) {
+  const fitPts = (cachedRoadCoords && cachedRoadCoords.length >= 2) ? cachedRoadCoords : polyPts;
+  if (fitPts.length >= 2) {
     try {
       window.mapInstance.invalidateSize(false);
-      window.mapInstance.fitBounds(L.latLngBounds(polyPts), { paddingTopLeft: [36, 36], paddingBottomRight: [36, 44], maxZoom: 16 });
+      window.mapInstance.fitBounds(L.latLngBounds(fitPts), { paddingTopLeft: [36, 36], paddingBottomRight: [36, 44], maxZoom: 16 });
     } catch (e) {}
   }
   renderTrafficOverlayOnMap(window.mapInstance);
@@ -834,6 +1040,11 @@ function highlightActiveStopMarkerOnMap(activeIdx) {
   const stops = getStopsForGroup(detailRouteGroup, detailTargetStopKey);
   const isLight = document.documentElement.classList.contains('light-mode');
   const routeAccent = detailRouteGroup?.colorHex || window.__GET_ROUTE_COLOR_HEX__(detailRouteGroup?.mode, detailRouteGroup?.company, detailRouteGroup?.routeNo);
+  const isBusRoute = !detailRouteGroup?.mode || detailRouteGroup.mode === 'BUS';
+  if (isBusRoute && Array.isArray(currentDetailRoadCoords) && currentDetailRoadCoords.length > stops.length && detailPolylineLayer) {
+    try { window.mapInstance.removeLayer(detailPolylineLayer); } catch (e) {}
+    detailPolylineLayer = buildDetailBusPolylineLayer(currentDetailRoadCoords, stops, activeIdx, routeAccent).addTo(window.mapInstance);
+  }
   Object.entries(mapMarkers).forEach(([idxStr, m]) => {
     const idx = Number(idxStr);
     const isAct = (idx === activeIdx);
@@ -1494,7 +1705,12 @@ function drawTransferCorridorOnMap(spec, selectedCard) {
 
   const drawTransitLeg = (group, bStop, aStop, fallbackColor = '#007AFF') => {
     const stopPts = sliceRouteStopPoints(group, bStop, aStop);
-    const pts = stopPts.map(x => x.pt);
+    const rawPts = stopPts.map(x => x.pt);
+    const isBus = !group?.mode || group.mode === 'BUS';
+    const allGroupStops = isBus && typeof getStopsForGroup === 'function' ? getStopsForGroup(group, bStop?.stopKey) : [];
+    const cachedRoad = isBus ? getCachedBusRoutePolyline(group, allGroupStops) : null;
+    const snappedSlice = cachedRoad ? sliceRoadPolylineBetweenStops(cachedRoad, bStop, aStop) : null;
+    const pts = (snappedSlice && snappedSlice.length >= 2) ? snappedSlice : rawPts;
     const col = group?.colorHex || window.__GET_ROUTE_COLOR_HEX__(group?.mode, group?.company, group?.routeNo) || fallbackColor;
     const isFerry = group?.mode === 'FERRY';
     if (pts.length >= 2) {
@@ -1521,7 +1737,21 @@ function drawTransferCorridorOnMap(spec, selectedCard) {
       const badge = window.getDisplayRouteBadge ? window.getDisplayRouteBadge(group) : (group?.routeNo || '');
       if (badge) poly.bindTooltip(`${badge}`, { sticky: true, className: 'kmb-map-stop-label' });
       xferMapLayers.push(poly);
-      xferMapLegPolylines.push({ poly, casing, pts, isFerry, color: col });
+      const legRecord = { poly, casing, pts, isFerry, color: col };
+      xferMapLegPolylines.push(legRecord);
+
+      // Upgrade straight-chord bus leg asynchronously to road-snapped fixed bus geometry
+      if (isBus && !snappedSlice && allGroupStops.length >= 2) {
+        fetchRoadSnappedBusPolyline(group, allGroupStops).then((roadCoords) => {
+          if (!roadCoords || myDrawToken !== xferDrawToken || !map.hasLayer(poly)) return;
+          const sliced = sliceRoadPolylineBetweenStops(roadCoords, bStop, aStop);
+          if (sliced && sliced.length >= 2) {
+            casing.setLatLngs(sliced);
+            poly.setLatLngs(sliced);
+            legRecord.pts = sliced;
+          }
+        });
+      }
 
       stopPts.forEach((entry, idx) => {
         const isEndpoint = (idx === 0 || idx === stopPts.length - 1);
@@ -1538,7 +1768,7 @@ function drawTransferCorridorOnMap(spec, selectedCard) {
         xferMapLayers.push(dot);
       });
     }
-    return pts;
+    return rawPts;
   };
 
   const originPt = [spec.fromMeta.lat, spec.fromMeta.lon];

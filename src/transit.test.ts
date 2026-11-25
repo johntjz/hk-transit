@@ -2826,6 +2826,203 @@ test('map.js: enlarges clickable traffic arrows (34x34), separates HK left-hand 
   assert.ok(nbPopup.includes('↑ Northbound') && nbPopup.includes('#1D4ED8'), 'Northbound popup must show Northbound pill');
 });
 
+test('hardcode.js, map.js & worker.js: road-snapped E36 polyline strictly matches YLH highway detectors (<=60m, ±30°) and rejects off-corridor Castle Peak Rd / LRT cameras', () => {
+  const sb = loadHardcodeAndPlannerSandbox();
+
+  // E36 stops: 11. TM-CLK Tunnel BBI -> 12. Fung Chi Tsuen (Pat Heung bound)
+  const stops = [
+    { stopId: 'E36_10', stopName_e: 'Yu Tung Court', latitude: '22.2882', longitude: '113.9436' },
+    { stopId: 'E36_11', stopName_e: 'Tuen Mun Chek Lap Kok Tunnel BBI', latitude: '22.3716', longitude: '113.9636' },
+    { stopId: 'E36_12', stopName_e: 'Fung Chi Tsuen', latitude: '22.4455', longitude: '114.0172' },
+    { stopId: 'E36_13', stopName_e: 'Yuen Long Plaza', latitude: '22.4447', longitude: '114.0243' },
+  ];
+
+  // Road-snapped polyline along Lung Fu Rd -> Wong Chu Rd -> Yuen Long Highway (YLH) -> Shap Pat Heung Int -> Fung Chi Tsuen
+  const e36RoadPolyline = [
+    [22.2882, 113.9436],
+    [22.3716, 113.9636],
+    [22.3835, 113.9665],
+    [22.3968, 113.9722],
+    [22.4150, 113.9870],
+    [22.4290, 113.9975], // YLH eastbound (~45° NE)
+    [22.4385, 114.0075], // YLH approaching Shap Pat Heung Int (~45° NE)
+    [22.4430, 114.0135],
+    [22.4455, 114.0172],
+    [22.4447, 114.0243],
+  ];
+
+  const detectors = [
+    // Off-corridor Castle Peak Rd / Hung Shui Kiu LRT stop (~550m west of YLH) — MUST BE REJECTED
+    {
+      id: 'TDSCPRHSK10004',
+      lat: 22.4342,
+      lon: 113.9921,
+      rot: 45,
+      spd: 35,
+      occ: 6,
+      tier: 'SLOW',
+      roadEn: 'Castle Peak Rd-Hung Shui Kiu near Hung Shui Kiu Light Rail Stop - Northbound',
+      roadTc: '青山公路-洪水橋近洪水橋輕鐵站 - 北行',
+      camKey: 'TDSCPRHSK10004',
+    },
+    // Off-corridor Tuen Mun Road near San Hui Market (~450m east of polyline) — MUST BE REJECTED when road-snapped
+    {
+      id: 'TDS90048',
+      lat: 22.3962,
+      lon: 113.9774,
+      rot: 15,
+      spd: 35,
+      occ: 32,
+      tier: 'SLOW',
+      roadEn: 'Tuen Mun Road near San Hui Market - Northbound',
+      roadTc: '屯門公路近新墟街市 - 北行',
+      camKey: 'TDS90048',
+    },
+    // True on-corridor YLH detector right on the road-snapped polyline (~15m away, bearing ~45° aligned)
+    {
+      id: 'TDS90067',
+      lat: 22.4338,
+      lon: 114.0025,
+      rot: 46,
+      spd: 82,
+      occ: 12,
+      tier: 'SMOOTH',
+      roadEn: 'YLH/Shap Pat Heung Int - Eastbound (1)',
+      roadTc: '元朗公路近十八鄉交匯處 - 東行 (1)',
+      camKey: 'TDS90067',
+    },
+    // Opposite-bound jammed detector on YLH (~180° opposite) — must be surfaced ONLY as oppSide
+    {
+      id: 'TDS90068',
+      lat: 22.4337,
+      lon: 114.0027,
+      rot: 226,
+      spd: 14,
+      occ: 91,
+      tier: 'JAMMED',
+      roadEn: 'YLH/Shap Pat Heung Int - Westbound (1)',
+      roadTc: '元朗公路近十八鄉交匯處 - 西行 (1)',
+      camKey: 'TDS90068',
+    },
+  ];
+
+  // 1. With road-snapped polyline: strictly locks onto TDS90067 (YLH) and preserves opposite-bound jam callout
+  const sumRoadSnapped = sb.getDirectionalRoadSummary(stops, 0, detectors, false, 8, e36RoadPolyline);
+  assert.ok(sumRoadSnapped, 'Expected road-snapped summary');
+  assert.equal(sumRoadSnapped.tone, 'smooth', 'On-corridor YLH is smooth (82 km/h); off-corridor slow detectors must NOT poison verdict');
+  assert.equal(sumRoadSnapped.focusDet?.id, 'TDS90067', `Must select on-corridor YLH detector TDS90067, got ${sumRoadSnapped.focusDet?.id}`);
+  assert.equal(sumRoadSnapped.oppDet?.id, 'TDS90068', 'Must retain opposite-bound YLH jam callout');
+
+  // 2. Even WITHOUT road-snapped polyline (before async fetch completes), Castle Peak Rd / LRT detector is strictly excluded on highway/BBI spans
+  const onlyCprAndYlh = [detectors[0], detectors[2]];
+  const sumFallback = sb.getDirectionalRoadSummary(stops, 0, onlyCprAndYlh, false, 8, null);
+  assert.ok(sumFallback, 'Expected fallback summary');
+  assert.equal(sumFallback.focusDet?.id, 'TDS90067', 'Fallback corridor matcher must also reject TDSCPRHSK10004 Castle Peak Rd LRT detector on highway BBI span');
+
+  // 3. Worker hygiene: bus_geom action wired and sole export preserved
+  const workerSrc = fs.readFileSync('functions/api/worker.js', 'utf8');
+  assert.ok(workerSrc.includes("action === 'bus_geom'"), 'worker.js must handle action=bus_geom');
+  const exportLines = workerSrc.split('\n').filter((l) => /^\s*export\b/.test(l));
+  assert.equal(exportLines.length, 1, 'worker.js must keep exactly one export (onRequest)');
+});
+
+test('planner.js: Leave Now retains 0-min walk-buffer earlier departures and Earlier/Later switcher cascades transfer & arrival times', async () => {
+  const tNow = Date.now();
+  const tclDeps = [
+    tNow + 1 * 60000,  // 1 min away (inside 2-min walk buffer — catchable if already at platform)
+    tNow + 5 * 60000,  // 5 min away (default walk-buffered selection)
+    tNow + 11 * 60000, // 11 min away (later train)
+  ];
+  const tmlDeps = [
+    tNow + 22 * 60000, // connects with +1m TCL (arr Nam Cheong +19m + 2m xfer = +21m)
+    tNow + 26 * 60000, // connects with +5m TCL (arr Nam Cheong +23m + 2m xfer = +25m)
+    tNow + 32 * 60000, // connects with +11m TCL (arr Nam Cheong +29m + 2m xfer = +31m)
+  ];
+
+  const sb = loadHardcodeAndPlannerSandbox({
+    xferTimeMode: 'NOW',
+    navigator: { onLine: true },
+    getHongKongNow: (ms = tNow) => {
+      const shifted = new Date(ms + 8 * 3600000);
+      return {
+        getHours: () => shifted.getUTCHours(),
+        getMinutes: () => shifted.getUTCMinutes(),
+        getDay: () => shifted.getUTCDay(),
+      };
+    },
+    fetchEtaRaw: async (group: any) => {
+      if (group.routeNo === 'TCL') {
+        return tclDeps.map((ms) => ({ targetMs: ms, isSched: false, loadEstimate: { tier: 'HIGH', labelEn: 'Packed' } }));
+      }
+      return tmlDeps.map((ms) => ({ targetMs: ms, isSched: false, loadEstimate: { tier: 'MED', labelEn: 'Moderate' } }));
+    },
+  });
+
+  const tclGroup = { key: 'MTR_TCL_O', mode: 'MTR', company: 'MTR', routeNo: 'TCL', headwayMins: 6 };
+  const tmlGroup = { key: 'MTR_TML_O', mode: 'MTR', company: 'MTR', routeNo: 'TML', headwayMins: 4 };
+  const accessWalkSec = 120; // 2 min walk -> earliestBoardMs = tNow + 2m
+
+  const w1 = await sb.ctx.window.resolveLiveOrStaticLegWindow(tclGroup, 'MTR_STN_TUC', tNow + accessWalkSec * 1000, 18 * 60, { mtrCode: 'TUC', stopName_e: 'Tung Chung' }, true, { mtrCode: 'NAC' });
+  assert.equal(w1.candidateDeps.length, 3, 'Must retain 08:34, 08:38, and 08:44 departures');
+  assert.equal(w1.selectedDepIdx, 1, 'Default selection must still respect 2-min walk buffer (08:38)');
+  assert.equal(w1.depMs, tclDeps[1]);
+
+  const card: any = {
+    type: 'XFER',
+    key: 'XFER_0',
+    item: {
+      leg1Group: tclGroup,
+      leg2Group: tmlGroup,
+      accessWalkSec,
+      egressWalkSec: 120,
+      xfer1BufSec: 120,
+      candidateDeps1: w1.candidateDeps,
+      selectedDepIdx1: w1.selectedDepIdx,
+      candidateDeps2: tmlDeps.map((ms) => ({ depMs: ms, effDriveSec: 18 * 60, isLive: true, signalType: 'LIVE' })),
+      headwaySec2: 240,
+      liveDep1Ms: tclDeps[1],
+      liveDep2Ms: tmlDeps[1],
+      liveArrMs: tmlDeps[1] + 20 * 60000,
+      totalMins: 46,
+      xferStopNodes: [{ leg1DriveSec: 18 * 60, leg2DriveSec: 18 * 60, walkSec: 60 }],
+      leg3Options: [],
+    },
+  };
+
+  // Tap "< Earlier": switches TCL +5m -> +1m, cascades TML +26m -> +22m, marks Board now, saves 4 mins
+  const steppedEarlier = sb.ctx.window.recalculatePlannerCardForFirstLegDep(card, 0, tNow);
+  assert.equal(steppedEarlier, true);
+  assert.equal(card.item.selectedDepIdx1, 0);
+  assert.equal(card.item.liveDep1Ms, tclDeps[0]);
+  assert.equal(card.item.liveDep2Ms, tmlDeps[0], 'TML connection at Nam Cheong must cascade earlier');
+  assert.equal(card.item.isBoardNowRush, true, 'Picking train inside walk buffer must flag Board now');
+  assert.equal(card.item.totalMins, 42, 'Total duration must drop from 46m to 42m');
+
+  // Tap "Later >" twice: moves to +11m TCL -> +32m TML
+  assert.equal(sb.ctx.window.recalculatePlannerCardForFirstLegDep(card, 2, tNow), true);
+  assert.equal(card.item.liveDep1Ms, tclDeps[2]);
+  assert.equal(card.item.liveDep2Ms, tmlDeps[2]);
+  assert.equal(card.item.isBoardNowRush, false);
+});
+
+test('index.html: Saved Bookmarks cleanly truncates long destinations with .route-dest-name ellipsis and compact B/T labels', () => {
+  const html = fs.readFileSync('index.html', 'utf8');
+  assert.ok(html.includes('.route-dest-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }'), 'Must define flex-safe ellipsis on .route-dest-name');
+  assert.ok(html.includes('<span class="route-dest-name">${escapeHtml(compactDest)}</span>'), 'renderFavList must wrap destination name inside .route-dest-name');
+  assert.ok(html.includes('#favList .route-eta-col'), 'Saved bookmarks list must tighten column widths for narrow mobile viewports');
+
+  const fnMatch = html.match(/function formatCompactBookmarkDest[\s\S]*?\n\}/);
+  assert.ok(fnMatch, 'formatCompactBookmarkDest helper must exist in index.html');
+  const ctx: any = {};
+  vm.createContext(ctx);
+  vm.runInContext(fnMatch[0], ctx);
+
+  assert.equal(ctx.formatCompactBookmarkDest('Tung Chung Station Bus Terminus', false), 'Tung Chung Station B/T');
+  assert.equal(ctx.formatCompactBookmarkDest('Tuen Mun Public Transport Interchange', false), 'Tuen Mun PTI');
+  assert.equal(ctx.formatCompactBookmarkDest('東涌站巴士總站', true), '東涌站總站');
+});
+
+
 
 
 

@@ -3467,6 +3467,165 @@ test('index.html & map.js: desktop Pointer Events drag resize on #mapSheetHandle
   assert.equal(openedModals[0].oppId, 'YLH_EB_OPP');
 });
 
+test('PWA update mechanism: public/sw.js SKIP_WAITING lifecycle, Settings Force Update App, automatic update toast, and zero header clutter', async () => {
+  const html = fs.readFileSync('index.html', 'utf8');
+  const swCode = fs.readFileSync('public/sw.js', 'utf8');
+  const headersTxt = fs.readFileSync('public/_headers', 'utf8');
+
+  // 1. Verify Service Worker supports explicit SKIP_WAITING (without skipping in install) and bypasses live APIs
+  const installBlock = swCode.match(/addEventListener\('install'[\s\S]*?\n\}\);/)?.[0] || '';
+  const installCodeOnly = installBlock.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.ok(installBlock.length > 0, 'public/sw.js must register install listener');
+  assert.ok(!installCodeOnly.includes('self.skipWaiting()'), 'install handler must NOT auto-skipWaiting so updates enter waiting state cleanly');
+  assert.ok(swCode.includes("data === 'SKIP_WAITING' || (data && data.type === 'SKIP_WAITING')") && swCode.includes('self.skipWaiting()'), 'public/sw.js must honor SKIP_WAITING message');
+  assert.ok(swCode.includes("url.pathname.startsWith('/api/')") && swCode.includes('/version.json') && swCode.includes('/sw.js'), 'public/sw.js must bypass cache for live APIs, version.json, and sw.js');
+  assert.ok(headersTxt.includes('/sw.js') && headersTxt.includes('no-cache, no-store, must-revalidate'), 'public/_headers must prevent caching of /sw.js');
+
+  // 2. Verify Settings modal App Version & Update control, meta tag, and zero extra buttons in main top header
+  assert.ok(html.includes('<meta name="app-build-version" content="'), 'index.html must expose build timestamp via app-build-version meta tag');
+  assert.ok(html.includes('id="settingsAppUpdateCard"') && html.includes('id="settingBuildVersionText"') && html.includes('id="forceUpdateAppBtn"'), 'Settings modal must include App Version & Update section and Force Update App button');
+  const headerSlice = html.match(/<div class="app-switcher">[\s\S]*?<\/div>\s*\n\s*<!--/)?.[0] || '';
+  assert.ok(headerSlice.length > 0 && !headerSlice.includes('forceUpdateApp') && !headerSlice.includes('pwaUpdate'), 'Main top navigation bar must remain uncluttered with zero extra update buttons/badges');
+
+  // 3. Extract and execute getAppBuildVersion, forceUpdateApp, and initPwaUpdateLifecycle in VM sandbox
+  const fnBlockMatch = html.match(/function getAppBuildVersion\(\)[\s\S]*?window\.initPwaUpdateLifecycle = function initPwaUpdateLifecycle[\s\S]*?\n\};/);
+  assert.ok(fnBlockMatch, 'Must find PWA update lifecycle functions in index.html');
+
+  const elements: Record<string, any> = {
+    forceUpdateAppBtn: { disabled: false, innerText: '↻ Force Update App' },
+    pwaUpdateToast: {
+      classes: new Set<string>(),
+      attrs: {} as Record<string, string>,
+      classList: {
+        add(c: string) { elements.pwaUpdateToast.classes.add(c); },
+        remove(c: string) { elements.pwaUpdateToast.classes.delete(c); },
+      },
+      setAttribute(k: string, v: string) { elements.pwaUpdateToast.attrs[k] = v; },
+    },
+    pwaUpdateToastText: { innerText: '' },
+    pwaUpdateActionPill: { innerText: '' },
+    pwaUpdateApplyBtn: { disabled: false },
+  };
+
+  let reloadCount = 0;
+  let unregisteredIds: string[] = [];
+  let deletedCaches: string[] = [];
+
+  const ctx: any = {
+    APP_VERSION: '2026-11-25 17:53 HKT',
+    currentLang: 'en',
+    triggerHaptic: () => {},
+    caches: {
+      keys: async () => ['transit-hk-shell-old', 'transit-hk-shell-cur'],
+      delete: async (k: string) => { deletedCaches.push(k); return true; },
+    },
+    navigator: {
+      serviceWorker: {
+        getRegistrations: async () => [
+          { unregister: async () => { unregisteredIds.push('sw-1'); return true; } },
+          { unregister: async () => { unregisteredIds.push('sw-2'); return true; } },
+        ],
+      },
+    },
+    document: {
+      readyState: 'complete',
+      visibilityState: 'visible',
+      querySelector: (sel: string) => sel === 'meta[name="app-build-version"]'
+        ? { getAttribute: () => '2026-11-25 17:53 HKT' }
+        : null,
+      getElementById: (id: string) => elements[id] || null,
+      addEventListener: () => {},
+    },
+    window: {
+      location: { reload: () => { reloadCount++; } },
+      addEventListener: () => {},
+    },
+  };
+  vm.createContext(ctx);
+  vm.runInContext(fnBlockMatch[0], ctx);
+
+  // Verify build version reader
+  assert.equal(ctx.getAppBuildVersion(), '2026-11-25 17:53 HKT');
+
+  // Verify Force Update App unregisters all SWs, clears all caches, and triggers hard reload
+  await ctx.window.forceUpdateApp();
+  assert.deepEqual(unregisteredIds, ['sw-1', 'sw-2'], 'forceUpdateApp must unregister all active Service Workers');
+  assert.deepEqual(deletedCaches, ['transit-hk-shell-old', 'transit-hk-shell-cur'], 'forceUpdateApp must clear all Cache Storage keys');
+  assert.equal(reloadCount, 1, 'forceUpdateApp must trigger window.location.reload()');
+
+  // 4. Test SW lifecycle: First-ever install (controller === null) must NOT show toast or auto-reload
+  reloadCount = 0;
+  const firstInstallListeners: Record<string, Function> = {};
+  const firstRegListeners: Record<string, Function> = {};
+  const firstSw: any = {
+    controller: null,
+    addEventListener: (ev: string, fn: Function) => { firstInstallListeners[ev] = fn; },
+    register: async () => ({
+      waiting: null,
+      installing: null,
+      addEventListener: (ev: string, fn: Function) => { firstRegListeners[ev] = fn; },
+    }),
+  };
+  const firstReg = await ctx.window.initPwaUpdateLifecycle(firstSw);
+  assert.ok(firstReg, 'initPwaUpdateLifecycle must resolve registration');
+  firstInstallListeners.controllerchange?.();
+  assert.equal(reloadCount, 0, 'First-ever SW controllerclaim must NOT reload page');
+  assert.equal(elements.pwaUpdateToast.classes.has('show'), false, 'First-ever SW install must NOT show update toast');
+
+  // 5. Test SW lifecycle: Active controller + updatefound -> installed waiting -> toast -> tap -> SKIP_WAITING -> controllerchange reload once
+  const swListeners: Record<string, Function> = {};
+  const regListeners: Record<string, Function> = {};
+  const workerListeners: Record<string, Function> = {};
+  const postedMsgs: any[] = [];
+  const newWorker: any = {
+    state: 'installing',
+    postMessage: (m: any) => postedMsgs.push(m),
+    addEventListener: (ev: string, fn: Function) => { workerListeners[ev] = fn; },
+  };
+  const activeReg: any = {
+    waiting: null,
+    installing: null,
+    addEventListener: (ev: string, fn: Function) => { regListeners[ev] = fn; },
+  };
+  const activeSw: any = {
+    controller: { id: 'old-controller' },
+    addEventListener: (ev: string, fn: Function) => { swListeners[ev] = fn; },
+    register: async (url: string, opts: any) => {
+      assert.equal(url, 'sw.js');
+      assert.equal(opts?.updateViaCache, 'none');
+      return activeReg;
+    },
+  };
+
+  await ctx.window.initPwaUpdateLifecycle(activeSw);
+  activeReg.installing = newWorker;
+  regListeners.updatefound();
+  assert.equal(elements.pwaUpdateToast.classes.has('show'), false, 'Toast must stay hidden while worker is still installing');
+
+  // Transition worker to installed (entering waiting state while old controller is active)
+  newWorker.state = 'installed';
+  workerListeners.statechange();
+  assert.equal(elements.pwaUpdateToast.classes.has('show'), true, 'Update toast must appear when new SW enters waiting state');
+  assert.equal(elements.pwaUpdateToastText.innerText, 'New version available — Tap to update');
+
+  // Dismissing hides toast cleanly
+  ctx.window.dismissPwaUpdateToast();
+  assert.equal(elements.pwaUpdateToast.classes.has('show'), false, 'Dismiss button must hide update toast');
+  assert.equal(elements.pwaUpdateToast.attrs['aria-hidden'], 'true');
+
+  // Re-show and tap Update: posts SKIP_WAITING and reloads exactly once on controllerchange
+  ctx.window.showPwaUpdateToast(newWorker);
+  ctx.window.applyPendingPwaUpdate();
+  assert.equal(postedMsgs.length, 1, 'Tapping update toast must post one message to waiting worker');
+  assert.equal(postedMsgs[0]?.type, 'SKIP_WAITING', 'Tapping update toast must post SKIP_WAITING to waiting worker');
+  assert.equal(reloadCount, 0, 'Must wait for controllerchange before reloading');
+
+  swListeners.controllerchange();
+  swListeners.controllerchange(); // second fire must be ignored
+  assert.equal(reloadCount, 1, 'controllerchange must reload cleanly exactly once');
+});
+
+
 
 
 

@@ -8,6 +8,7 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="apple-mobile-web-app-title" content="Transit HK">
+  <meta name="app-build-version" content="2026-11-25 17:53 HKT">
   <title>Transit HK — Bus, MTR, Light Rail &amp; Ferry (通)</title>
   <meta name="description" content="Real-time Hong Kong Bus, MTR, Light Rail & Ferry radar and multi-modal route planner.">
   <meta property="og:title" content="Transit HK">
@@ -1403,6 +1404,46 @@
     .about-meta-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-top: 2px; }
     .about-version-tag { font-size: 0.70rem; font-weight: 700; color: var(--ios-blue); background: rgba(0, 122, 255, 0.12); padding: 3px 9px; border-radius: 999px; }
     .about-mini-btn { background: var(--bg-white); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 999px; padding: 4px 10px; font-size: 0.72rem; font-weight: 600; cursor: pointer; }
+    .settings-update-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: 14px;
+      padding: 11px 12px;
+      margin-top: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .settings-update-meta { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+    .settings-update-ver {
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      font-size: 0.73rem;
+      font-weight: 700;
+      color: var(--text-main);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .settings-update-hint { font-size: 0.69rem; color: var(--text-sub); line-height: 1.3; }
+    .settings-force-update-btn {
+      flex-shrink: 0;
+      background: var(--ios-blue);
+      color: #FFFFFF;
+      border: none;
+      border-radius: 10px;
+      padding: 8px 12px;
+      font-family: inherit;
+      font-size: 0.75rem;
+      font-weight: 700;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: opacity 0.15s ease, transform 0.12s ease;
+    }
+    .settings-force-update-btn:hover:not(:disabled) { opacity: 0.92; }
+    .settings-force-update-btn:active:not(:disabled) { transform: scale(0.98); }
+    .settings-force-update-btn:disabled { opacity: 0.55; cursor: wait; }
 
     /* Visual Picture-First Onboarding Carousel (MTR Mobile style) */
     .onboard-card {
@@ -1508,6 +1549,100 @@
     .text-center { text-align: center; padding: 36px 20px; color: var(--text-sub); font-size: 0.88rem; }
     .toast-msg { position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%) translateY(20px); background: var(--ios-blue); color: #FFFFFF; padding: 9px 18px; border-radius: 999px; font-size: 0.8rem; font-weight: 600; z-index: 7000; opacity: 0; pointer-events: none; box-shadow: 0 8px 24px rgba(0, 122, 255, 0.32); transition: opacity 0.22s ease, transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1); }
     .toast-msg.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+    .pwa-update-toast {
+      position: fixed;
+      bottom: calc(18px + env(safe-area-inset-bottom, 0px));
+      left: 50%;
+      transform: translateX(-50%) translateY(24px);
+      width: min(calc(100vw - 24px), 420px);
+      background: #1C1C1E;
+      color: #FFFFFF;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 14px;
+      padding: 6px 6px 6px 8px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      z-index: 7100;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.34);
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+      transition: opacity 0.22s ease, transform 0.24s cubic-bezier(0.2, 0.8, 0.2, 1), visibility 0.22s ease;
+    }
+    html:not(.light-mode) .pwa-update-toast {
+      background: #F8FAFC;
+      color: #0F172A;
+      border-color: rgba(15, 23, 42, 0.14);
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.52);
+    }
+    .pwa-update-toast.show {
+      opacity: 1;
+      visibility: visible;
+      pointer-events: auto;
+      transform: translateX(-50%) translateY(0);
+    }
+    .pwa-update-action-btn {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      background: transparent;
+      border: none;
+      color: inherit;
+      font-family: inherit;
+      font-size: 0.80rem;
+      font-weight: 700;
+      padding: 8px 6px 8px 8px;
+      text-align: left;
+      cursor: pointer;
+    }
+    .pwa-update-action-btn:disabled { opacity: 0.7; cursor: wait; }
+    .pwa-update-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #34C759;
+      flex-shrink: 0;
+    }
+    .pwa-update-label-wrap {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+    .pwa-update-text {
+      line-height: 1.25;
+      white-space: normal;
+    }
+    .pwa-update-chevron {
+      flex-shrink: 0;
+      color: #60A5FA;
+      font-size: 0.95rem;
+      font-weight: 800;
+      line-height: 1;
+    }
+    html:not(.light-mode) .pwa-update-chevron {
+      color: var(--ios-blue);
+    }
+    .pwa-update-dismiss-btn {
+      flex-shrink: 0;
+      width: 30px;
+      height: 30px;
+      border-radius: 999px;
+      border: none;
+      background: rgba(255, 255, 255, 0.12);
+      color: inherit;
+      font-size: 0.78rem;
+      font-weight: 700;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+    }
+    html:not(.light-mode) .pwa-update-dismiss-btn { background: rgba(15, 23, 42, 0.08); }
   </style>
 </head>
 <body>
@@ -1758,6 +1893,14 @@
       </div>
       <span class="settings-val-pill" id="settingValAboutOpen">Open ›</span>
     </button>
+    <div class="settings-section-divider" id="settingSecAppUpdate">App Version &amp; Update</div>
+    <div class="settings-update-card" id="settingsAppUpdateCard">
+      <div class="settings-update-meta">
+        <div class="settings-update-ver" id="settingBuildVersionText">Build: 2026-11-25 17:53 HKT</div>
+        <div class="settings-update-hint" id="settingBuildUpdateHint">Clears app caches &amp; reloads latest build</div>
+      </div>
+      <button type="button" class="settings-force-update-btn" id="forceUpdateAppBtn" onclick="forceUpdateApp()">↻ Force Update App</button>
+    </div>
   </div>
 </div>
 
@@ -1857,6 +2000,16 @@
 </div>
 
 <div id="toastMsg" class="toast-msg"></div>
+<div id="pwaUpdateToast" class="pwa-update-toast" role="status" aria-live="polite" aria-hidden="true">
+  <button type="button" class="pwa-update-action-btn" id="pwaUpdateApplyBtn" onclick="applyPendingPwaUpdate()">
+    <span class="pwa-update-label-wrap">
+      <span class="pwa-update-dot" aria-hidden="true"></span>
+      <span class="pwa-update-text" id="pwaUpdateToastText">New version available — Tap to update</span>
+    </span>
+    <span class="pwa-update-chevron" aria-hidden="true">↻</span>
+  </button>
+  <button type="button" class="pwa-update-dismiss-btn" id="pwaUpdateDismissBtn" onclick="dismissPwaUpdateToast()" aria-label="Dismiss update notification">✕</button>
+</div>
 <script>
 // ============================================================================
 // PART 1: EXECUTION ENGINE (Modularized with hardcode.js, map.js & planner.js)
@@ -6047,6 +6200,174 @@ function syncSettingsModalLabels() {
 
   const isStandalone = window.matchMedia?.('(display-mode: standalone)')?.matches || window.navigator.standalone;
   setV('settingValInstall', isStandalone ? (isZh ? '已安裝 ✓' : 'Installed ✓') : (deferredPwaPrompt ? (isZh ? '立即安裝 ›' : 'Install ›') : (isZh ? '安裝 ›' : 'Install ›')));
+
+  const buildVer = getAppBuildVersion();
+  setV('settingSecAppUpdate', isZh ? '應用程式版本及更新' : 'App Version & Update');
+  setV('settingBuildVersionText', isZh ? `版本：${buildVer}` : `Build: ${buildVer}`);
+  setV('settingBuildUpdateHint', isZh ? '清除快取並重新載入最新版本' : 'Clears app caches & reloads latest build');
+  const forceBtn = document.getElementById('forceUpdateAppBtn');
+  if (forceBtn && !forceBtn.disabled) {
+    forceBtn.innerText = isZh ? '↻ 強制更新程式' : '↻ Force Update App';
+  }
+  setV('pwaUpdateToastText', isZh ? '有新版本可用 — 點擊更新' : 'New version available — Tap to update');
+  const dismissBtn = document.getElementById('pwaUpdateDismissBtn');
+  if (dismissBtn) {
+    dismissBtn.setAttribute('aria-label', isZh ? '關閉更新提示' : 'Dismiss update notification');
+  }
+}
+
+function getAppBuildVersion() {
+  try {
+    const meta = document.querySelector?.('meta[name="app-build-version"]')?.getAttribute?.('content');
+    if (meta && meta.trim()) return meta.trim();
+  } catch (e) {}
+  return (typeof APP_VERSION !== 'undefined' && APP_VERSION) ? String(APP_VERSION) : '';
+}
+
+let _forceUpdateAppInFlight = false;
+window.forceUpdateApp = async function forceUpdateApp() {
+  if (_forceUpdateAppInFlight) return;
+  _forceUpdateAppInFlight = true;
+  if (typeof triggerHaptic === 'function') triggerHaptic(12);
+  const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
+  const btn = document.getElementById?.('forceUpdateAppBtn');
+  if (btn) {
+    btn.disabled = true;
+    btn.innerText = isZh ? '更新中…' : 'Updating…';
+  }
+  try {
+    if (typeof navigator !== 'undefined' && navigator.serviceWorker && typeof navigator.serviceWorker.getRegistrations === 'function') {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all((regs || []).map((reg) => reg.unregister().catch(() => false)));
+    }
+  } catch (e) {}
+  try {
+    const cacheApi = (typeof caches !== 'undefined') ? caches : (typeof window !== 'undefined' ? window.caches : null);
+    if (cacheApi && typeof cacheApi.keys === 'function') {
+      const keys = await cacheApi.keys();
+      await Promise.all((keys || []).map((k) => cacheApi.delete(k).catch(() => false)));
+    }
+  } catch (e) {}
+  try {
+    window.location.reload();
+  } catch (e) {
+    _forceUpdateAppInFlight = false;
+    if (btn) {
+      btn.disabled = false;
+      btn.innerText = isZh ? '↻ 強制更新程式' : '↻ Force Update App';
+    }
+  }
+};
+
+let _pwaWaitingWorker = null;
+let _pwaUpdateReloadRequested = false;
+let _pwaUpdateReloaded = false;
+
+window.showPwaUpdateToast = function showPwaUpdateToast(worker) {
+  if (worker) _pwaWaitingWorker = worker;
+  const toast = document.getElementById?.('pwaUpdateToast');
+  if (!toast) return;
+  const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
+  const txtEl = document.getElementById?.('pwaUpdateToastText');
+  const applyBtn = document.getElementById?.('pwaUpdateApplyBtn');
+  if (txtEl) txtEl.innerText = isZh ? '有新版本可用 — 點擊更新' : 'New version available — Tap to update';
+  if (applyBtn) applyBtn.disabled = false;
+  toast.setAttribute?.('aria-hidden', 'false');
+  toast.classList?.add('show');
+};
+
+window.dismissPwaUpdateToast = function dismissPwaUpdateToast() {
+  const toast = document.getElementById?.('pwaUpdateToast');
+  if (!toast) return;
+  toast.classList?.remove('show');
+  toast.setAttribute?.('aria-hidden', 'true');
+};
+
+window.applyPendingPwaUpdate = function applyPendingPwaUpdate() {
+  if (typeof triggerHaptic === 'function') triggerHaptic(12);
+  const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
+  const applyBtn = document.getElementById?.('pwaUpdateApplyBtn');
+  const txtEl = document.getElementById?.('pwaUpdateToastText');
+  if (applyBtn) applyBtn.disabled = true;
+  if (txtEl) txtEl.innerText = isZh ? '正在套用更新…' : 'Updating app…';
+  _pwaUpdateReloadRequested = true;
+  if (_pwaWaitingWorker && typeof _pwaWaitingWorker.postMessage === 'function') {
+    _pwaWaitingWorker.postMessage({ type: 'SKIP_WAITING' });
+    return true;
+  }
+  window.location.reload();
+  return false;
+};
+
+window.initPwaUpdateLifecycle = function initPwaUpdateLifecycle(swContainerOverride) {
+  const sw = swContainerOverride || (typeof navigator !== 'undefined' ? navigator.serviceWorker : null);
+  if (!sw || typeof sw.register !== 'function') return Promise.resolve(null);
+
+  const hadControllerAtBoot = Boolean(sw.controller);
+  _pwaUpdateReloaded = false;
+  _pwaUpdateReloadRequested = false;
+  _pwaWaitingWorker = null;
+
+  if (!sw._transitControllerChangeBound && typeof sw.addEventListener === 'function') {
+    sw._transitControllerChangeBound = true;
+    sw.addEventListener('controllerchange', () => {
+      if (_pwaUpdateReloaded) return;
+      if (!hadControllerAtBoot && !_pwaUpdateReloadRequested) return;
+      _pwaUpdateReloaded = true;
+      window.location.reload();
+    });
+  }
+
+  const watchInstallingWorker = (worker) => {
+    if (!worker || worker._transitStateBound) return;
+    worker._transitStateBound = true;
+    const onStateChange = () => {
+      if (worker.state === 'installed' && sw.controller) {
+        window.showPwaUpdateToast(worker);
+      }
+    };
+    if (typeof worker.addEventListener === 'function') {
+      worker.addEventListener('statechange', onStateChange);
+    }
+    onStateChange();
+  };
+
+  return Promise.resolve()
+    .then(() => sw.register('sw.js', { updateViaCache: 'none' }))
+    .then((reg) => {
+      if (!reg) return null;
+      if (reg.waiting && sw.controller) {
+        window.showPwaUpdateToast(reg.waiting);
+      }
+      if (reg.installing) {
+        watchInstallingWorker(reg.installing);
+      }
+      if (typeof reg.addEventListener === 'function') {
+        reg.addEventListener('updatefound', () => {
+          watchInstallingWorker(reg.installing);
+        });
+      }
+      if (typeof document !== 'undefined' && typeof document.addEventListener === 'function' && !sw._transitVisUpdateBound) {
+        sw._transitVisUpdateBound = true;
+        let lastCheckMs = Date.now();
+        document.addEventListener('visibilitychange', () => {
+          if (document.visibilityState === 'visible' && Date.now() - lastCheckMs > 60000) {
+            lastCheckMs = Date.now();
+            if (typeof reg.update === 'function') reg.update().catch(() => {});
+          }
+        });
+      }
+      return reg;
+    })
+    .catch(() => null);
+};
+
+if (typeof window !== 'undefined' && typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+  if (document.readyState === 'complete') {
+    window.initPwaUpdateLifecycle();
+  } else {
+    window.addEventListener('load', () => window.initPwaUpdateLifecycle(), { once: true });
+  }
 }
 
 function cycleLanguagePreference() {

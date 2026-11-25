@@ -733,9 +733,11 @@
     .map-floating-controls { position: absolute; bottom: 24px; right: 12px; z-index: 1000; display: flex; flex-direction: column; gap: 7px; }
     .map-ctrl-btn { width: 36px; height: 36px; border-radius: 10px; background: var(--glass-bg); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); color: var(--text-main); border: 1px solid var(--border-color); font-weight: 600; font-size: 0.96rem; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 12px rgba(0,0,0,0.18); }
     .map-ctrl-btn.active { background: var(--ios-blue); color: #FFFFFF; }
-    .map-sheet-handle { height: 28px; margin-top: -14px; z-index: 1050; border-radius: 20px 20px 0 0; background: var(--bg-white); border-top: 1px solid var(--border-color); display: flex; align-items: center; justify-content: center; position: relative; cursor: ns-resize; flex-shrink: 0; box-shadow: 0 -4px 16px rgba(0,0,0,0.08); }
-    .map-sheet-pill { width: 36px; height: 4px; border-radius: 99px; background: var(--text-sub); opacity: 0.35; }
-    .map-sheet-toggle-btn { position: absolute; right: 14px; background: var(--bg-surface); border: none; color: var(--text-sub); font-size: 0.66rem; font-weight: 600; padding: 3px 9px; border-radius: 999px; cursor: pointer; }
+    .map-sheet-handle { height: 32px; margin-top: -14px; z-index: 1050; border-radius: 20px 20px 0 0; background: var(--bg-white); border-top: 1px solid var(--border-color); display: flex; align-items: center; justify-content: center; position: relative; cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; flex-shrink: 0; box-shadow: 0 -4px 16px rgba(0,0,0,0.08); }
+    .map-sheet-handle.is-dragging { cursor: grabbing; }
+    .map-sheet-pill { width: 36px; height: 4px; border-radius: 99px; background: var(--text-sub); opacity: 0.35; pointer-events: none; }
+    .map-sheet-toggle-btn { position: absolute; right: 14px; background: var(--bg-surface); border: none; color: var(--text-sub); font-size: 0.66rem; font-weight: 600; padding: 3px 9px; border-radius: 999px; cursor: pointer; user-select: none; -webkit-user-select: none; }
+    body.map-sheet-dragging, body.map-sheet-dragging * { user-select: none !important; -webkit-user-select: none !important; cursor: grabbing !important; }
     #stop-list-container { flex: 1; overflow-y: auto; background: var(--bg-white); padding-bottom: 60px; position: relative; }
 
     .stop-line, .stop-dot { display: none !important; }
@@ -1634,8 +1636,8 @@
         <button type="button" class="map-ctrl-btn" onclick="if(window.xferMapInstance)window.xferMapInstance.zoomOut()" aria-label="Zoom out">−</button>
       </div>
       <div id="xferMapDragHandle" title="Drag down to resize map"
-        style="position:absolute; bottom:0; left:0; right:0; z-index:1000; height:18px; background:linear-gradient(to top, rgba(0,0,0,0.45), transparent); display:flex; align-items:center; justify-content:center; cursor:ns-resize; touch-action:none;">
-        <div style="width:36px; height:4px; border-radius:99px; background:rgba(255,255,255,0.85);"></div>
+        style="position:absolute; bottom:0; left:0; right:0; z-index:1000; height:22px; background:linear-gradient(to top, rgba(0,0,0,0.45), transparent); display:flex; align-items:center; justify-content:center; cursor:grab; touch-action:none; user-select:none; -webkit-user-select:none;">
+        <div style="width:36px; height:4px; border-radius:99px; background:rgba(255,255,255,0.85); pointer-events:none;"></div>
       </div>
     </div>
 
@@ -1691,9 +1693,9 @@
       <button class="map-ctrl-btn" onclick="zoomMapOut()">−</button>
     </div>
   </div>
-  <div class="map-sheet-handle" id="mapSheetHandle" title="Tap to resize map">
+  <div class="map-sheet-handle" id="mapSheetHandle" title="Drag or tap to resize map">
     <div class="map-sheet-pill"></div>
-    <button class="map-sheet-toggle-btn" id="mapSheetToggleBtn" onclick="event.stopPropagation(); cycleMapSheetHeight();">⬍ Map</button>
+    <button type="button" class="map-sheet-toggle-btn" id="mapSheetToggleBtn" onclick="event.stopPropagation(); cycleMapSheetHeight();">⬍ Map</button>
   </div>
   <div id="stop-list-container"></div>
 </div>
@@ -3825,11 +3827,14 @@ function generateExpandedETAsHtml(arrs, group, stopKey, stopIdx) {
         : 'event.stopPropagation();';
       const camIcon = fDet?.camKey ? (isZh ? '📷 詳情/實拍 ›' : '📷 Verdict & Cam ›') : (isZh ? '詳情 ›' : 'Details ›');
       const toneDot = roadSum.tone === 'jammed' ? '🔴' : (roadSum.tone === 'slow' ? '🟠' : '🟢');
+      const _cleanLbl = (s) => (typeof sanitizeBottleneckLabel === 'function') ? sanitizeBottleneckLabel(s) : String(s || '').replace(/\s*[·•]?\s*\b\d{1,3}\s*(?:°|deg|["″”]|'')\s*$/gi, '').trim();
+      const cleanHeadline = _cleanLbl(roadSum.headline);
+      const cleanDetail = roadSum.detail ? _cleanLbl(roadSum.detail) : '';
       roadTrafficBannerHtml = `
         <button type="button" class="traffic-road-status-bar tone-${roadSum.tone}" onclick="${openCall}">
           <span class="traffic-road-main">
-            <span class="traffic-road-headline">${toneDot} ${escapeHtml(roadSum.headline)}</span>
-            ${roadSum.detail ? `<span class="traffic-road-sub">${escapeHtml(roadSum.detail)}</span>` : ''}
+            <span class="traffic-road-headline">${toneDot} ${escapeHtml(cleanHeadline)}</span>
+            ${cleanDetail ? `<span class="traffic-road-sub">${escapeHtml(cleanDetail)}</span>` : ''}
           </span>
           <span class="traffic-road-cta">${camIcon}</span>
         </button>`;
@@ -5240,7 +5245,9 @@ window.openTrafficDecisionModal = function(detId, oppDetId = '', segmentNote = '
   const opp = oppDetId ? list.find(d => d.id === oppDetId) : null;
   if (!det) return;
 
-  const roadName = isZh ? (det.roadTc || det.roadEn || '主要幹道') : (det.roadEn || det.roadTc || 'Major Road');
+  const _cleanRoadText = (s) => (typeof sanitizeBottleneckLabel === 'function') ? sanitizeBottleneckLabel(s) : String(s || '').replace(/\s*[·•]?\s*\b\d{1,3}\s*(?:°|deg|["″”]|'')\s*$/gi, '').trim();
+  const roadName = _cleanRoadText(isZh ? (det.roadTc || det.roadEn || '主要幹道') : (det.roadEn || det.roadTc || 'Major Road')) || (isZh ? '主要幹道' : 'Major Road');
+  segmentNote = _cleanRoadText(segmentNote);
   const sameGrp = {
     status: det.tier || 'SMOOTH',
     avgSpd: Number(det.spd) || 0,
@@ -5296,7 +5303,9 @@ window.openTrafficDecisionModal = function(detId, oppDetId = '', segmentNote = '
   const subEl = document.getElementById('trafficModalSub');
   const closeEl = document.getElementById('trafficModalCloseBtn');
   if (titleEl) titleEl.innerText = roadName;
-  const dirLabel = det.dir ? `${det.dir}` : (Number.isFinite(det.rot) ? `${Math.round(det.rot)}°` : '');
+  const cleanDir = _cleanRoadText(det.dir || '');
+  const boundFallback = (typeof classifyTrafficBoundMeta === 'function') ? classifyTrafficBoundMeta(det.rot, det.dir, isZh).fullLabel : '';
+  const dirLabel = cleanDir || boundFallback;
   const capAt = window.__LIVE_TRAFFIC_CAPTURED_AT__ || '';
   if (subEl) subEl.innerText = [segmentNote, dirLabel, capAt].filter(Boolean).join(' · ');
   if (closeEl) closeEl.innerText = isZh ? '✕ 關閉' : '✕ Close';

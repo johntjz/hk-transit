@@ -2756,8 +2756,14 @@ test('map.js: slim clickable traffic arrows (20-22px inside 32x32 hit area), zoo
     clearLayers() { addedPolylines.length = 0; addedMarkers.length = 0; },
     hasLayer() { return false; },
   };
+  const modalCalls: any[] = [];
   const ctx: any = {
-    window: { trafficLayerEnabled: true },
+    window: {
+      trafficLayerEnabled: true,
+      openTrafficDecisionModal: (detId: string, oppId: string, segNote: string, isApp: boolean) => {
+        modalCalls.push({ detId, oppId, segNote, isApp });
+      },
+    },
     document: { getElementById: () => null },
     currentLang: 'en',
     escapeHtml: (s: string) => String(s ?? ''),
@@ -2765,12 +2771,14 @@ test('map.js: slim clickable traffic arrows (20-22px inside 32x32 hit area), zoo
     L: {
       layerGroup: () => fakeLayerGroup,
       polyline: (latlngs: any, opts: any) => {
-        const obj = { latlngs, opts, popupFn: null as any, addTo() { addedPolylines.push(obj); return obj; }, bindTooltip() { return obj; }, bindPopup(fn: any) { obj.popupFn = fn; return obj; } };
+        const handlers: Record<string, Function> = {};
+        const obj = { latlngs, opts, popupFn: null as any, tooltip: '', handlers, addTo() { addedPolylines.push(obj); return obj; }, bindTooltip(t: string) { obj.tooltip = t; return obj; }, bindPopup(fn: any) { obj.popupFn = fn; return obj; }, on(ev: string, fn: Function) { handlers[ev] = fn; return obj; } };
         return obj;
       },
       divIcon: (opts: any) => opts,
       marker: (latlng: any, opts: any) => {
-        const obj = { latlng, opts, popupFn: null as any, addTo() { addedMarkers.push(obj); return obj; }, bindTooltip() { return obj; }, bindPopup(fn: any) { obj.popupFn = fn; return obj; } };
+        const handlers: Record<string, Function> = {};
+        const obj = { latlng, opts, popupFn: null as any, tooltip: '', handlers, addTo() { addedMarkers.push(obj); return obj; }, bindTooltip(t: string) { obj.tooltip = t; return obj; }, bindPopup(fn: any) { obj.popupFn = fn; return obj; }, on(ev: string, fn: Function) { handlers[ev] = fn; return obj; } };
         return obj;
       },
     },
@@ -2832,11 +2840,18 @@ test('map.js: slim clickable traffic arrows (20-22px inside 32x32 hit area), zoo
   const dMarkerLat = Math.abs(sbMarker.latlng[0] - nbMarker.latlng[0]);
   assert.ok(dMarkerLat > 0.001, `Expected N/S arrow tips to be well separated for easy tapping (dMarkerLat=${dMarkerLat})`);
 
-  // Popup displays crisp directional bound pill
-  const sbPopup = sbMarker.popupFn();
+  // Bottleneck marker (JAMMED SB) must NOT bind duplicate Leaflet popup — clicking opens Verdict & Cam modal directly
+  assert.equal(sbMarker.popupFn, null, 'Bottleneck marker must NOT bind redundant white Leaflet popup');
+  assert.equal(typeof sbMarker.handlers.click, 'function', 'Bottleneck marker must bind click handler to open Verdict & Cam modal');
+  sbMarker.handlers.click({});
+  assert.equal(modalCalls.length, 1);
+  assert.equal(modalCalls[0].detId, 'TMR_SB');
+  assert.equal(modalCalls[0].oppId, 'TMR_NB', 'Direct bottleneck modal click should include opposite-bound detector ID');
+
+  // Smooth browse-map marker retains clean popup with Northbound pill and no raw compass degree artifact
   const nbPopup = nbMarker.popupFn();
-  assert.ok(sbPopup.includes('↓ Southbound') && sbPopup.includes('#7C3AED'), 'Southbound popup must show Southbound pill');
   assert.ok(nbPopup.includes('↑ Northbound') && nbPopup.includes('#1D4ED8'), 'Northbound popup must show Northbound pill');
+  assert.ok(!nbPopup.includes('°'), 'Popup must strip raw compass degree telemetry artifacts');
 });
 
 test('hardcode.js, map.js & worker.js: road-snapped E36 polyline strictly matches YLH highway detectors (<=60m, ±30°) and rejects off-corridor Castle Peak Rd / LRT cameras', () => {
@@ -3069,12 +3084,14 @@ test('map.js: route-scoped traffic filtering hides off-route & opposite-smooth d
     L: {
       layerGroup: () => fakeLayerGroup,
       polyline: (latlngs: any, opts: any) => {
-        const obj = { latlngs, opts, popupFn: null as any, addTo() { addedPolylines.push(obj); return obj; }, bindTooltip() { return obj; }, bindPopup(fn: any) { obj.popupFn = fn; return obj; } };
+        const handlers: Record<string, Function> = {};
+        const obj = { latlngs, opts, popupFn: null as any, tooltip: '', handlers, addTo() { addedPolylines.push(obj); return obj; }, bindTooltip(t: string) { obj.tooltip = t; return obj; }, bindPopup(fn: any) { obj.popupFn = fn; return obj; }, on(ev: string, fn: Function) { handlers[ev] = fn; return obj; } };
         return obj;
       },
       divIcon: (opts: any) => opts,
       marker: (latlng: any, opts: any) => {
-        const obj = { latlng, opts, popupFn: null as any, addTo() { addedMarkers.push(obj); return obj; }, bindTooltip() { return obj; }, bindPopup(fn: any) { obj.popupFn = fn; return obj; } };
+        const handlers: Record<string, Function> = {};
+        const obj = { latlng, opts, popupFn: null as any, tooltip: '', handlers, addTo() { addedMarkers.push(obj); return obj; }, bindTooltip(t: string) { obj.tooltip = t; return obj; }, bindPopup(fn: any) { obj.popupFn = fn; return obj; }, on(ev: string, fn: Function) { handlers[ev] = fn; return obj; } };
         return obj;
       },
     },
@@ -3137,9 +3154,10 @@ test('map.js: route-scoped traffic filtering hides off-route & opposite-smooth d
   assert.equal(addedMarkers.length, 1, `Expected 1 bottleneck-only marker (YLH_SAME_2_SLOW) with zero smooth badges on route view, got ${addedMarkers.length}`);
   assert.ok(addedPolylines.length >= 4, 'Subtle left-hand offset road-flow stripes must still render along the corridor');
 
-  const popupTexts = addedMarkers.map((m: any) => m.popupFn());
-  assert.ok(popupTexts.some((t: string) => t.includes('YLH Westbound Slow')), 'Prioritized SLOW bottleneck must render on route map');
-  assert.ok(!popupTexts.some((t: string) => t.includes('YLH Westbound Far')), 'Smooth-flow detectors must NEVER render circle/arrow badges on active bus route view');
+  const tooltipTexts = addedMarkers.map((m: any) => m.tooltip);
+  assert.ok(tooltipTexts.some((t: string) => t.includes('YLH Westbound Slow')), 'Prioritized SLOW bottleneck must render on route map');
+  assert.ok(!tooltipTexts.some((t: string) => t.includes('YLH Westbound Far')), 'Smooth-flow detectors must NEVER render circle/arrow badges on active bus route view');
+  assert.equal(addedMarkers[0].popupFn, null, 'Route bottleneck marker must NOT bind a duplicate Leaflet popup');
 
   // Verify every traffic arrow zIndexOffset sits strictly below numbered stop markers (320 / 650)
   for (const m of addedMarkers) {
@@ -3233,10 +3251,11 @@ test('Decision-first Transit: zero off-route clutter (<=2 bottlenecks on route m
     pointToSegmentDistanceKm: sb.pointToSegmentDistanceKm,
     L: {
       layerGroup: () => fakeLayerGroup,
-      polyline: () => ({ addTo() { return this; }, bindTooltip() { return this; }, bindPopup() { return this; } }),
+      polyline: () => ({ addTo() { return this; }, bindTooltip() { return this; }, bindPopup() { return this; }, on() { return this; } }),
       divIcon: (opts: any) => opts,
       marker: (latlng: any, opts: any) => {
-        const obj = { latlng, opts, popupFn: null as any, addTo() { addedMarkers.push(obj); return obj; }, bindTooltip() { return obj; }, bindPopup(fn: any) { obj.popupFn = fn; return obj; } };
+        const handlers: Record<string, Function> = {};
+        const obj = { latlng, opts, popupFn: null as any, tooltip: '', handlers, addTo() { addedMarkers.push(obj); return obj; }, bindTooltip(t: string) { obj.tooltip = t; return obj; }, bindPopup(fn: any) { obj.popupFn = fn; return obj; }, on(ev: string, fn: Function) { handlers[ev] = fn; return obj; } };
         return obj;
       },
     },
@@ -3270,15 +3289,184 @@ test('Decision-first Transit: zero off-route clutter (<=2 bottlenecks on route m
   // Zoom 11 route view: zero Sha Tin / Ma On Shan / Tsuen Wan / Castle Peak Rd badges, and capped at <= 2 worst bottlenecks
   mapCtx.window.renderTrafficOverlayOnMap(fakeDetailMap, true);
   assert.ok(addedMarkers.length >= 1 && addedMarkers.length <= 2, `Route view must render at most 2 worst bottlenecks, got ${addedMarkers.length}`);
-  const routePopups = addedMarkers.map((m: any) => m.popupFn()).join(' | ');
-  assert.ok(!routePopups.includes('Sha Tin') && !routePopups.includes('Ma On Shan') && !routePopups.includes('Tsuen Wan') && !routePopups.includes('Castle Peak'), `Off-route regional/local badges leaked onto E36 route map: ${routePopups}`);
-  assert.ok(routePopups.includes('Tuen Mun Road'), 'Worst bottleneck (Tuen Mun Road 14 km/h) must be visible on route map');
+  const routeTips = addedMarkers.map((m: any) => m.tooltip).join(' | ');
+  assert.ok(!routeTips.includes('Sha Tin') && !routeTips.includes('Ma On Shan') && !routeTips.includes('Tsuen Wan') && !routeTips.includes('Castle Peak'), `Off-route regional/local badges leaked onto E36 route map: ${routeTips}`);
+  assert.ok(routeTips.includes('Tuen Mun Road'), 'Worst bottleneck (Tuen Mun Road 14 km/h) must be visible on route map');
+  assert.ok(addedMarkers.every((m: any) => m.popupFn === null && typeof m.handlers.click === 'function'), 'Route bottleneck markers must open Verdict & Cam modal directly without white Leaflet popups');
 
   // General browse map (no active bus route selected) still shows regional Sha Tin / Ma On Shan / Tsuen Wan bottlenecks
   mapCtx.window.renderTrafficOverlayOnMap(fakeBrowseMap, true);
-  const browsePopups = addedMarkers.map((m: any) => m.popupFn()).join(' | ');
-  assert.ok(browsePopups.includes('Sha Tin') || browsePopups.includes('Ma On Shan'), 'General browse map must still display regional traffic markers when no route is selected');
+  const browseTips = addedMarkers.map((m: any) => m.tooltip).join(' | ');
+  assert.ok(browseTips.includes('Sha Tin') || browseTips.includes('Ma On Shan'), 'General browse map must still display regional traffic markers when no route is selected');
 });
+
+test('index.html & map.js: desktop Pointer Events drag resize on #mapSheetHandle (zero text selection) and direct Verdict & Cam click with stripped 250"/250° telemetry artifacts', () => {
+  const html = fs.readFileSync('index.html', 'utf8');
+  const mapCode = fs.readFileSync('public/map.js', 'utf8');
+
+  // 1. Verify CSS grab/grabbing, touch-action: none, and user-select suppression in index.html
+  assert.ok(html.includes('.map-sheet-handle {') && html.includes('cursor: grab;') && html.includes('touch-action: none;') && html.includes('user-select: none;'), 'Sheet handle must enforce grab cursor, touch-action: none, and user-select: none');
+  assert.ok(html.includes('.map-sheet-handle.is-dragging { cursor: grabbing; }'), 'Dragging state must switch cursor to grabbing');
+  assert.ok(html.includes('body.map-sheet-dragging, body.map-sheet-dragging * { user-select: none !important;'), 'Body drag class must prevent accidental text highlight across the stop list');
+
+  // 2. Simulate desktop mouse pointer drag on #mapSheetHandle with setPointerCapture
+  const handleListeners: Record<string, Function[]> = {};
+  const capturedIds: number[] = [];
+  const releasedIds: number[] = [];
+  const handleClasses = new Set<string>();
+  const bodyClasses = new Set<string>();
+  let invalidateCount = 0;
+
+  const fakeHandle: any = {
+    _dragBound: false,
+    classList: {
+      add: (c: string) => handleClasses.add(c),
+      remove: (c: string) => handleClasses.delete(c),
+    },
+    setPointerCapture: (id: number) => capturedIds.push(id),
+    hasPointerCapture: (id: number) => capturedIds.includes(id) && !releasedIds.includes(id),
+    releasePointerCapture: (id: number) => releasedIds.push(id),
+    addEventListener: (ev: string, fn: Function) => {
+      if (!handleListeners[ev]) handleListeners[ev] = [];
+      handleListeners[ev].push(fn);
+    },
+  };
+  const fakeMapContainer: any = {
+    offsetHeight: 280,
+    style: { height: '35dvh', transition: '' },
+  };
+  const addedMarkers: any[] = [];
+  const addedPolylines: any[] = [];
+  const openedModals: any[] = [];
+  const fakeLayerGroup = { addTo() { return this; }, clearLayers() { addedMarkers.length = 0; addedPolylines.length = 0; }, hasLayer() { return false; } };
+  const fakeDetailMap: any = {
+    getBounds: () => ({ isValid: () => true, pad: () => ({ contains: () => true }) }),
+    getZoom: () => 14,
+    invalidateSize: () => { invalidateCount++; },
+  };
+
+  const ctx: any = {
+    window: {
+      innerHeight: 800,
+      trafficLayerEnabled: true,
+      mapInstance: fakeDetailMap,
+      openTrafficDecisionModal: (detId: string, oppId: string, segNote: string, isApp: boolean) => {
+        openedModals.push({ detId, oppId, segNote, isApp });
+      },
+    },
+    document: {
+      readyState: 'complete',
+      body: {
+        classList: {
+          add: (c: string) => bodyClasses.add(c),
+          remove: (c: string) => bodyClasses.delete(c),
+        },
+      },
+      getElementById: (id: string) => {
+        if (id === 'mapSheetHandle') return fakeHandle;
+        if (id === 'map-container') return fakeMapContainer;
+        return null;
+      },
+      addEventListener: () => {},
+    },
+    requestAnimationFrame: (cb: Function) => { cb(); return 1; },
+    cancelAnimationFrame: () => {},
+    setTimeout: (cb: Function) => { cb(); return 1; },
+    clearTimeout: () => {},
+    currentLang: 'en',
+    escapeHtml: (s: string) => String(s ?? ''),
+    escapeJsAttr: (s: string) => String(s ?? ''),
+    L: {
+      layerGroup: () => fakeLayerGroup,
+      polyline: (latlngs: any, opts: any) => {
+        const handlers: Record<string, Function> = {};
+        const obj = { latlngs, opts, popupFn: null as any, tooltip: '', handlers, addTo() { addedPolylines.push(obj); return obj; }, bindTooltip(t: string) { obj.tooltip = t; return obj; }, bindPopup(fn: any) { obj.popupFn = fn; return obj; }, on(ev: string, fn: Function) { handlers[ev] = fn; return obj; } };
+        return obj;
+      },
+      divIcon: (opts: any) => opts,
+      marker: (latlng: any, opts: any) => {
+        const handlers: Record<string, Function> = {};
+        const obj = { latlng, opts, popupFn: null as any, tooltip: '', handlers, addTo() { addedMarkers.push(obj); return obj; }, bindTooltip(t: string) { obj.tooltip = t; return obj; }, bindPopup(fn: any) { obj.popupFn = fn; return obj; }, on(ev: string, fn: Function) { handlers[ev] = fn; return obj; } };
+        return obj;
+      },
+    },
+  };
+  vm.createContext(ctx);
+  vm.runInContext(mapCode, ctx);
+  ctx.window.mapInstance = fakeDetailMap;
+
+  // Verify unified Pointer Events were bound automatically on #mapSheetHandle
+  assert.ok(handleListeners.pointerdown?.length === 1 && handleListeners.pointermove?.length === 1 && handleListeners.pointerup?.length === 1 && handleListeners.pointercancel?.length === 1, 'Must bind pointerdown, pointermove, pointerup, and pointercancel on #mapSheetHandle');
+
+  // Drag down by +180px using desktop primary mouse button
+  let preventedDown = false;
+  let preventedMove = false;
+  handleListeners.pointerdown[0]({ pointerId: 7, pointerType: 'mouse', button: 0, clientY: 300, preventDefault: () => { preventedDown = true; }, target: { closest: () => null } });
+  assert.equal(preventedDown, true, 'pointerdown must call preventDefault() to block text selection');
+  assert.deepEqual(capturedIds, [7], 'pointerdown must capture pointerId via setPointerCapture');
+  assert.ok(handleClasses.has('is-dragging') && bodyClasses.has('map-sheet-dragging'), 'Dragging classes must be active during drag');
+
+  handleListeners.pointermove[0]({ pointerId: 7, clientY: 480, preventDefault: () => { preventedMove = true; } });
+  assert.equal(preventedMove, true, 'pointermove must call preventDefault()');
+  assert.equal(fakeMapContainer.style.height, '460px', 'Dragging down 180px from 280px must smoothly expand map to 460px');
+
+  // Extreme downward drag clamps to 74dvh (592px at 800px viewport)
+  handleListeners.pointermove[0]({ pointerId: 7, clientY: 950, preventDefault: () => {} });
+  assert.equal(fakeMapContainer.style.height, '592px', 'Map height must clamp to 74% viewport height');
+  fakeMapContainer.offsetHeight = 592;
+
+  handleListeners.pointerup[0]({ pointerId: 7, clientY: 950 });
+  assert.deepEqual(releasedIds, [7], 'pointerup must release pointer capture');
+  assert.ok(!handleClasses.has('is-dragging') && !bodyClasses.has('map-sheet-dragging'), 'Dragging classes must be cleaned up on pointerup');
+  assert.ok(invalidateCount >= 2, 'Leaflet map size must be invalidated during/after drag');
+
+  // Clicking inside #mapSheetToggleBtn ("Map" pill) must be ignored by pointer drag so tap-to-toggle works cleanly
+  let togglePrevented = false;
+  handleListeners.pointerdown[0]({ pointerId: 8, pointerType: 'mouse', button: 0, clientY: 300, preventDefault: () => { togglePrevented = true; }, target: { closest: (sel: string) => sel === '#mapSheetToggleBtn' ? {} : null } });
+  assert.equal(togglePrevented, false, 'Map pill click must pass through without initiating drag');
+
+  // 3. Verify sanitizeBottleneckLabel strips raw trailing telemetry artifacts like 250", 250°, · 250°
+  assert.equal(
+    ctx.window.sanitizeBottleneckLabel('Yuen Long Highway near Kong Sham Western Highway - Westbound (1) 250"'),
+    'Yuen Long Highway near Kong Sham Western Highway - Westbound (1)'
+  );
+  assert.equal(
+    ctx.window.sanitizeBottleneckLabel('Yuen Long Highway - Westbound (1) · 250°'),
+    'Yuen Long Highway - Westbound (1)'
+  );
+  assert.equal(ctx.window.sanitizeBottleneckLabel('38% occ · 250°'), '38% occ');
+  assert.equal(ctx.window.sanitizeBottleneckLabel('Tuen Mun Road (250")'), 'Tuen Mun Road');
+
+  // 4. Clicking a route bottleneck marker opens Verdict & Cam modal directly without any duplicate white popup
+  ctx.window._setDetailCorridorMetaForTest({
+    groupKey: 'LWB_E36_O',
+    mode: 'BUS',
+    isBusRoute: true,
+    hasHighwaySpan: true,
+    isRoadSnapped: true,
+    coords: [[22.4440, 114.0140], [22.4330, 114.0020], [22.4150, 113.9870]],
+  });
+  ctx.window.__LIVE_TRAFFIC_DETECTORS__ = [
+    { id: 'YLH_WB_JAM', lat: 22.4330, lon: 114.0020, rot: 250, spd: 19, occ: 38, tier: 'JAMMED', roadEn: 'Yuen Long Highway near Kong Sham Western Highway - Westbound (1) 250"', roadTc: '元朗公路近港深西部公路 - 西行 (1) 250"', camKey: 'YL102F' },
+    { id: 'YLH_EB_OPP', lat: 22.4331, lon: 114.0021, rot: 70, spd: 82, occ: 12, tier: 'SMOOTH', roadEn: 'Yuen Long Highway - Eastbound', camKey: 'YL102F' },
+  ];
+  ctx.window.renderTrafficOverlayOnMap(fakeDetailMap, true);
+
+  assert.equal(addedMarkers.length, 1, 'Expected single worst bottleneck marker on E36');
+  const jamMarker = addedMarkers[0];
+  assert.equal(jamMarker.popupFn, null, 'Bottleneck marker must NOT bind a duplicate white popup card');
+  assert.ok(!jamMarker.tooltip.includes('250"') && !jamMarker.tooltip.includes('250°'), `Bottleneck tooltip must strip 250"/250° telemetry artifacts, got: ${jamMarker.tooltip}`);
+  assert.ok(jamMarker.tooltip.includes('Yuen Long Highway near Kong Sham Western Highway - Westbound (1)'), `Tooltip should keep clean road label, got: ${jamMarker.tooltip}`);
+
+  // Clicking the bottleneck marker opens openTrafficDecisionModal directly for that detector
+  let stopPropCalled = false;
+  jamMarker.handlers.click({ originalEvent: { stopPropagation: () => { stopPropCalled = true; } } });
+  assert.equal(stopPropCalled, true, 'Bottleneck click must stop propagation');
+  assert.equal(openedModals.length, 1, 'Clicking bottleneck marker must open Verdict & Cam modal directly');
+  assert.equal(openedModals[0].detId, 'YLH_WB_JAM');
+  assert.equal(openedModals[0].oppId, 'YLH_EB_OPP');
+});
+
 
 
 

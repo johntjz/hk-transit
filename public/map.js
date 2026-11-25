@@ -232,8 +232,43 @@ function classifyTrafficBoundMeta(rotDeg, dirStr = '', isZh = false) {
   };
 }
 
+function sanitizeBottleneckLabel(raw) {
+  if (raw == null) return '';
+  let s = String(raw);
+  // Strip raw telemetry compass degrees or malformed quote-degree artifacts (e.g. "250°", "250\"", "· 250°", "(250°)")
+  s = s.replace(/\s*[·•\-–—]?\s*\(\s*\d{1,3}\s*(?:°|deg|["″”]|'')\s*\)/gi, '');
+  s = s.replace(/\s*[·•]\s*\d{1,3}\s*(?:°|deg|["″”]|'')(?=\s|$|[·•,;)\]])/gi, '');
+  s = s.replace(/(?:[\s·•\-–—]+)?\b\d{1,3}\s*(?:°|deg|["″”]|'')\s*$/gi, '');
+  s = s.replace(/\s*[·•]\s*$/g, '').replace(/\s{2,}/g, ' ').trim();
+  return s;
+}
+
+function _findOppositeTrafficDetectorId(det) {
+  if (!det || !Number.isFinite(det.lat) || !Number.isFinite(det.lon)) return '';
+  const list = Array.isArray(window.__LIVE_TRAFFIC_DETECTORS__) ? window.__LIVE_TRAFFIC_DETECTORS__ : [];
+  if (!list.length) return '';
+  const cosLat = Math.max(0.2, Math.cos(det.lat * Math.PI / 180));
+  let bestId = '';
+  let bestDistKm = Infinity;
+  for (let i = 0; i < list.length; i++) {
+    const c = list[i];
+    if (!c || c.id === det.id || !Number.isFinite(c.lat) || !Number.isFinite(c.lon)) continue;
+    if (Number.isFinite(Number(det.rot)) && Number.isFinite(Number(c.rot))) {
+      if (_mapAngDiffDeg(det.rot, c.rot) < 135) continue;
+    } else {
+      continue;
+    }
+    const dKm = Math.hypot((c.lat - det.lat) * 111.111, (c.lon - det.lon) * 111.111 * cosLat);
+    if (dKm <= 0.18 && dKm < bestDistKm) {
+      bestDistKm = dKm;
+      bestId = c.id;
+    }
+  }
+  return bestId;
+}
+
 function buildTrafficDetectorPopupHtml(det, isZh) {
-  const roadName = isZh ? (det.roadTc || det.roadEn || '主要幹道') : (det.roadEn || det.roadTc || 'Major Road');
+  const roadName = sanitizeBottleneckLabel(isZh ? (det.roadTc || det.roadEn || '主要幹道') : (det.roadEn || det.roadTc || 'Major Road')) || (isZh ? '主要幹道' : 'Major Road');
   const tierCol = det.tier === 'JAMMED' ? '#DC2626' : (det.tier === 'SLOW' ? '#D97706' : '#16A34A');
   const tierLbl = det.tier === 'JAMMED'
     ? (isZh ? '交通擠塞' : 'Jammed')
@@ -242,9 +277,7 @@ function buildTrafficDetectorPopupHtml(det, isZh) {
   const dec = (typeof synthesizeTrafficDecision === 'function')
     ? synthesizeTrafficDecision({ status: det.tier || 'SMOOTH', avgSpd: Number(det.spd) || 0, minSpd: Number(det.spd) || 0, maxOcc: Number(det.occ) || 0, worstDet: det }, null, isZh)
     : null;
-  const verdictLine = dec
-    ? (isZh ? dec.verdictTc : dec.verdictEn)
-    : tierLbl;
+  const verdictLine = sanitizeBottleneckLabel(dec ? (isZh ? dec.verdictTc : dec.verdictEn) : tierLbl);
   const occVal = Number(det.occ) || 0;
   const escId = escapeJsAttr(det.id || '');
   const btnLbl = det.camKey
@@ -265,7 +298,7 @@ function buildTrafficDetectorPopupHtml(det, isZh) {
       </div>
       <div style="display:flex; align-items:baseline; gap:10px; margin-top:6px; padding-top:6px; border-top:1px solid rgba(0,0,0,0.08); font-variant-numeric:tabular-nums;">
         <span style="font-size:1.02rem; font-weight:800; color:${tierCol};">${Number(det.spd)} <span style="font-size:0.70rem; font-weight:600;">km/h</span></span>
-        <span style="font-size:0.72rem; font-weight:600; color:#475569;">${occVal}% ${isZh ? '佔用率' : 'occ'} · ${Math.round(Number(det.rot) || 0)}°</span>
+        <span style="font-size:0.72rem; font-weight:600; color:#475569;">${occVal}% ${isZh ? '佔用率' : 'occ'}</span>
       </div>
       <button type="button"
         onclick="event.stopPropagation(); if(typeof window.openTrafficDecisionModal==='function')window.openTrafficDecisionModal('${escId}');"
@@ -596,9 +629,21 @@ function renderTrafficOverlayOnMap(targetMap, forceRedraw = false) {
       lineCap: 'round'
     }).addTo(layerGroup);
 
-    const tipTxt = `${isZh ? (d.roadTc || d.roadEn) : (d.roadEn || d.roadTc)} · ${boundMeta.arrowGlyph} ${boundMeta.fullLabel} · ${d.spd} km/h${d.camKey ? ' 📷' : ''}`;
+    const cleanRoadName = sanitizeBottleneckLabel(isZh ? (d.roadTc || d.roadEn) : (d.roadEn || d.roadTc)) || (isZh ? '主要幹道' : 'Major Road');
+    const tipTxt = sanitizeBottleneckLabel(`${cleanRoadName} · ${boundMeta.arrowGlyph} ${boundMeta.fullLabel} · ${d.spd} km/h${d.camKey ? ' 📷' : ''}`);
+    const openVerdictDirect = Boolean(isBottleneck || isDetailBusScoped);
+    const onDirectBottleneckClick = (ev) => {
+      if (ev?.originalEvent?.stopPropagation) ev.originalEvent.stopPropagation();
+      if (typeof window.openTrafficDecisionModal === 'function') {
+        window.openTrafficDecisionModal(d.id, _findOppositeTrafficDetectorId(d), '', false);
+      }
+    };
     flowLine.bindTooltip(tipTxt, { sticky: true, className: 'kmb-map-stop-label' });
-    flowLine.bindPopup(() => buildTrafficDetectorPopupHtml(d, isZh), { closeButton: true, maxWidth: 270 });
+    if (openVerdictDirect) {
+      if (typeof flowLine.on === 'function') flowLine.on('click', onDirectBottleneckClick);
+    } else {
+      flowLine.bindPopup(() => buildTrafficDetectorPopupHtml(d, isZh), { closeButton: true, maxWidth: 270 });
+    }
     detMarkerMap.set(d.id, flowLine);
 
     // Minimalist route-view markers vs general browse map markers:
@@ -652,7 +697,11 @@ function renderTrafficOverlayOnMap(targetMap, forceRedraw = false) {
           zIndexOffset: isJam ? 140 : (isSlow ? 110 : 70)
         }).addTo(layerGroup);
         arrowMarker.bindTooltip(tipTxt, { direction: 'top', offset: [0, -8], className: 'kmb-map-stop-label' });
-        arrowMarker.bindPopup(() => buildTrafficDetectorPopupHtml(d, isZh), { closeButton: true, maxWidth: 270 });
+        if (openVerdictDirect) {
+          if (typeof arrowMarker.on === 'function') arrowMarker.on('click', onDirectBottleneckClick);
+        } else {
+          arrowMarker.bindPopup(() => buildTrafficDetectorPopupHtml(d, isZh), { closeButton: true, maxWidth: 270 });
+        }
         detMarkerMap.set(`${d.id}_arrow`, arrowMarker);
       }
     }
@@ -716,23 +765,24 @@ function focusTrafficDetectorOnDetailMap(lat, lon, detId = '') {
 
   clearTimeout(_trafficMoveTimerByMap.get(window.mapInstance));
   let opened = false;
-  const openTargetPopup = () => {
+  const focusTargetMarker = () => {
     if (opened) return;
     opened = true;
     clearTimeout(_trafficMoveTimerByMap.get(window.mapInstance));
     renderTrafficOverlayOnMap(window.mapInstance, true);
     const detMap = _trafficMarkersByMap.get(window.mapInstance);
     const layer = detMap?.get(`${detId}_arrow`) || detMap?.get(detId);
-    if (layer && typeof layer.openPopup === 'function') {
-      layer.openPopup([lat, lon]);
+    if (layer && typeof layer.openTooltip === 'function') {
+      layer.openTooltip();
     }
   };
 
-  window.mapInstance.once('moveend', () => setTimeout(openTargetPopup, 60));
+  window.mapInstance.once('moveend', () => setTimeout(focusTargetMarker, 60));
   window.mapInstance.setView([lat, lon], Math.max(window.mapInstance.getZoom() || 14, 15), { animate: false });
-  setTimeout(openTargetPopup, 260);
+  setTimeout(focusTargetMarker, 260);
 }
 
+window.sanitizeBottleneckLabel = sanitizeBottleneckLabel;
 window.classifyTrafficBoundMeta = classifyTrafficBoundMeta;
 window.matchDetectorToRouteCorridor = matchDetectorToRouteCorridor;
 window.filterTrafficDetectorsForMap = filterTrafficDetectorsForMap;
@@ -1152,6 +1202,103 @@ function cycleMapSheetHeight() {
   setTimeout(() => window.mapInstance?.invalidateSize(false), 120);
 }
 
+function initDetailMapSheetDragResize() {
+  const handle = document.getElementById('mapSheetHandle');
+  const mapEl = document.getElementById('map-container');
+  if (!handle || !mapEl || handle._dragBound) return;
+  handle._dragBound = true;
+
+  let activePointerId = null;
+  let startY = 0;
+  let startH = 0;
+  let movedPx = 0;
+  let rafId = 0;
+
+  const scheduleInvalidate = () => {
+    if (rafId) return;
+    if (typeof requestAnimationFrame === 'function') {
+      rafId = requestAnimationFrame(() => {
+        rafId = 0;
+        window.mapInstance?.invalidateSize(false);
+      });
+    } else {
+      window.mapInstance?.invalidateSize(false);
+    }
+  };
+
+  const getBoundsPx = () => {
+    const vh = (typeof window !== 'undefined' && Number.isFinite(window.innerHeight) && window.innerHeight > 0) ? window.innerHeight : 800;
+    return { minH: 170, maxH: Math.max(260, Math.round(vh * 0.74)), vh };
+  };
+
+  const finishDrag = (e, allowTapToggle) => {
+    if (activePointerId === null || (e && e.pointerId !== undefined && e.pointerId !== activePointerId)) return;
+    const pid = activePointerId;
+    activePointerId = null;
+    if (typeof handle.releasePointerCapture === 'function') {
+      try {
+        if (typeof handle.hasPointerCapture !== 'function' || handle.hasPointerCapture(pid)) {
+          handle.releasePointerCapture(pid);
+        }
+      } catch (err) {}
+    }
+    handle.classList?.remove('is-dragging');
+    document.body?.classList?.remove('map-sheet-dragging');
+    if (rafId && typeof cancelAnimationFrame === 'function') { cancelAnimationFrame(rafId); rafId = 0; }
+    mapEl.style.transition = '';
+
+    if (allowTapToggle && movedPx < 5) {
+      cycleMapSheetHeight();
+      return;
+    }
+
+    const { vh } = getBoundsPx();
+    const curH = mapEl.offsetHeight || parseFloat(mapEl.style.height) || startH;
+    const ratio = vh > 0 ? (curH / vh) : 0.35;
+    detailMapHeightState = ratio >= 0.50 ? 1 : (ratio <= 0.27 ? 2 : 0);
+    window.mapInstance?.invalidateSize(false);
+  };
+
+  handle.addEventListener('dragstart', (e) => { if (e && typeof e.preventDefault === 'function') e.preventDefault(); });
+  handle.addEventListener('pointerdown', (e) => {
+    if (!e) return;
+    if (e.target && typeof e.target.closest === 'function' && e.target.closest('#mapSheetToggleBtn')) return;
+    if (e.pointerType === 'mouse' && typeof e.button === 'number' && e.button !== 0) return;
+    if (typeof e.preventDefault === 'function') e.preventDefault();
+    activePointerId = (e.pointerId !== undefined) ? e.pointerId : 1;
+    startY = Number(e.clientY) || 0;
+    startH = mapEl.offsetHeight || parseFloat(mapEl.style.height) || Math.round(getBoundsPx().vh * 0.35);
+    movedPx = 0;
+    mapEl.style.transition = 'none';
+    handle.classList?.add('is-dragging');
+    document.body?.classList?.add('map-sheet-dragging');
+    if (typeof handle.setPointerCapture === 'function') {
+      try { handle.setPointerCapture(activePointerId); } catch (err) {}
+    }
+  });
+  handle.addEventListener('pointermove', (e) => {
+    if (activePointerId === null || !e || (e.pointerId !== undefined && e.pointerId !== activePointerId)) return;
+    if (typeof e.preventDefault === 'function') e.preventDefault();
+    const dy = (Number(e.clientY) || 0) - startY;
+    movedPx = Math.max(movedPx, Math.abs(dy));
+    const { minH, maxH } = getBoundsPx();
+    const newH = Math.max(minH, Math.min(maxH, Math.round(startH + dy)));
+    mapEl.style.height = `${newH}px`;
+    scheduleInvalidate();
+  });
+  handle.addEventListener('pointerup', (e) => finishDrag(e, true));
+  handle.addEventListener('pointercancel', (e) => finishDrag(e, false));
+}
+
+window.initDetailMapSheetDragResize = initDetailMapSheetDragResize;
+if (typeof document !== 'undefined') {
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initDetailMapSheetDragResize);
+  } else {
+    initDetailMapSheetDragResize();
+  }
+}
+
 function syncDetailGpsLockBtnUI() {
   const btn = document.getElementById('mapGpsRecenterBtn');
   if (btn) btn.classList.toggle('active', Boolean(isDetailGpsLocked));
@@ -1227,6 +1374,7 @@ function drawRouteOnMap(group, activeStopIdx = 0) {
     attachMapResizeObserver('map-container', window.mapInstance);
     bindTrafficRefreshOnMapMove(window.mapInstance);
   }
+  initDetailMapSheetDragResize();
   try { window.mapInstance.invalidateSize(false); } catch (e) {}
 
   if (detailPolylineLayer) { try { window.mapInstance.removeLayer(detailPolylineLayer); } catch (e) {} detailPolylineLayer = null; }
@@ -1719,39 +1867,69 @@ function initXferMapDragResize() {
   const wrap = document.getElementById('xferMapWrapper');
   if (!handle || !wrap || handle._dragBound) return;
   handle._dragBound = true;
-  let startY = 0, startH = 220, dragging = false, rafId = 0;
-  const onStart = (y) => { dragging = true; startY = y; startH = wrap.offsetHeight; wrap.style.transition = 'none'; };
-  const onMove = (y) => {
-    if (!dragging) return;
-    const newH = Math.max(140, Math.min(Math.round(window.innerHeight * 0.72), startH + (y - startY)));
-    wrap.style.height = `${newH}px`;
-    if (!rafId) {
-      rafId = requestAnimationFrame(() => {
-        rafId = 0;
-        window.xferMapInstance?.invalidateSize(false);
-      });
+  let activePointerId = null, startY = 0, startH = 220, rafId = 0;
+
+  const finishDrag = (e) => {
+    if (activePointerId === null || (e && e.pointerId !== undefined && e.pointerId !== activePointerId)) return;
+    const pid = activePointerId;
+    activePointerId = null;
+    if (typeof handle.releasePointerCapture === 'function') {
+      try {
+        if (typeof handle.hasPointerCapture !== 'function' || handle.hasPointerCapture(pid)) {
+          handle.releasePointerCapture(pid);
+        }
+      } catch (err) {}
     }
-  };
-  const onEnd = () => {
-    if (!dragging) return;
-    dragging = false;
-    if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+    handle.style.cursor = 'grab';
+    document.body?.classList?.remove('map-sheet-dragging');
+    if (rafId && typeof cancelAnimationFrame === 'function') { cancelAnimationFrame(rafId); rafId = 0; }
     wrap.style.transition = 'height 0.25s ease';
-    isXferMapExpanded = wrap.offsetHeight > 320;
+    isXferMapExpanded = (wrap.offsetHeight || parseFloat(wrap.style.height) || 220) > 320;
     window.xferMapInstance?.invalidateSize(false);
   };
-  handle.addEventListener('touchstart', e => { if (e.touches[0]) onStart(e.touches[0].clientY); }, { passive: true });
-  window.addEventListener('touchmove', e => { if (dragging && e.touches[0]) onMove(e.touches[0].clientY); }, { passive: true });
-  window.addEventListener('touchend', onEnd);
-  handle.addEventListener('mousedown', e => { e.preventDefault(); onStart(e.clientY); });
-  window.addEventListener('mousemove', e => onMove(e.clientY));
-  window.addEventListener('mouseup', onEnd);
+
+  handle.addEventListener('dragstart', (e) => { if (e && typeof e.preventDefault === 'function') e.preventDefault(); });
+  handle.addEventListener('pointerdown', (e) => {
+    if (!e) return;
+    if (e.pointerType === 'mouse' && typeof e.button === 'number' && e.button !== 0) return;
+    if (typeof e.preventDefault === 'function') e.preventDefault();
+    activePointerId = (e.pointerId !== undefined) ? e.pointerId : 1;
+    startY = Number(e.clientY) || 0;
+    startH = wrap.offsetHeight || parseFloat(wrap.style.height) || 220;
+    wrap.style.transition = 'none';
+    handle.style.cursor = 'grabbing';
+    document.body?.classList?.add('map-sheet-dragging');
+    if (typeof handle.setPointerCapture === 'function') {
+      try { handle.setPointerCapture(activePointerId); } catch (err) {}
+    }
+  });
+  handle.addEventListener('pointermove', (e) => {
+    if (activePointerId === null || !e || (e.pointerId !== undefined && e.pointerId !== activePointerId)) return;
+    if (typeof e.preventDefault === 'function') e.preventDefault();
+    const vh = (typeof window !== 'undefined' && Number.isFinite(window.innerHeight) && window.innerHeight > 0) ? window.innerHeight : 800;
+    const newH = Math.max(140, Math.min(Math.round(vh * 0.72), Math.round(startH + ((Number(e.clientY) || 0) - startY))));
+    wrap.style.height = `${newH}px`;
+    if (!rafId) {
+      if (typeof requestAnimationFrame === 'function') {
+        rafId = requestAnimationFrame(() => {
+          rafId = 0;
+          window.xferMapInstance?.invalidateSize(false);
+        });
+      } else {
+        window.xferMapInstance?.invalidateSize(false);
+      }
+    }
+  });
+  handle.addEventListener('pointerup', finishDrag);
+  handle.addEventListener('pointercancel', finishDrag);
 }
 
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', initXferMapDragResize);
-} else {
-  initXferMapDragResize();
+if (typeof document !== 'undefined') {
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initXferMapDragResize);
+  } else {
+    initXferMapDragResize();
+  }
 }
 
 function handleXferMapSpotClick(e) {

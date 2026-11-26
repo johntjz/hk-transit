@@ -572,7 +572,7 @@ function renderTrafficOverlayOnMap(targetMap, forceRedraw = false) {
   const focusedDetId = isDetailMap ? String(window.__FOCUSED_TRAFFIC_DET_ID__ || '') : '';
 
   const candidates = filterTrafficDetectorsForMap(detectors, targetMap, activeCorridor, focusedDetId);
-  if (!candidates.length) {
+  if (!candidates.length && !isDetailBusScoped) {
     if (isDetailMap && detailPolylineLayer) _bringLayerGroupToFront(detailPolylineLayer);
     return;
   }
@@ -728,6 +728,89 @@ function renderTrafficOverlayOnMap(targetMap, forceRedraw = false) {
       }
     }
   });
+
+  // Render clickable directional TD traffic camera markers within 350 m of active route corridor
+  // (including roundabouts and tunnel portals like TC002F & TC001F where speed telemetry cuts off)
+  if (isDetailMap && isDetailBusScoped && Array.isArray(currentDetailCorridorMeta?.coords) && currentDetailCorridorMeta.coords.length >= 2) {
+    const routeCoords = currentDetailCorridorMeta.coords;
+    let routeCamPool = Array.isArray(window.__LIVE_TRAFFIC_CAMERAS__) && window.__LIVE_TRAFFIC_CAMERAS__.length
+      ? window.__LIVE_TRAFFIC_CAMERAS__
+      : [];
+    if (!routeCamPool.length && Array.isArray(detectors) && detectors.length) {
+      const seenK = new Set();
+      routeCamPool = [];
+      for (let i = 0; i < detectors.length; i++) {
+        const d = detectors[i];
+        if (!d?.camKey || seenK.has(d.camKey)) continue;
+        seenK.add(d.camKey);
+        routeCamPool.push({
+          key: d.camKey,
+          desc: d.roadEn || d.roadTc || d.camKey,
+          lat: d.lat,
+          lon: d.lon,
+          dir: d.dir || '',
+          bearingDeg: Number.isFinite(Number(d.rot)) ? ((Math.round(Number(d.rot)) % 360) + 360) % 360 : undefined
+        });
+      }
+    }
+
+    const MAX_ROUTE_CAM_DIST_KM = 0.35;
+    const camBounds = targetMap.getBounds ? targetMap.getBounds().pad(0.18) : null;
+    const matchedRouteCams = [];
+    for (let cIdx = 0; cIdx < routeCamPool.length; cIdx++) {
+      const cam = routeCamPool[cIdx];
+      const cLat = Number(cam?.lat), cLon = Number(cam?.lon);
+      if (!cam?.key || !Number.isFinite(cLat) || !Number.isFinite(cLon)) continue;
+      if (camBounds && typeof camBounds.contains === 'function' && !camBounds.contains([cLat, cLon])) continue;
+      const distKm = _minPointToPolylineDistKm(cLat, cLon, routeCoords);
+      if (distKm <= MAX_ROUTE_CAM_DIST_KM) {
+        matchedRouteCams.push({ cam, distKm });
+      }
+    }
+
+    matchedRouteCams.sort((a, b) => a.distKm - b.distKm);
+    const placedRouteCamPts = [];
+    const MIN_ROUTE_CAM_PX = zoom >= 16 ? 20 : 28;
+    for (let i = 0; i < matchedRouteCams.length; i++) {
+      const { cam } = matchedRouteCams[i];
+      const cLat = Number(cam.lat), cLon = Number(cam.lon);
+      const ptPx = projectDetectorToScreenPx(targetMap, cLat, cLon, zoom);
+      let tooCloseCam = false;
+      for (let p = 0; p < placedRouteCamPts.length; p++) {
+        if (Math.hypot(ptPx.x - placedRouteCamPts[p].x, ptPx.y - placedRouteCamPts[p].y) < MIN_ROUTE_CAM_PX) {
+          tooCloseCam = true;
+          break;
+        }
+      }
+      if (tooCloseCam) continue;
+      placedRouteCamPts.push(ptPx);
+
+      const bearingDeg = resolveCameraBearingDeg(cam, detectors, routeCoords);
+      const compassTxt = formatCompassFromBearingDeg(bearingDeg, isZh);
+      const cleanDesc = sanitizeBottleneckLabel(cam.desc || cam.key);
+      const camIcon = buildDirectionalCameraDivIcon(cam, bearingDeg, isZh, true);
+      const camMarker = L.marker([cLat, cLon], {
+        icon: camIcon,
+        zIndexOffset: 240
+      }).addTo(layerGroup);
+      if (typeof camMarker.bindTooltip === 'function') {
+        camMarker.bindTooltip(`📷 ${cleanDesc}${compassTxt ? ` (${compassTxt})` : ''}`, {
+          direction: 'top',
+          offset: [0, -10],
+          className: 'kmb-map-stop-label'
+        });
+      }
+      if (typeof camMarker.on === 'function') {
+        camMarker.on('click', (ev) => {
+          if (ev?.originalEvent?.stopPropagation) ev.originalEvent.stopPropagation();
+          if (typeof window.openTrafficCameraModal === 'function') {
+            window.openTrafficCameraModal({ ...cam, bearingDeg });
+          }
+        });
+      }
+      detMarkerMap.set(`cam_${cam.key}`, camMarker);
+    }
+  }
 
   // Always keep active route polyline cleanly above road traffic stripes
   if (isDetailMap && detailPolylineLayer) {
@@ -1492,29 +1575,76 @@ function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) 
     window.__LAST_DETAIL_SPEED_GEOJSON__ = speedGeoJson;
 
     if (speedGeoJson && Array.isArray(speedGeoJson.features) && speedGeoJson.features.length > 0) {
-      // Thin dark casing outline underneath live green (#16a34a), amber (#f59e0b), red (#dc2626), or slate-blue (#3b82f6) local segments
-      layers.push(
-        L.polyline(coords, {
-          color: thinCasingColor,
-          weight: 7.5,
-          opacity: 0.72,
-          lineJoin: 'round',
-          lineCap: 'round',
-          interactive: false
-        })
-      );
+      // Thin dark casing (#1e293b, weight 7.5) underneath live green/amber/red speed segments,
+      // and clean white dashed halo underneath unmonitored dashed slate-blue (#3b82f6) feeder segments
+      speedGeoJson.features.forEach((feat) => {
+        const gCoords = feat?.geometry?.coordinates;
+        if (!Array.isArray(gCoords) || gCoords.length < 2) return;
+        const latlngs = gCoords.map(c => [c[1], c[0]]);
+        const p = feat?.properties || {};
+        const hasLiveSpeed = p.hasSpeedData !== false && p.speedKmh !== null && p.speedKmh !== undefined && Number.isFinite(Number(p.speedKmh));
+        if (hasLiveSpeed) {
+          layers.push(
+            L.polyline(latlngs, {
+              color: thinCasingColor,
+              weight: 7.5,
+              opacity: 0.72,
+              lineJoin: 'round',
+              lineCap: 'round',
+              interactive: false
+            })
+          );
+        } else {
+          layers.push(
+            L.polyline(latlngs, {
+              color: '#FFFFFF',
+              weight: 7.0,
+              opacity: 0.85,
+              dashArray: '6, 6',
+              lineJoin: 'round',
+              lineCap: 'butt',
+              interactive: false
+            })
+          );
+        }
+      });
       const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
       const geoLayer = L.geoJSON(speedGeoJson, {
-        style: (feat) => ({
-          color: feat?.properties?.color || localStreetFallback,
-          weight: 5,
-          opacity: 0.96,
-          lineJoin: 'round',
-          lineCap: 'round'
-        }),
+        style: (feat) => {
+          const p = feat?.properties || {};
+          const hasLiveSpeed = p.hasSpeedData !== false && p.speedKmh !== null && p.speedKmh !== undefined && Number.isFinite(Number(p.speedKmh));
+          if (!hasLiveSpeed) {
+            return {
+              color: '#3b82f6',
+              weight: 4.5,
+              opacity: 0.92,
+              dashArray: '6, 6',
+              lineJoin: 'round',
+              lineCap: 'butt'
+            };
+          }
+          return {
+            color: p.color || localStreetFallback,
+            weight: 5,
+            opacity: 0.96,
+            dashArray: null,
+            lineJoin: 'round',
+            lineCap: 'round'
+          };
+        },
         onEachFeature: (feat, lyr) => {
           const p = feat?.properties;
-          if (!p || !p.detectorId || p.speedKmh === null || !Number.isFinite(Number(p.speedKmh))) return;
+          const hasLiveSpeed = Boolean(p && p.hasSpeedData !== false && p.speedKmh !== null && p.speedKmh !== undefined && Number.isFinite(Number(p.speedKmh)));
+          if (!hasLiveSpeed) {
+            if (typeof lyr.bindTooltip === 'function') {
+              lyr.bindTooltip(
+                isZh ? '未覆蓋實時車速路段 · 可點擊附近鏡頭' : 'No live speed detector · Tap nearby camera markers',
+                { sticky: true, className: 'kmb-map-stop-label' }
+              );
+            }
+            return;
+          }
+          if (!p.detectorId) return;
           const cleanName = sanitizeBottleneckLabel(isZh ? (p.roadTc || p.roadEn) : (p.roadEn || p.roadTc)) || (isZh ? '實時路況' : 'Live Road');
           if (typeof lyr.bindTooltip === 'function') {
             lyr.bindTooltip(`${cleanName} · ${Math.round(Number(p.speedKmh))} km/h`, { sticky: true, className: 'kmb-map-stop-label' });
@@ -2125,21 +2255,17 @@ function renderGlobalTrafficDashboard(targetMap = window.browseMapInstance) {
         })
       : L.layerGroup();
 
-    const camIcon = L.divIcon({
-      className: 'global-traffic-cam-icon',
-      html: `<div class="global-traffic-cam-marker" title="${isZh ? '運輸署實時鏡頭' : 'TD Live Traffic Camera'}">📷</div>`,
-      iconSize: [26, 26],
-      iconAnchor: [13, 13]
-    });
-
     for (let i = 0; i < cameras.length; i++) {
       const cam = cameras[i];
       const cLat = Number(cam.lat), cLon = Number(cam.lon);
       if (!Number.isFinite(cLat) || !Number.isFinite(cLon)) continue;
+      const bearingDeg = resolveCameraBearingDeg(cam, detectors, null);
+      const compassTxt = formatCompassFromBearingDeg(bearingDeg, isZh);
+      const camIcon = buildDirectionalCameraDivIcon(cam, bearingDeg, isZh, false);
       const m = L.marker([cLat, cLon], { icon: camIcon, zIndexOffset: 240 });
       const cleanDesc = sanitizeBottleneckLabel(cam.desc || cam.key);
       if (typeof m.bindTooltip === 'function') {
-        m.bindTooltip(`📷 ${cleanDesc}`, { direction: 'top', offset: [0, -8], className: 'kmb-map-stop-label' });
+        m.bindTooltip(`📷 ${cleanDesc}${compassTxt ? ` (${compassTxt})` : ''}`, { direction: 'top', offset: [0, -10], className: 'kmb-map-stop-label' });
       }
       if (typeof m.on === 'function') {
         m.on('click', (ev) => {
@@ -2148,9 +2274,9 @@ function renderGlobalTrafficDashboard(targetMap = window.browseMapInstance) {
             ? window.findNearestMatchingDetectorForCamera(cam, detectors)
             : (detectors.find(x => x.camKey === cam.key) || null);
           if (matchedDet && typeof window.openTrafficDecisionModal === 'function') {
-            window.openTrafficDecisionModal(matchedDet.id, _findOppositeTrafficDetectorId(matchedDet), '', false, cam);
+            window.openTrafficDecisionModal(matchedDet.id, _findOppositeTrafficDetectorId(matchedDet), '', false, { ...cam, bearingDeg });
           } else if (typeof window.openTrafficCameraModal === 'function') {
-            window.openTrafficCameraModal(cam);
+            window.openTrafficCameraModal({ ...cam, bearingDeg });
           }
         });
       }
@@ -2167,6 +2293,206 @@ function renderGlobalTrafficDashboard(targetMap = window.browseMapInstance) {
       });
     }
   }
+}
+
+const _CLIENT_CAM_LANDMARK_ANCHORS = [
+  { re: /\btm[\s-]*clk(?:l|\s*tunnel)?\s*(?:northern|north)\s*portal\b/i, lat: 22.3694, lon: 113.9585 },
+  { re: /\btm[\s-]*clk(?:l|\s*tunnel)?\s*(?:southern|south)\s*portal\b/i, lat: 22.3176, lon: 113.9498 },
+  { re: /\btm[\s-]*clkl\b|\btuen\s*mun[\s-]*chek\s*lap\s*kok\b/i, lat: 22.3694, lon: 113.9585 },
+  { re: /\blung\s*mun\s*(?:rd|road)\s*roundabout\b/i, lat: 22.3712, lon: 113.9562 },
+  { re: /\blung\s*mun\s*(?:rd|road)\b/i, lat: 22.3782, lon: 113.9612 },
+  { re: /\bwong\s*chu\s*(?:rd|road)\b/i, lat: 22.3822, lon: 113.9675 },
+  { re: /\btuen\s*mun\s*(?:rd|road)\b/i, lat: 22.3885, lon: 113.9765 },
+  { re: /\bhzmb\b|\bhong\s*kong\s*port\b|\bshun\s*long\s*(?:rd|road)\b/i, lat: 22.3168, lon: 113.9502 },
+  { re: /\bnorth\s*lantau\s*(?:hwy|highway)\b/i, lat: 22.2952, lon: 113.9438 },
+  { re: /\btung\s*chung\b/i, lat: 22.2892, lon: 113.9416 },
+  { re: /\bairport\b|\bchek\s*lap\s*kok\b/i, lat: 22.3080, lon: 113.9185 },
+  { re: /\btsing\s*ma\b|\blantau\s*link\b/i, lat: 22.3514, lon: 114.0737 },
+  { re: /\bting\s*kau\b/i, lat: 22.3688, lon: 114.0793 },
+  { re: /\btai\s*lam\s*tunnel\b/i, lat: 22.4048, lon: 114.0598 },
+  { re: /\byuen\s*long\s*(?:hwy|highway)\b/i, lat: 22.4388, lon: 114.0110 },
+  { re: /\btolo\s*(?:hwy|highway)\b/i, lat: 22.4265, lon: 114.2055 },
+  { re: /\blion\s*rock\s*tunnel\b/i, lat: 22.3568, lon: 114.1755 },
+  { re: /\btate'?s\s*cairn\b/i, lat: 22.3698, lon: 114.2125 },
+  { re: /\bshing\s*mun\s*tunnel\b/i, lat: 22.3792, lon: 114.1562 },
+  { re: /\bcross[\s-]*harbour\s*tunnel\b|\bcht\b/i, lat: 22.2918, lon: 114.1818 },
+  { re: /\bwestern\s*harbour\b|\bwhc\b/i, lat: 22.2955, lon: 114.1525 },
+  { re: /\beastern\s*harbour\b|\behc\b/i, lat: 22.2958, lon: 114.2225 },
+  { re: /\baberdeen\s*tunnel\b/i, lat: 22.2562, lon: 114.1755 },
+  { re: /\btseung\s*kwan\s*o\s*tunnel\b|\btko\s*tunnel\b/i, lat: 22.3182, lon: 114.2465 },
+  { re: /\bcheung\s*tsing\b/i, lat: 22.3515, lon: 114.0985 },
+  { re: /\beagle'?s\s*nest\b|\btsing\s*sha\b/i, lat: 22.3502, lon: 114.1538 },
+  { re: /\bcentral[\s-]*wan\s*chai\s*bypass\b/i, lat: 22.2852, lon: 114.1745 }
+];
+
+function _camHaversineKm(lat1, lon1, lat2, lon2) {
+  const rad = Math.PI / 180;
+  const dLat = (lat2 - lat1) * rad;
+  const dLon = (lon2 - lon1) * rad;
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin(dLon / 2) ** 2;
+  return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function _camBearingDeg(lat1, lon1, lat2, lon2) {
+  const rad = Math.PI / 180;
+  const p1 = lat1 * rad, p2 = lat2 * rad, dl = (lon2 - lon1) * rad;
+  const y = Math.sin(dl) * Math.cos(p2);
+  const x = Math.cos(p1) * Math.sin(p2) - Math.sin(p1) * Math.cos(p2) * Math.cos(dl);
+  return ((Math.round(Math.atan2(y, x) * 180 / Math.PI) % 360) + 360) % 360;
+}
+
+function _minPointToPolylineDistKm(lat, lon, coords) {
+  if (!Array.isArray(coords) || coords.length < 2) return Infinity;
+  let best = Infinity;
+  const useSegFn = typeof window !== 'undefined' && typeof window.pointToSegmentDistanceKm === 'function';
+  for (let i = 0; i < coords.length - 1; i++) {
+    const a = coords[i], b = coords[i + 1];
+    if (!a || !b) continue;
+    const dKm = useSegFn
+      ? window.pointToSegmentDistanceKm(lat, lon, a[0], a[1], b[0], b[1]).distKm
+      : _camHaversineKm(lat, lon, (a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5);
+    if (dKm < best) best = dKm;
+  }
+  return best;
+}
+
+function resolveCameraBearingDeg(cam, detectors = [], routeCoords = null) {
+  if (!cam) return 0;
+  if (cam.bearingDeg !== undefined && cam.bearingDeg !== null && Number.isFinite(Number(cam.bearingDeg))) {
+    return ((Math.round(Number(cam.bearingDeg)) % 360) + 360) % 360;
+  }
+  const cLat = Number(cam.lat), cLon = Number(cam.lon);
+  const desc = String(cam.desc || '');
+  const detList = Array.isArray(detectors) ? detectors : [];
+
+  // 1. Paired detector rot
+  for (let i = 0; i < detList.length; i++) {
+    const d = detList[i];
+    if (d && (d.id === cam.key || d.camKey === cam.key) && Number.isFinite(Number(d.rot))) {
+      return ((Math.round(Number(d.rot)) % 360) + 360) % 360;
+    }
+  }
+
+  // 2. Explicit cardinal / intercardinal bound from camera description
+  const dirTxt = `${cam.dir || ''} ${desc}`;
+  let cardinalDeg = null;
+  if (/\bnorth[\s-]*east(?:bound)?\b/i.test(dirTxt)) cardinalDeg = 45;
+  else if (/\bnorth[\s-]*west(?:bound)?\b/i.test(dirTxt)) cardinalDeg = 315;
+  else if (/\bsouth[\s-]*east(?:bound)?\b/i.test(dirTxt)) cardinalDeg = 135;
+  else if (/\bsouth[\s-]*west(?:bound)?\b/i.test(dirTxt)) cardinalDeg = 225;
+  else if (/\b(?:northbound|north[\s-]*bound|\(nb\)|nb)\b|北行/i.test(dirTxt)) cardinalDeg = 0;
+  else if (/\b(?:eastbound|east[\s-]*bound|\(eb\)|eb)\b|東行/i.test(dirTxt)) cardinalDeg = 90;
+  else if (/\b(?:southbound|south[\s-]*bound|\(sb\)|sb)\b|南行/i.test(dirTxt)) cardinalDeg = 180;
+  else if (/\b(?:westbound|west[\s-]*bound|\(wb\)|wb)\b|西行/i.test(dirTxt)) cardinalDeg = 270;
+
+  if (cardinalDeg !== null) {
+    if (Number.isFinite(cLat) && Number.isFinite(cLon) && detList.length) {
+      let bestRot = null, bestDist = Infinity;
+      for (let i = 0; i < detList.length; i++) {
+        const d = detList[i];
+        if (!d || !Number.isFinite(Number(d.rot)) || !Number.isFinite(Number(d.lat)) || !Number.isFinite(Number(d.lon))) continue;
+        const dKm = _camHaversineKm(cLat, cLon, d.lat, d.lon);
+        if (dKm > 0.65 || _mapAngDiffDeg(cardinalDeg, Number(d.rot)) > 55) continue;
+        if (dKm < bestDist) {
+          bestDist = dKm;
+          bestRot = Number(d.rot);
+        }
+      }
+      if (bestRot !== null) return ((Math.round(bestRot) % 360) + 360) % 360;
+    }
+    return cardinalDeg;
+  }
+
+  // 3. Landmark / cross-road vector for standalone intersection, roundabout & portal cameras
+  if (Number.isFinite(cLat) && Number.isFinite(cLon) && desc) {
+    const lmMatch = desc.match(/(?:\bnear\b|\btowards?\b|\bfacing\b|\bat\b|\/)\s*([^(\-–,]+)/i);
+    const focusPhrase = lmMatch ? lmMatch[1].trim() : '';
+    const phrases = focusPhrase ? [focusPhrase, desc] : [desc];
+    for (let p = 0; p < phrases.length; p++) {
+      for (let a = 0; a < _CLIENT_CAM_LANDMARK_ANCHORS.length; a++) {
+        const anchor = _CLIENT_CAM_LANDMARK_ANCHORS[a];
+        if (!anchor.re.test(phrases[p])) continue;
+        const dKm = _camHaversineKm(cLat, cLon, anchor.lat, anchor.lon);
+        if (dKm >= 0.025 && dKm <= 8.0) {
+          return _camBearingDeg(cLat, cLon, anchor.lat, anchor.lon);
+        }
+      }
+    }
+
+    // 4. Nearest detector rot / vector fallback
+    let bestDet = null, bestDist = Infinity;
+    for (let i = 0; i < detList.length; i++) {
+      const d = detList[i];
+      if (!d || !Number.isFinite(Number(d.lat)) || !Number.isFinite(Number(d.lon))) continue;
+      const dKm = _camHaversineKm(cLat, cLon, d.lat, d.lon);
+      if (dKm <= 1.2 && dKm < bestDist) {
+        bestDist = dKm;
+        bestDet = d;
+      }
+    }
+    if (bestDet) {
+      if (Number.isFinite(Number(bestDet.rot)) && bestDist <= 0.65) {
+        return ((Math.round(Number(bestDet.rot)) % 360) + 360) % 360;
+      }
+      if (bestDist >= 0.02) return _camBearingDeg(cLat, cLon, bestDet.lat, bestDet.lon);
+    }
+
+    // 5. Nearest active route segment tangent fallback
+    if (Array.isArray(routeCoords) && routeCoords.length >= 2) {
+      let bestSegDist = Infinity, bestSegBrg = 0;
+      for (let i = 0; i < routeCoords.length - 1; i++) {
+        const a = routeCoords[i], b = routeCoords[i + 1];
+        if (!a || !b) continue;
+        const midLat = (a[0] + b[0]) * 0.5, midLon = (a[1] + b[1]) * 0.5;
+        const dKm = _camHaversineKm(cLat, cLon, midLat, midLon);
+        if (dKm < bestSegDist) {
+          bestSegDist = dKm;
+          bestSegBrg = _camBearingDeg(a[0], a[1], b[0], b[1]);
+        }
+      }
+      if (Number.isFinite(bestSegBrg)) return bestSegBrg;
+    }
+  }
+  return 0;
+}
+
+function formatCompassFromBearingDeg(deg, isZh = false) {
+  const d = ((Number(deg) % 360) + 360) % 360;
+  if (isZh) {
+    const dirs = ['北', '東北', '東', '東南', '南', '西南', '西', '西北'];
+    return `望向${dirs[Math.round(d / 45) % 8]}`;
+  }
+  const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+  return `Facing ${dirs[Math.round(d / 45) % 8]}`;
+}
+
+function buildDirectionalCameraDivIcon(cam, bearingDeg, isZh = false, isRouteView = false) {
+  const deg = ((Math.round(Number(bearingDeg) || 0) % 360) + 360) % 360;
+  const coneFill = isRouteView ? 'rgba(37, 99, 235, 0.28)' : 'rgba(14, 165, 233, 0.28)';
+  const coneStroke = isRouteView ? 'rgba(37, 99, 235, 0.72)' : 'rgba(2, 132, 199, 0.72)';
+  const arrowFill = isRouteView ? '#1D4ED8' : '#0284C7';
+  const badgeBg = isRouteView ? 'rgba(15, 23, 42, 0.94)' : 'rgba(15, 23, 42, 0.92)';
+  const titleTxt = escapeHtml(cam?.desc || cam?.key || (isZh ? '運輸署實時鏡頭' : 'TD Live Traffic Camera'));
+  const html = `
+    <div class="cam-fov-marker-wrap${isRouteView ? ' is-route-cam' : ''}" data-cam-key="${escapeHtml(cam?.key || '')}" data-bearing="${deg}" title="${titleTxt}">
+      <svg class="cam-fov-svg" width="46" height="46" viewBox="0 0 46 46" aria-hidden="true" style="transform:rotate(${deg}deg);">
+        <path d="M23 23 L10.5 4.2 A22 22 0 0 1 35.5 4.2 Z" fill="${coneFill}" stroke="${coneStroke}" stroke-width="1"/>
+        <path d="M23 1.4 L27.2 8.2 L23 6.5 L18.8 8.2 Z" fill="${arrowFill}" stroke="#FFFFFF" stroke-width="0.9" stroke-linejoin="round"/>
+      </svg>
+      <div class="global-traffic-cam-marker" style="background:${badgeBg};">📷</div>
+    </div>`;
+  return L.divIcon({
+    className: 'global-traffic-cam-icon',
+    html,
+    iconSize: [46, 46],
+    iconAnchor: [23, 23]
+  });
+}
+
+if (typeof window !== 'undefined') {
+  window.resolveCameraBearingDeg = resolveCameraBearingDeg;
+  window.formatCompassFromBearingDeg = formatCompassFromBearingDeg;
+  window.buildDirectionalCameraDivIcon = buildDirectionalCameraDivIcon;
 }
 
 function toggleGlobalTrafficLayer(forceState = null) {

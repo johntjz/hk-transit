@@ -3752,6 +3752,7 @@ function buildRouteSpeedGeoJson(coords, detectors = [], opts = {}) {
     }
 
     const speedKmh = chosen ? Number(chosen.spd) : null;
+    const hasSpeedData = Boolean(speedKmh !== null && Number.isFinite(speedKmh));
     const color = getTrafficSpeedColorHex(speedKmh, noDataColor);
     const detId = chosen ? String(chosen.id || '') : '';
     const roadEn = chosen ? String(chosen.roadEn || '') : '';
@@ -3761,7 +3762,7 @@ function buildRouteSpeedGeoJson(coords, detectors = [], opts = {}) {
     const ptA = [Number(seg.a[1].toFixed(6)), Number(seg.a[0].toFixed(6))];
     const ptB = [Number(seg.b[1].toFixed(6)), Number(seg.b[0].toFixed(6))];
 
-    if (curFeat && curFeat.properties.color === color && curFeat.properties.detectorId === detId) {
+    if (curFeat && curFeat.properties.color === color && curFeat.properties.detectorId === detId && curFeat.properties.hasSpeedData === hasSpeedData) {
       curFeat.geometry.coordinates.push(ptB);
     } else {
       curFeat = {
@@ -3773,6 +3774,7 @@ function buildRouteSpeedGeoJson(coords, detectors = [], opts = {}) {
         properties: {
           color,
           speedKmh,
+          hasSpeedData,
           detectorId: detId,
           roadEn,
           roadTc,

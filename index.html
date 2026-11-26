@@ -8,7 +8,7 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="apple-mobile-web-app-title" content="Transit HK">
-  <meta name="app-build-version" content="2026-11-26 18:55 HKT">
+  <meta name="app-build-version" content="2026-11-26 19:30 HKT">
   <title>Transit HK — Bus, MTR, Light Rail &amp; Ferry (通)</title>
   <meta name="description" content="Real-time Hong Kong Bus, MTR, Light Rail & Ferry radar and multi-modal route planner.">
   <meta property="og:title" content="Transit HK">
@@ -685,9 +685,29 @@
     .map-back-to-stop-pill:hover { filter: brightness(1.08); }
     .map-back-to-stop-pill:active { transform: translateX(-50%) scale(0.97); }
     .global-traffic-cam-icon { background: transparent !important; border: none !important; }
+    .cam-fov-marker-wrap {
+      position: relative;
+      width: 46px;
+      height: 46px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+    }
+    .cam-fov-svg {
+      position: absolute;
+      inset: 0;
+      width: 46px;
+      height: 46px;
+      pointer-events: none;
+      transform-origin: 23px 23px;
+      filter: drop-shadow(0 1px 2px rgba(15, 23, 42, 0.28));
+    }
     .global-traffic-cam-marker {
-      width: 26px;
-      height: 26px;
+      position: relative;
+      z-index: 2;
+      width: 24px;
+      height: 24px;
       border-radius: 999px;
       background: rgba(15, 23, 42, 0.92);
       color: #FFFFFF;
@@ -695,10 +715,14 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 0.72rem;
+      font-size: 0.68rem;
       line-height: 1;
       box-shadow: 0 2px 8px rgba(0, 0, 0, 0.36);
       cursor: pointer;
+    }
+    .cam-fov-marker-wrap.is-route-cam .global-traffic-cam-marker {
+      border-color: #DBEAFE;
+      box-shadow: 0 2px 9px rgba(29, 78, 216, 0.42);
     }
     .marker-cluster-small, .marker-cluster-medium, .marker-cluster-large {
       background-color: rgba(15, 23, 42, 0.28) !important;
@@ -759,10 +783,53 @@
     .traffic-cam-frame img {
       width: 100%; height: 100%; object-fit: contain; display: block;
     }
+    .traffic-cam-status-banner {
+      position: absolute; inset: auto 10px 10px 10px;
+      display: none; align-items: center; justify-content: space-between; gap: 8px;
+      padding: 8px 11px; border-radius: 10px;
+      background: rgba(15, 23, 42, 0.90); color: #FEF3C7;
+      border: 1px solid rgba(251, 191, 36, 0.48);
+      font-size: 0.74rem; font-weight: 700; line-height: 1.3;
+      backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.38);
+      z-index: 3;
+    }
+    .traffic-cam-status-banner.show { display: flex; }
+    .traffic-cam-retry-btn {
+      flex-shrink: 0; border: 1px solid rgba(255, 255, 255, 0.28);
+      background: rgba(255, 255, 255, 0.14); color: #FFFFFF;
+      border-radius: 8px; padding: 4px 9px; font-size: 0.70rem; font-weight: 700;
+      cursor: pointer; white-space: nowrap;
+    }
+    .traffic-cam-hint-note {
+      font-size: 0.67rem; color: var(--text-sub); line-height: 1.3;
+    }
     .traffic-cam-caption {
       display: flex; align-items: center; justify-content: space-between; gap: 8px;
       font-size: 0.70rem; color: var(--text-sub); font-variant-numeric: tabular-nums;
     }
+    @keyframes bootSkeletonShimmer {
+      0% { background-position: -220px 0; }
+      100% { background-position: 220px 0; }
+    }
+    .boot-skeleton-wrap {
+      max-width: 760px; margin: 10px auto; padding: 0 12px;
+      display: flex; flex-direction: column; gap: 9px;
+    }
+    .boot-skeleton-card {
+      display: flex; align-items: center; gap: 12px; padding: 13px 14px;
+      border-radius: 16px; background: var(--bg-white);
+      border: 1px solid var(--border-color); box-shadow: var(--card-shadow);
+    }
+    .boot-skel-block {
+      border-radius: 8px;
+      background: linear-gradient(90deg, var(--bg-surface) 25%, rgba(148, 163, 184, 0.22) 50%, var(--bg-surface) 75%);
+      background-size: 440px 100%;
+      animation: bootSkeletonShimmer 1.25s ease-in-out infinite;
+    }
+    .boot-skel-badge { width: 52px; height: 34px; border-radius: 10px; flex-shrink: 0; }
+    .boot-skel-lines { flex: 1; display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+    .boot-skel-eta { width: 56px; height: 26px; border-radius: 9px; flex-shrink: 0; }
     .traffic-modal-actions {
       display: flex; gap: 8px; padding-top: 2px;
     }
@@ -1864,7 +1931,12 @@
   </div>
   <div id="stopSearchResultsContainer" style="display:none;"></div>
   <div id="mainRouteList">
-    <div class="init-loader" style="padding:48px 20px; text-align:center;"><div style="font-weight:700; font-size:1.05rem;">Transit — HK Bus, MTR & Ferry (通)</div></div>
+    <div class="boot-skeleton-wrap" aria-busy="true" aria-label="Loading nearby routes and live ETAs">
+      <div class="boot-skeleton-card"><div class="boot-skel-block boot-skel-badge"></div><div class="boot-skel-lines"><div class="boot-skel-block" style="height:14px;width:68%;"></div><div class="boot-skel-block" style="height:11px;width:46%;"></div></div><div class="boot-skel-block boot-skel-eta"></div></div>
+      <div class="boot-skeleton-card"><div class="boot-skel-block boot-skel-badge"></div><div class="boot-skel-lines"><div class="boot-skel-block" style="height:14px;width:58%;"></div><div class="boot-skel-block" style="height:11px;width:40%;"></div></div><div class="boot-skel-block boot-skel-eta"></div></div>
+      <div class="boot-skeleton-card"><div class="boot-skel-block boot-skel-badge"></div><div class="boot-skel-lines"><div class="boot-skel-block" style="height:14px;width:74%;"></div><div class="boot-skel-block" style="height:11px;width:52%;"></div></div><div class="boot-skel-block boot-skel-eta"></div></div>
+      <div class="boot-skeleton-card"><div class="boot-skel-block boot-skel-badge"></div><div class="boot-skel-lines"><div class="boot-skel-block" style="height:14px;width:62%;"></div><div class="boot-skel-block" style="height:11px;width:38%;"></div></div><div class="boot-skel-block boot-skel-eta"></div></div>
+    </div>
   </div>
 </div>
 
@@ -1985,7 +2057,7 @@
   <div id="map-container">
     <div id="map-canvas-inner"></div>
     <button type="button" class="map-back-to-stop-pill" id="detailBackToStopPill" style="display:none;" onclick="returnToActiveDetailStop()">↩ Back to Stop 1</button>
-    <button type="button" class="map-traffic-chip-btn map-traffic-toggle active" id="detailMapTrafficBtn" onclick="toggleTrafficLayerOverlay()">🚦 Traffic ON</button>
+    <button type="button" class="map-traffic-chip-btn map-traffic-toggle active" id="detailMapTrafficBtn" onclick="toggleTrafficLayerOverlay()">🚦 Traffic &amp; Cams ON</button>
     <div class="map-floating-controls">
       <button class="map-ctrl-btn" id="mapGpsRecenterBtn" onclick="toggleDetailGpsLock()" title="Lock / Unlock GPS Follow">🎯</button>
       <button class="map-ctrl-btn" onclick="zoomMapIn()">+</button>
@@ -2070,7 +2142,7 @@
     <div class="settings-section-divider" id="settingSecAppUpdate">App Version &amp; Update</div>
     <div class="settings-update-card" id="settingsAppUpdateCard">
       <div class="settings-update-meta">
-        <div class="settings-update-ver" id="settingBuildVersionText">Build: 2026-11-26 18:55 HKT</div>
+        <div class="settings-update-ver" id="settingBuildVersionText">Build: 2026-11-26 19:30 HKT</div>
         <div class="settings-update-hint" id="settingBuildUpdateHint">Clears app caches &amp; reloads latest build</div>
       </div>
       <button type="button" class="settings-force-update-btn" id="forceUpdateAppBtn" onclick="forceUpdateApp()">↻ Force Update App</button>
@@ -2188,9 +2260,35 @@
 // ============================================================================
 // PART 1: EXECUTION ENGINE (Modularized with hardcode.js, map.js & planner.js)
 // ============================================================================
-window.__FIXED_JS_BUILD_TS__ = '2026-11-26 18:55 HKT';
-const APP_VERSION = '2026-11-26 18:55 HKT';
+window.__FIXED_JS_BUILD_TS__ = '2026-11-26 19:30 HKT';
+const APP_VERSION = '2026-11-26 19:30 HKT';
 const HK_UNIFIED_API_BASE = '/api/worker';
+let isHydratingInitialData = true;
+window.isHydratingInitialData = true;
+window.__INITIAL_STOPS_GPS_RESOLVED__ = false;
+
+function setHydratingInitialData(val) {
+  isHydratingInitialData = Boolean(val);
+  window.isHydratingInitialData = isHydratingInitialData;
+}
+window.setHydratingInitialData = setHydratingInitialData;
+
+function renderBootLoadingSkeletonHtml(count = 4) {
+  const widths = [
+    ['68%', '46%'],
+    ['58%', '40%'],
+    ['74%', '52%'],
+    ['62%', '38%']
+  ];
+  let cards = '';
+  for (let i = 0; i < count; i++) {
+    const [w1, w2] = widths[i % widths.length];
+    cards += `<div class="boot-skeleton-card"><div class="boot-skel-block boot-skel-badge"></div><div class="boot-skel-lines"><div class="boot-skel-block" style="height:14px;width:${w1};"></div><div class="boot-skel-block" style="height:11px;width:${w2};"></div></div><div class="boot-skel-block boot-skel-eta"></div></div>`;
+  }
+  return `<div class="boot-skeleton-wrap" aria-busy="true">${cards}</div>`;
+}
+window.renderBootLoadingSkeletonHtml = renderBootLoadingSkeletonHtml;
+
 window.__LAST_TD_UPDATED__ = '';
 window.__LIVE_HIGHWAY_KMH__ = 70;
 window.__LIVE_CORRIDORS__ = {};
@@ -2214,7 +2312,7 @@ function syncTrafficToggleButtonsUI() {
   if (dBtn) {
     dBtn.classList.toggle('active', detailOn);
     dBtn.setAttribute('aria-pressed', detailOn ? 'true' : 'false');
-    dBtn.innerText = detailOn ? (isZh ? '🚦 實時路況 開' : '🚦 Traffic ON') : (isZh ? '🚦 路況 關' : '🚦 Traffic');
+    dBtn.innerText = detailOn ? (isZh ? '🚦 實時路況及快拍 開' : '🚦 Traffic & Cams ON') : (isZh ? '🚦 實時路況及快拍' : '🚦 Traffic & Cams');
   }
 
   const bBtn = document.getElementById('browseMapTrafficBtn');
@@ -4942,9 +5040,19 @@ async function renderMainNearby(isSilentRefresh = false) {
     centerStop = nearbyStopsList[0];
   }
   if (!centerStop) {
+    if (isHydratingInitialData && !window.__INITIAL_STOPS_GPS_RESOLVED__) {
+      listEl.innerHTML = renderBootLoadingSkeletonHtml(4);
+      return;
+    }
     if (allStops.filter(s => (s.mode || 'BUS') === 'BUS').length === 0) {
+      if (isHydratingInitialData) {
+        listEl.innerHTML = renderBootLoadingSkeletonHtml(4);
+        forceSelfHealDatabaseAndReload();
+        return;
+      }
       forceSelfHealDatabaseAndReload();
     }
+    setHydratingInitialData(false);
     listEl.innerHTML = `<div class="text-center">${t('noNearbyStations')}</div>` + renderMtrStyleReportFooterHtml();
     return;
   }
@@ -5101,6 +5209,11 @@ async function renderMainNearby(isSilentRefresh = false) {
     : '';
 
   if (!candidatePairs.length) {
+    if (isHydratingInitialData && !window.__INITIAL_STOPS_GPS_RESOLVED__) {
+      listEl.innerHTML = renderBootLoadingSkeletonHtml(4);
+      return;
+    }
+    setHydratingInitialData(false);
     listEl.innerHTML = smartTop.html + bayFilterBarHtml + `<div class="text-center">${t('noRoutesFound')}</div>` + renderMtrStyleReportFooterHtml();
     const srCardEmpty = document.getElementById('smartReturnCard');
     if (srCardEmpty) srCardEmpty.style.display = '';
@@ -5230,6 +5343,9 @@ async function renderMainNearby(isSilentRefresh = false) {
     })
   ]);
 
+  if (window.__INITIAL_STOPS_GPS_RESOLVED__) {
+    setHydratingInitialData(false);
+  }
   if (myToken !== mainNearbyRenderToken || currentView !== 'main') return;
 
   if (smartTop.smartReturnCand) {
@@ -5746,15 +5862,17 @@ window.openTrafficDecisionModal = function(detId, oppDetId = '', segmentNote = '
     : '';
 
   const effectiveCamKey = (camOverride && camOverride.key) ? camOverride.key : (det.camKey || '');
-  const camUrl = effectiveCamKey ? `https://tdcctv.data.one.gov.hk/${encodeURIComponent(effectiveCamKey)}.JPG?t=${Math.floor(Date.now() / 60000)}` : '';
+  const camUrl = effectiveCamKey ? buildTrafficCamProxyUrl(effectiveCamKey, Math.floor(Date.now() / 60000)) : '';
   const camHtml = camUrl
-    ? `<div class="traffic-cam-frame">
-         <img id="trafficDecisionCamImg" src="${camUrl}" alt="${escapeHtml(roadName)} TD live camera snapshot" loading="eager" onerror="this.parentElement.innerHTML='<div style=&quot;color:#CBD5E1;font-size:0.78rem;padding:16px;text-align:center;&quot;>${isZh ? '運輸署實拍圖暫時未能載入' : 'TD road snapshot temporarily unavailable'}</div>'">
+    ? `<div class="traffic-cam-frame" id="trafficDecisionCamFrame">
+         <img id="trafficDecisionCamImg" src="${camUrl}" alt="${escapeHtml(roadName)} TD live camera snapshot" loading="eager" data-cam-key="${escapeHtml(effectiveCamKey)}" onload="handleTrafficCamImageLoad(this, '${escapeJsAttr(effectiveCamKey)}')" onerror="handleTrafficCamImageError(this, '${escapeJsAttr(effectiveCamKey)}')">
+         <div id="trafficCamStatusBanner" class="traffic-cam-status-banner" role="status" aria-live="polite"></div>
        </div>
        <div class="traffic-cam-caption">
-         <span>📷 ${isZh ? '運輸署實時路況快拍' : 'HKSAR TD Live Road Snapshot'} (${escapeHtml(effectiveCamKey)})</span>
+         <span id="trafficCamCaptionText">📷 ${isZh ? '運輸署實時路況快拍' : 'HKSAR TD Live Road Snapshot'} (${escapeHtml(effectiveCamKey)})</span>
          <button type="button" style="border:none; background:none; color:var(--ios-blue); font-weight:700; font-size:0.72rem; cursor:pointer; padding:2px 4px;" onclick="refreshTrafficDecisionCam('${escapeJsAttr(effectiveCamKey)}')">↻ ${isZh ? '更新圖片' : 'Refresh'}</button>
-       </div>`
+       </div>
+       <div id="trafficCamHintNote" class="traffic-cam-hint-note" style="display:none;"></div>`
     : `<div style="font-size:0.76rem; color:var(--text-sub); text-align:center; padding:12px; border-radius:11px; background:var(--bg-surface);">
          ${isZh ? '此路段感應器未配對運輸署鏡頭，以上為實時車速及佔用率數據。' : 'No TD camera paired at this sensor — verdict uses live road speed & occupancy telemetry.'}
        </div>`;
@@ -5793,10 +5911,161 @@ window.openTrafficDecisionModal = function(detId, oppDetId = '', segmentNote = '
   modal.style.display = 'flex';
 };
 
+function buildTrafficCamProxyUrl(camKey, cacheBust = Date.now()) {
+  return `${HK_UNIFIED_API_BASE}?action=cam_img&key=${encodeURIComponent(camKey)}&t=${encodeURIComponent(cacheBust)}`;
+}
+window.buildTrafficCamProxyUrl = buildTrafficCamProxyUrl;
+
+// Pure pixel-based detector for HKSAR TD "Video Lost" / offline dark/flat placeholder frames (no OCR)
+function detectVideoLostFromPixels(rgba, width, height) {
+  if (!rgba || !width || !height || width < 16 || height < 16) {
+    return { isVideoLost: true, reason: 'invalid_dimensions' };
+  }
+  const totalPx = width * height;
+  if (rgba.length < totalPx * 4) {
+    return { isVideoLost: true, reason: 'short_buffer' };
+  }
+  let nearBlackCount = 0;
+  let sumLum = 0;
+  let sumLumSq = 0;
+  const borderLums = [];
+  let borderLowSatCount = 0;
+
+  const yTop = Math.floor(height * 0.24);
+  const yBot = Math.ceil(height * 0.76);
+  const xLeft = Math.floor(width * 0.16);
+  const xRight = Math.ceil(width * 0.84);
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = (y * width + x) * 4;
+      const r = rgba[idx], g = rgba[idx + 1], b = rgba[idx + 2];
+      const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+      const sat = Math.max(r, g, b) - Math.min(r, g, b);
+      sumLum += lum;
+      sumLumSq += lum * lum;
+      if (lum < 26 && sat < 20) nearBlackCount++;
+      const isBorder = (y < yTop || y >= yBot || x < xLeft || x >= xRight);
+      if (isBorder) {
+        borderLums.push(lum);
+        if (sat < 22) borderLowSatCount++;
+      }
+    }
+  }
+
+  const meanLum = sumLum / totalPx;
+  const overallVar = Math.max(0, (sumLumSq / totalPx) - (meanLum * meanLum));
+  const overallStd = Math.sqrt(overallVar);
+  const nearBlackRatio = nearBlackCount / totalPx;
+
+  let borderMean = 0;
+  for (let i = 0; i < borderLums.length; i++) borderMean += borderLums[i];
+  borderMean = borderLums.length ? borderMean / borderLums.length : meanLum;
+  let borderVarSum = 0;
+  let borderUniformCount = 0;
+  for (let i = 0; i < borderLums.length; i++) {
+    const diff = borderLums[i] - borderMean;
+    borderVarSum += diff * diff;
+    if (Math.abs(diff) <= 14) borderUniformCount++;
+  }
+  const borderStd = borderLums.length ? Math.sqrt(borderVarSum / borderLums.length) : overallStd;
+  const borderUniformRatio = borderLums.length ? (borderUniformCount / borderLums.length) : 0;
+  const borderLowSatRatio = borderLums.length ? (borderLowSatCount / borderLums.length) : 0;
+
+  // Signature 1: Classic HKSAR TD black "Video Lost" placeholder (solid black border + optional small center text)
+  if (nearBlackRatio >= 0.78 && borderStd < 12) {
+    return { isVideoLost: true, reason: 'dark_frame', nearBlackRatio, borderStd, meanLum };
+  }
+  // Signature 2: Uniform flat-gray / monochrome "Video Lost" / "Feed Unavailable" slate
+  if (borderUniformRatio >= 0.90 && borderLowSatRatio >= 0.88 && borderStd < 7.5 && meanLum < 165) {
+    return { isVideoLost: true, reason: 'uniform_placeholder', borderUniformRatio, borderStd, meanLum };
+  }
+  // Signature 3: Completely flat dead signal
+  if (overallStd < 5.5) {
+    return { isVideoLost: true, reason: 'flat_signal', overallStd, meanLum };
+  }
+  return { isVideoLost: false, reason: 'live', nearBlackRatio, borderStd, overallStd, meanLum };
+}
+window.detectVideoLostFromPixels = detectVideoLostFromPixels;
+
+function detectVideoLostOnCanvas(imgEl) {
+  if (!imgEl || !imgEl.complete || !imgEl.naturalWidth || !imgEl.naturalHeight) {
+    return { isVideoLost: true, reason: 'broken_image' };
+  }
+  if (imgEl.naturalWidth < 32 || imgEl.naturalHeight < 24) {
+    return { isVideoLost: true, reason: 'tiny_placeholder' };
+  }
+  try {
+    const w = 64, h = 48;
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return { isVideoLost: false, unreadable: true };
+    ctx.drawImage(imgEl, 0, 0, w, h);
+    const imgData = ctx.getImageData(0, 0, w, h);
+    return detectVideoLostFromPixels(imgData.data, w, h);
+  } catch (e) {
+    return { isVideoLost: false, unreadable: true, reason: 'cors_tainted' };
+  }
+}
+window.detectVideoLostOnCanvas = detectVideoLostOnCanvas;
+
+function _renderTrafficCamStatusBanner(show, camKey, isOfflineFallback = false) {
+  const banner = document.getElementById('trafficCamStatusBanner');
+  const hint = document.getElementById('trafficCamHintNote');
+  const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
+  if (banner) {
+    if (show) {
+      const msg = isZh
+        ? '⚠️ 鏡頭訊號暫停（無影像 / Video Lost）'
+        : '⚠️ Feed Offline / Video Lost';
+      banner.innerHTML = `<span>${msg}</span><button type="button" class="traffic-cam-retry-btn" onclick="refreshTrafficDecisionCam('${escapeJsAttr(camKey || '')}')">↻ ${isZh ? '重試' : 'Retry'}</button>`;
+      banner.classList.add('show');
+    } else {
+      banner.classList.remove('show');
+      banner.innerHTML = '';
+    }
+  }
+  if (hint) {
+    if (isOfflineFallback) {
+      hint.style.display = 'block';
+      hint.innerText = isZh
+        ? '提示：若畫面顯示「Video Lost」或黑屏，代表運輸署鏡頭正在維護，可稍後按「更新圖片」。'
+        : 'Feed Offline / Video Lost? HKSAR TD cameras occasionally pause for maintenance — tap Refresh to retry.';
+    } else {
+      hint.style.display = 'none';
+      hint.innerText = '';
+    }
+  }
+}
+
+window.handleTrafficCamImageLoad = function(imgEl, camKey) {
+  const res = detectVideoLostOnCanvas(imgEl);
+  if (res.isVideoLost) {
+    _renderTrafficCamStatusBanner(true, camKey, false);
+  } else if (res.unreadable) {
+    _renderTrafficCamStatusBanner(false, camKey, true);
+  } else {
+    _renderTrafficCamStatusBanner(false, camKey, false);
+  }
+};
+
+window.handleTrafficCamImageError = function(imgEl, camKey) {
+  if (imgEl && camKey && imgEl.dataset.fallbackTried !== '1') {
+    imgEl.dataset.fallbackTried = '1';
+    imgEl.src = `https://tdcctv.data.one.gov.hk/${encodeURIComponent(camKey)}.JPG?t=${Date.now()}`;
+    return;
+  }
+  _renderTrafficCamStatusBanner(true, camKey, true);
+};
+
 window.refreshTrafficDecisionCam = function(camKey) {
   const img = document.getElementById('trafficDecisionCamImg');
   if (img && camKey) {
-    img.src = `https://tdcctv.data.one.gov.hk/${encodeURIComponent(camKey)}.JPG?t=${Date.now()}`;
+    img.dataset.fallbackTried = '0';
+    _renderTrafficCamStatusBanner(false, camKey, false);
+    img.src = buildTrafficCamProxyUrl(camKey, Date.now());
   }
 };
 
@@ -5823,15 +6092,17 @@ window.openTrafficCameraModal = function(cam) {
   if (titleEl) titleEl.innerText = cleanTitle || (isZh ? '運輸署實時路況鏡頭' : 'HKSAR TD Traffic Camera');
   if (subEl) subEl.innerHTML = _buildTrafficModalSubHtml(cam, isZh, '', cam.key);
   if (closeEl) closeEl.innerText = isZh ? '✕ 關閉' : '✕ Close';
-  const camUrl = `https://tdcctv.data.one.gov.hk/${encodeURIComponent(cam.key)}.JPG?t=${Math.floor(Date.now() / 60000)}`;
+  const camUrl = buildTrafficCamProxyUrl(cam.key, Math.floor(Date.now() / 60000));
   bodyEl.innerHTML = `
-    <div class="traffic-cam-frame">
-      <img id="trafficDecisionCamImg" src="${camUrl}" alt="${escapeHtml(cleanTitle)} TD live camera snapshot" loading="eager" onerror="this.parentElement.innerHTML='<div style=&quot;color:#CBD5E1;font-size:0.78rem;padding:16px;text-align:center;&quot;>${isZh ? '運輸署實拍圖暫時未能載入' : 'TD road snapshot temporarily unavailable'}</div>'">
+    <div class="traffic-cam-frame" id="trafficDecisionCamFrame">
+      <img id="trafficDecisionCamImg" src="${camUrl}" alt="${escapeHtml(cleanTitle)} TD live camera snapshot" loading="eager" data-cam-key="${escapeHtml(cam.key)}" onload="handleTrafficCamImageLoad(this, '${escapeJsAttr(cam.key)}')" onerror="handleTrafficCamImageError(this, '${escapeJsAttr(cam.key)}')">
+      <div id="trafficCamStatusBanner" class="traffic-cam-status-banner" role="status" aria-live="polite"></div>
     </div>
     <div class="traffic-cam-caption">
-      <span>📷 ${isZh ? '運輸署實時路況快拍' : 'HKSAR TD Live Road Snapshot'} (${escapeHtml(cam.key)})</span>
+      <span id="trafficCamCaptionText">📷 ${isZh ? '運輸署實時路況快拍' : 'HKSAR TD Live Road Snapshot'} (${escapeHtml(cam.key)})</span>
       <button type="button" style="border:none; background:none; color:var(--ios-blue); font-weight:700; font-size:0.72rem; cursor:pointer; padding:2px 4px;" onclick="refreshTrafficDecisionCam('${escapeJsAttr(cam.key)}')">↻ ${isZh ? '更新圖片' : 'Refresh'}</button>
     </div>
+    <div id="trafficCamHintNote" class="traffic-cam-hint-note" style="display:none;"></div>
     <div class="traffic-modal-actions">
       <button type="button" class="traffic-modal-btn primary" onclick="closeTrafficDecisionModal()">${isZh ? '知道了' : 'Got it'}</button>
     </div>
@@ -6561,6 +6832,42 @@ function getAppBuildVersion() {
   return (typeof APP_VERSION !== 'undefined' && APP_VERSION) ? String(APP_VERSION) : '';
 }
 
+const _SW_USER_RELOAD_KEY = 'sw-user-reload';
+const _SW_TOAST_SHOWN_KEY = 'sw-update-toast-shown';
+let _pwaSessionMemoryStore = Object.create(null);
+
+function _getPwaSessionStorage() {
+  try {
+    if (typeof sessionStorage !== 'undefined' && sessionStorage) return sessionStorage;
+    if (typeof window !== 'undefined' && window.sessionStorage) return window.sessionStorage;
+  } catch (e) {}
+  return null;
+}
+
+function _readPwaSessionFlag(key) {
+  const ss = _getPwaSessionStorage();
+  if (ss) {
+    try { return ss.getItem(key); } catch (e) {}
+  }
+  return Object.prototype.hasOwnProperty.call(_pwaSessionMemoryStore, key) ? _pwaSessionMemoryStore[key] : null;
+}
+
+function _writePwaSessionFlag(key, val) {
+  const ss = _getPwaSessionStorage();
+  if (ss) {
+    try { ss.setItem(key, String(val)); return; } catch (e) {}
+  }
+  _pwaSessionMemoryStore[key] = String(val);
+}
+
+function _removePwaSessionFlag(key) {
+  const ss = _getPwaSessionStorage();
+  if (ss) {
+    try { ss.removeItem(key); return; } catch (e) {}
+  }
+  delete _pwaSessionMemoryStore[key];
+}
+
 let _forceUpdateAppInFlight = false;
 window.forceUpdateApp = async function forceUpdateApp() {
   if (_forceUpdateAppInFlight) return;
@@ -6585,6 +6892,7 @@ window.forceUpdateApp = async function forceUpdateApp() {
       await Promise.all((keys || []).map((k) => cacheApi.delete(k).catch(() => false)));
     }
   } catch (e) {}
+  _removePwaSessionFlag(_SW_TOAST_SHOWN_KEY);
   try {
     window.location.reload();
   } catch (e) {
@@ -6599,11 +6907,19 @@ window.forceUpdateApp = async function forceUpdateApp() {
 let _pwaWaitingWorker = null;
 let _pwaUpdateReloadRequested = false;
 let _pwaUpdateReloaded = false;
+let _pwaToastShownInSession = false;
 
-window.showPwaUpdateToast = function showPwaUpdateToast(worker) {
+window.showPwaUpdateToast = function showPwaUpdateToast(worker, forceShow = false) {
   if (worker) _pwaWaitingWorker = worker;
+  const workerSig = String((worker && worker.scriptURL) || (_pwaWaitingWorker && _pwaWaitingWorker.scriptURL) || 'waiting-sw');
+  if (!forceShow) {
+    const shownSig = _readPwaSessionFlag(_SW_TOAST_SHOWN_KEY);
+    if (_pwaToastShownInSession || shownSig === workerSig) return false;
+  }
   const toast = document.getElementById?.('pwaUpdateToast');
-  if (!toast) return;
+  if (!toast) return false;
+  _pwaToastShownInSession = true;
+  _writePwaSessionFlag(_SW_TOAST_SHOWN_KEY, workerSig);
   const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
   const txtEl = document.getElementById?.('pwaUpdateToastText');
   const applyBtn = document.getElementById?.('pwaUpdateApplyBtn');
@@ -6611,6 +6927,7 @@ window.showPwaUpdateToast = function showPwaUpdateToast(worker) {
   if (applyBtn) applyBtn.disabled = false;
   toast.setAttribute?.('aria-hidden', 'false');
   toast.classList?.add('show');
+  return true;
 };
 
 window.dismissPwaUpdateToast = function dismissPwaUpdateToast() {
@@ -6628,10 +6945,12 @@ window.applyPendingPwaUpdate = function applyPendingPwaUpdate() {
   if (applyBtn) applyBtn.disabled = true;
   if (txtEl) txtEl.innerText = isZh ? '正在套用更新…' : 'Updating app…';
   _pwaUpdateReloadRequested = true;
+  _writePwaSessionFlag(_SW_USER_RELOAD_KEY, '1');
   if (_pwaWaitingWorker && typeof _pwaWaitingWorker.postMessage === 'function') {
     _pwaWaitingWorker.postMessage({ type: 'SKIP_WAITING' });
     return true;
   }
+  _removePwaSessionFlag(_SW_USER_RELOAD_KEY);
   window.location.reload();
   return false;
 };
@@ -6640,16 +6959,19 @@ window.initPwaUpdateLifecycle = function initPwaUpdateLifecycle(swContainerOverr
   const sw = swContainerOverride || (typeof navigator !== 'undefined' ? navigator.serviceWorker : null);
   if (!sw || typeof sw.register !== 'function') return Promise.resolve(null);
 
-  const hadControllerAtBoot = Boolean(sw.controller);
   _pwaUpdateReloaded = false;
   _pwaUpdateReloadRequested = false;
   _pwaWaitingWorker = null;
+  _pwaToastShownInSession = false;
 
   if (!sw._transitControllerChangeBound && typeof sw.addEventListener === 'function') {
     sw._transitControllerChangeBound = true;
     sw.addEventListener('controllerchange', () => {
       if (_pwaUpdateReloaded) return;
-      if (!hadControllerAtBoot && !_pwaUpdateReloadRequested) return;
+      // Strict one-time sessionStorage gate prevents iOS PWA background controller swaps from resetting users to Home
+      const hasUserReloadFlag = _readPwaSessionFlag(_SW_USER_RELOAD_KEY) === '1';
+      if (!hasUserReloadFlag) return;
+      _removePwaSessionFlag(_SW_USER_RELOAD_KEY);
       _pwaUpdateReloaded = true;
       window.location.reload();
     });
@@ -6660,7 +6982,7 @@ window.initPwaUpdateLifecycle = function initPwaUpdateLifecycle(swContainerOverr
     worker._transitStateBound = true;
     const onStateChange = () => {
       if (worker.state === 'installed' && sw.controller) {
-        window.showPwaUpdateToast(worker);
+        window.showPwaUpdateToast(worker, false);
       }
     };
     if (typeof worker.addEventListener === 'function') {
@@ -6674,7 +6996,7 @@ window.initPwaUpdateLifecycle = function initPwaUpdateLifecycle(swContainerOverr
     .then((reg) => {
       if (!reg) return null;
       if (reg.waiting && sw.controller) {
-        window.showPwaUpdateToast(reg.waiting);
+        window.showPwaUpdateToast(reg.waiting, false);
       }
       if (reg.installing) {
         watchInstallingWorker(reg.installing);
@@ -8020,6 +8342,11 @@ window.openCompanionAppAtCurrentStop = function(target) {
     initRouteMapFast();
     syncSettingsModalLabels();
   }
+
+  window.__INITIAL_STOPS_GPS_RESOLVED__ = true;
+  setTimeout(() => {
+    if (isHydratingInitialData) setHydratingInitialData(false);
+  }, 6000);
 
   const urlParams = new URLSearchParams(window.location.search || window.location.hash.replace(/^#/, ''));
   const extLat = parseFloat(urlParams.get('lat'));

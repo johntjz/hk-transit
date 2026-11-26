@@ -865,6 +865,198 @@ function _isOppositeCardinalWorker(a, b) {
   return (a === 'EB' && b === 'WB') || (a === 'WB' && b === 'EB') || (a === 'NB' && b === 'SB') || (a === 'SB' && b === 'NB');
 }
 
+const HK_CAMERA_LANDMARK_ANCHORS = [
+  { re: /\btm[\s-]*clk(?:l|\s*tunnel)?\s*(?:northern|north)\s*portal\b/i, lat: 22.3694, lon: 113.9585 },
+  { re: /\btm[\s-]*clk(?:l|\s*tunnel)?\s*(?:southern|south)\s*portal\b/i, lat: 22.3176, lon: 113.9498 },
+  { re: /\btm[\s-]*clkl\b|\btuen\s*mun[\s-]*chek\s*lap\s*kok\b/i, lat: 22.3694, lon: 113.9585 },
+  { re: /\blung\s*mun\s*(?:rd|road)\s*roundabout\b/i, lat: 22.3712, lon: 113.9562 },
+  { re: /\blung\s*mun\s*(?:rd|road)\b/i, lat: 22.3782, lon: 113.9612 },
+  { re: /\bwong\s*chu\s*(?:rd|road)\b/i, lat: 22.3822, lon: 113.9675 },
+  { re: /\btuen\s*mun\s*(?:rd|road)\b/i, lat: 22.3885, lon: 113.9765 },
+  { re: /\bhzmb\b|\bhong\s*kong\s*port\b|\bshun\s*long\s*(?:rd|road)\b/i, lat: 22.3168, lon: 113.9502 },
+  { re: /\bnorth\s*lantau\s*(?:hwy|highway)\b/i, lat: 22.2952, lon: 113.9438 },
+  { re: /\btung\s*chung\b/i, lat: 22.2892, lon: 113.9416 },
+  { re: /\bairport\b|\bchek\s*lap\s*kok\b/i, lat: 22.3080, lon: 113.9185 },
+  { re: /\btsing\s*ma\b|\blantau\s*link\b/i, lat: 22.3514, lon: 114.0737 },
+  { re: /\bting\s*kau\b/i, lat: 22.3688, lon: 114.0793 },
+  { re: /\btai\s*lam\s*tunnel\b/i, lat: 22.4048, lon: 114.0598 },
+  { re: /\byuen\s*long\s*(?:hwy|highway)\b/i, lat: 22.4388, lon: 114.0110 },
+  { re: /\btolo\s*(?:hwy|highway)\b/i, lat: 22.4265, lon: 114.2055 },
+  { re: /\blion\s*rock\s*tunnel\b/i, lat: 22.3568, lon: 114.1755 },
+  { re: /\btate'?s\s*cairn\b/i, lat: 22.3698, lon: 114.2125 },
+  { re: /\bshing\s*mun\s*tunnel\b/i, lat: 22.3792, lon: 114.1562 },
+  { re: /\bcross[\s-]*harbour\s*tunnel\b|\bcht\b/i, lat: 22.2918, lon: 114.1818 },
+  { re: /\bwestern\s*harbour\b|\bwhc\b/i, lat: 22.2955, lon: 114.1525 },
+  { re: /\beastern\s*harbour\b|\behc\b/i, lat: 22.2958, lon: 114.2225 },
+  { re: /\baberdeen\s*tunnel\b/i, lat: 22.2562, lon: 114.1755 },
+  { re: /\btseung\s*kwan\s*o\s*tunnel\b|\btko\s*tunnel\b/i, lat: 22.3182, lon: 114.2465 },
+  { re: /\bcheung\s*tsing\b/i, lat: 22.3515, lon: 114.0985 },
+  { re: /\beagle'?s\s*nest\b|\btsing\s*sha\b/i, lat: 22.3502, lon: 114.1538 },
+  { re: /\bcentral[\s-]*wan\s*chai\s*bypass\b/i, lat: 22.2852, lon: 114.1745 }
+];
+
+function _normalizeBearingDegWorker(deg) {
+  const n = Number(deg);
+  if (!Number.isFinite(n)) return 0;
+  return ((Math.round(n) % 360) + 360) % 360;
+}
+
+function _cardinalToDegWorker(dirCode) {
+  if (dirCode === 'NB') return 0;
+  if (dirCode === 'NE') return 45;
+  if (dirCode === 'EB') return 90;
+  if (dirCode === 'SE') return 135;
+  if (dirCode === 'SB') return 180;
+  if (dirCode === 'SW') return 225;
+  if (dirCode === 'WB') return 270;
+  if (dirCode === 'NW') return 315;
+  return null;
+}
+
+function computeCameraBearingDegWorker(cam, detectorList = [], cameraList = []) {
+  if (!cam) return 0;
+  const cLat = Number(cam.lat);
+  const cLon = Number(cam.lon);
+  const desc = String(cam.desc || '');
+  const cRoad = _extractRoadCoreWorker(desc);
+
+  // 1. Exact paired detector rot bearing
+  if (Array.isArray(detectorList) && detectorList.length) {
+    for (let i = 0; i < detectorList.length; i++) {
+      const d = detectorList[i];
+      if (!d) continue;
+      if ((d.id === cam.key || d.camKey === cam.key) && Number.isFinite(Number(d.rot))) {
+        return _normalizeBearingDegWorker(d.rot);
+      }
+    }
+  }
+
+  // 2. Explicit cardinal / intercardinal bound from camera description, refined by nearby compatible detector rot
+  let textDir = cam.dir || _extractCardinalDirWorker(desc, null);
+  if (!textDir) {
+    if (/\bnorth[\s-]*east(?:bound)?\b/i.test(desc)) textDir = 'NE';
+    else if (/\bnorth[\s-]*west(?:bound)?\b/i.test(desc)) textDir = 'NW';
+    else if (/\bsouth[\s-]*east(?:bound)?\b/i.test(desc)) textDir = 'SE';
+    else if (/\bsouth[\s-]*west(?:bound)?\b/i.test(desc)) textDir = 'SW';
+  }
+  const textDeg = _cardinalToDegWorker(textDir);
+  if (textDeg !== null) {
+    if (Number.isFinite(cLat) && Number.isFinite(cLon) && Array.isArray(detectorList) && detectorList.length) {
+      let bestDetRot = null;
+      let bestScore = Infinity;
+      for (let i = 0; i < detectorList.length; i++) {
+        const d = detectorList[i];
+        if (!d || !Number.isFinite(Number(d.rot)) || !Number.isFinite(Number(d.lat)) || !Number.isFinite(Number(d.lon))) continue;
+        if (Math.abs(d.lat - cLat) > 0.007 || Math.abs(d.lon - cLon) > 0.007) continue;
+        const dKm = haversineKmWorker(cLat, cLon, d.lat, d.lon);
+        if (dKm > 0.65) continue;
+        const dAng = angDiffDegWorker(textDeg, Number(d.rot));
+        if (dAng > 55) continue;
+        const dRoad = _extractRoadCoreWorker(d.roadEn);
+        const sameRoad = Boolean(cRoad && dRoad && (cRoad === dRoad || cRoad.includes(dRoad) || dRoad.includes(cRoad)));
+        const score = dKm + (sameRoad ? 0 : 0.25) + dAng * 0.002;
+        if (score < bestScore) {
+          bestScore = score;
+          bestDetRot = Number(d.rot);
+        }
+      }
+      if (bestDetRot !== null) return _normalizeBearingDegWorker(bestDetRot);
+    }
+    return textDeg;
+  }
+
+  // 3. Standalone intersection / roundabout / tunnel portal cameras:
+  //    infer bearing from vector to named landmark / cross-road in description
+  if (Number.isFinite(cLat) && Number.isFinite(cLon) && desc) {
+    const landmarkFocusMatch = desc.match(/(?:\bnear\b|\btowards?\b|\bfacing\b|\bat\b|\/)\s*([^(\-–,]+)/i);
+    const focusPhrase = landmarkFocusMatch ? landmarkFocusMatch[1].trim() : '';
+
+    // 3a. Check named focus phrase first (e.g. "near TM-CLKL" in TC002F), then full description
+    const candidatePhrases = focusPhrase ? [focusPhrase, desc] : [desc];
+    for (let pIdx = 0; pIdx < candidatePhrases.length; pIdx++) {
+      const phrase = candidatePhrases[pIdx];
+      for (let aIdx = 0; aIdx < HK_CAMERA_LANDMARK_ANCHORS.length; aIdx++) {
+        const anchor = HK_CAMERA_LANDMARK_ANCHORS[aIdx];
+        if (!anchor.re.test(phrase)) continue;
+        const distKm = haversineKmWorker(cLat, cLon, anchor.lat, anchor.lon);
+        if (distKm >= 0.025 && distKm <= 8.0) {
+          return _normalizeBearingDegWorker(bearingDegWorker(cLat, cLon, anchor.lat, anchor.lon));
+        }
+      }
+    }
+
+    // 3b. Cross-road token match against nearby detectors or sibling cameras within 1.5 km
+    const crossCore = _extractRoadCoreWorker(focusPhrase || '');
+    if (crossCore && crossCore.length >= 4) {
+      let bestTarget = null;
+      let bestDistKm = Infinity;
+      for (let i = 0; i < detectorList.length; i++) {
+        const d = detectorList[i];
+        if (!d || !Number.isFinite(Number(d.lat)) || !Number.isFinite(Number(d.lon))) continue;
+        const dKm = haversineKmWorker(cLat, cLon, d.lat, d.lon);
+        if (dKm < 0.025 || dKm > 1.5) continue;
+        const dText = String(d.roadEn || '').toLowerCase();
+        if (dText.includes(crossCore) && dKm < bestDistKm) {
+          bestDistKm = dKm;
+          bestTarget = d;
+        }
+      }
+      if (!bestTarget && Array.isArray(cameraList)) {
+        for (let i = 0; i < cameraList.length; i++) {
+          const other = cameraList[i];
+          if (!other || other.key === cam.key) continue;
+          const dKm = haversineKmWorker(cLat, cLon, other.lat, other.lon);
+          if (dKm < 0.025 || dKm > 1.5) continue;
+          if (String(other.desc || '').toLowerCase().includes(crossCore) && dKm < bestDistKm) {
+            bestDistKm = dKm;
+            bestTarget = other;
+          }
+        }
+      }
+      if (bestTarget) {
+        return _normalizeBearingDegWorker(bearingDegWorker(cLat, cLon, bestTarget.lat, bestTarget.lon));
+      }
+    }
+
+    // 4. Nearest road segment tangent / detector vector fallback
+    let nearestSameRoadDet = null;
+    let nearestSameRoadDist = Infinity;
+    let nearestAnyDet = null;
+    let nearestAnyDist = Infinity;
+    for (let i = 0; i < detectorList.length; i++) {
+      const d = detectorList[i];
+      if (!d || !Number.isFinite(Number(d.lat)) || !Number.isFinite(Number(d.lon))) continue;
+      if (Math.abs(d.lat - cLat) > 0.015 || Math.abs(d.lon - cLon) > 0.015) continue;
+      const dKm = haversineKmWorker(cLat, cLon, d.lat, d.lon);
+      if (dKm > 1.4) continue;
+      const dRoad = _extractRoadCoreWorker(d.roadEn);
+      const sameRoad = Boolean(cRoad && dRoad && (cRoad === dRoad || cRoad.includes(dRoad) || dRoad.includes(cRoad)));
+      if (sameRoad && dKm < nearestSameRoadDist) {
+        nearestSameRoadDist = dKm;
+        nearestSameRoadDet = d;
+      }
+      if (dKm < nearestAnyDist) {
+        nearestAnyDist = dKm;
+        nearestAnyDet = d;
+      }
+    }
+    const chosenDet = nearestSameRoadDet || nearestAnyDet;
+    if (chosenDet) {
+      if (Number.isFinite(Number(chosenDet.rot)) && nearestSameRoadDist <= 0.65) {
+        return _normalizeBearingDegWorker(chosenDet.rot);
+      }
+      if (haversineKmWorker(cLat, cLon, chosenDet.lat, chosenDet.lon) >= 0.02) {
+        return _normalizeBearingDegWorker(bearingDegWorker(cLat, cLon, chosenDet.lat, chosenDet.lon));
+      }
+      if (Number.isFinite(Number(chosenDet.rot))) {
+        return _normalizeBearingDegWorker(chosenDet.rot);
+      }
+    }
+  }
+
+  return 0;
+}
+
 async function getTrafficStaticMetadata() {
   const now = Date.now();
   if (_cachedTrafficStaticMeta && (now - _cachedTrafficStaticMetaTs) < 6 * 3600 * 1000) {
@@ -894,6 +1086,7 @@ async function getTrafficStaticMetadata() {
   }
 
   // Pre-bind official TD road snapshot camera using exact ID first, then same-road/direction proximity (<= 0.35 km)
+  const detectorList = Array.from(detectorMeta.values());
   if (cameras.length && detectorMeta.size) {
     const camByKey = new Map();
     for (let i = 0; i < cameras.length; i++) {
@@ -933,6 +1126,17 @@ async function getTrafficStaticMetadata() {
         det.camDesc = bestCam.desc;
       }
     }
+  }
+
+  // Compute directional viewing bearing (0-359 deg) for every TD camera (paired detectors, bounds & roundabout/portal landmarks)
+  if (cameras.length) {
+    cameras = cameras.map((c) => {
+      const bearingDeg = computeCameraBearingDegWorker(c, detectorList, cameras);
+      return {
+        ...c,
+        bearingDeg
+      };
+    });
   }
 
   if (detectorMeta.size > 0) {
@@ -1328,6 +1532,37 @@ async function handleBusGeomRequest(urlObj) {
   );
 }
 
+async function handleCameraImageProxy(urlObj) {
+  const key = String(urlObj.searchParams.get('key') || '').trim();
+  // Strict allowlist validation against HKSAR TD camera key format (prevents SSRF)
+  if (!/^[A-Z0-9_-]{3,16}$/i.test(key)) {
+    return new Response(JSON.stringify({ ok: false, error: 'Invalid camera key' }), {
+      status: 400,
+      headers: CORS_HEADERS
+    });
+  }
+  const upstreamUrl = `https://tdcctv.data.one.gov.hk/${encodeURIComponent(key)}.JPG`;
+  const res = await fetchWithTimeout(upstreamUrl, 4500, { Accept: 'image/jpeg,image/*;q=0.8' }, 30);
+  if (!res || !res.ok) {
+    return new Response(JSON.stringify({ ok: false, error: 'Camera feed unavailable' }), {
+      status: 502,
+      headers: { ...CORS_HEADERS, 'Cache-Control': 'no-store' }
+    });
+  }
+  const buf = await res.arrayBuffer();
+  const contentType = res.headers.get('content-type') || 'image/jpeg';
+  return new Response(buf, {
+    status: 200,
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, OPTIONS',
+      'Content-Type': contentType,
+      'Cache-Control': 'public, max-age=30',
+      'X-Cam-Bytes': String(buf.byteLength)
+    }
+  });
+}
+
 export async function onRequest(context) {
   const { request } = context;
   if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS_HEADERS });
@@ -1338,6 +1573,8 @@ export async function onRequest(context) {
   if (action === 'ferry_live') return handleFerryLiveRequest(url);
 
   if (action === 'traffic_live') return handleTrafficLiveRequest();
+
+  if (action === 'cam_img') return handleCameraImageProxy(url);
 
   if (action === 'bus_geom') return handleBusGeomRequest(url);
 

@@ -4356,6 +4356,311 @@ test('Traffic Update 4: Camera modal wraps 2-line titles, shows explicit EB/WB/N
   assert.equal(matched.spd, 68);
 });
 
+test('Commuter Update 1: iOS PWA controllerchange strictly requires sw-user-reload sessionStorage flag, suppresses duplicate toasts, and shows loading skeleton during isHydratingInitialData', async () => {
+  const html = fs.readFileSync('index.html', 'utf8');
+  const swCode = fs.readFileSync('public/sw.js', 'utf8');
+
+  // 1. sw.js never calls skipWaiting() in install and only activates on SKIP_WAITING message
+  const installBlock = swCode.match(/addEventListener\('install'[\s\S]*?\n\}\);/)?.[0] || '';
+  const installCodeOnly = installBlock.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.ok(!installCodeOnly.includes('self.skipWaiting()'), 'sw.js install must never call skipWaiting()');
+  assert.ok(swCode.includes("data.type === 'SKIP_WAITING'") && swCode.includes('self.skipWaiting()'), 'sw.js must honor SKIP_WAITING message');
+
+  // 2. index.html tracks isHydratingInitialData and renders .boot-skeleton-wrap instead of No bus / No stops during boot
+  assert.ok(html.includes('let isHydratingInitialData = true;') && html.includes('renderBootLoadingSkeletonHtml'), 'index.html must track isHydratingInitialData and provide skeleton renderer');
+  assert.ok(html.includes('if (isHydratingInitialData && !window.__INITIAL_STOPS_GPS_RESOLVED__)'), 'renderMainNearby must show loading skeleton instead of empty text during initial hydration');
+
+  // 3. Run PWA update lifecycle in VM with explicit sessionStorage mock
+  const fnBlockMatch = html.match(/function getAppBuildVersion\(\)[\s\S]*?window\.initPwaUpdateLifecycle = function initPwaUpdateLifecycle[\s\S]*?\n\};/);
+  assert.ok(fnBlockMatch, 'Must extract PWA update lifecycle functions');
+
+  const ssMap = new Map<string, string>();
+  const mockSessionStorage = {
+    getItem: (k: string) => (ssMap.has(k) ? ssMap.get(k)! : null),
+    setItem: (k: string, v: string) => { ssMap.set(k, String(v)); },
+    removeItem: (k: string) => { ssMap.delete(k); },
+  };
+  let toastShowCalls = 0;
+  const elements: Record<string, any> = {
+    pwaUpdateToast: {
+      classes: new Set<string>(),
+      attrs: {} as Record<string, string>,
+      classList: {
+        add(c: string) { if (c === 'show') toastShowCalls++; elements.pwaUpdateToast.classes.add(c); },
+        remove(c: string) { elements.pwaUpdateToast.classes.delete(c); },
+      },
+      setAttribute(k: string, v: string) { elements.pwaUpdateToast.attrs[k] = v; },
+    },
+    pwaUpdateToastText: { innerText: '' },
+    pwaUpdateApplyBtn: { disabled: false },
+  };
+
+  let reloadCount = 0;
+  const ctx: any = {
+    APP_VERSION: '2026-11-26 19:30 HKT',
+    currentLang: 'en',
+    sessionStorage: mockSessionStorage,
+    document: {
+      readyState: 'complete',
+      visibilityState: 'visible',
+      querySelector: () => null,
+      getElementById: (id: string) => elements[id] || null,
+      addEventListener: () => {},
+    },
+    window: {
+      sessionStorage: mockSessionStorage,
+      location: { reload: () => { reloadCount++; } },
+      addEventListener: () => {},
+    },
+  };
+  vm.createContext(ctx);
+  vm.runInContext(fnBlockMatch[0], ctx);
+
+  const swListeners: Record<string, Function> = {};
+  const regListeners: Record<string, Function> = {};
+  const postedMsgs: any[] = [];
+  const waitingWorker: any = {
+    scriptURL: 'https://example.com/sw.js?v=2',
+    state: 'installed',
+    postMessage: (m: any) => postedMsgs.push(m),
+    addEventListener: () => {},
+  };
+  const activeSw: any = {
+    controller: { id: 'existing-controller' },
+    addEventListener: (ev: string, fn: Function) => { swListeners[ev] = fn; },
+    register: async () => ({
+      waiting: waitingWorker,
+      installing: null,
+      addEventListener: (ev: string, fn: Function) => { regListeners[ev] = fn; },
+    }),
+  };
+
+  await ctx.window.initPwaUpdateLifecycle(activeSw);
+  assert.equal(toastShowCalls, 1, 'Toast should show once when waiting worker is present');
+
+  // Unprompted iOS controllerchange WITHOUT sw-user-reload flag must NOT reload!
+  swListeners.controllerchange();
+  assert.equal(reloadCount, 0, 'Unprompted controllerchange without sw-user-reload=1 must NEVER trigger reload');
+
+  // Duplicate update notification in same session must be suppressed
+  ctx.window.dismissPwaUpdateToast();
+  const secondShow = ctx.window.showPwaUpdateToast(waitingWorker);
+  assert.equal(secondShow, false, 'Duplicate update toast in same session must be suppressed');
+  assert.equal(toastShowCalls, 1, 'Toast must not flash a second time in the same session');
+
+  // Explicit user tap sets sw-user-reload=1, posts SKIP_WAITING, and controllerchange deletes flag + reloads once
+  ctx.window.applyPendingPwaUpdate();
+  assert.equal(mockSessionStorage.getItem('sw-user-reload'), '1', 'Tapping update must set sw-user-reload=1');
+  assert.equal(postedMsgs[0]?.type, 'SKIP_WAITING');
+
+  swListeners.controllerchange();
+  assert.equal(reloadCount, 1, 'controllerchange with sw-user-reload=1 must reload once');
+  assert.equal(mockSessionStorage.getItem('sw-user-reload'), null, 'sw-user-reload must be deleted immediately before reload');
+});
+
+test('Commuter Updates 2 & 3: Directional camera bearingDeg & FOV cones on Global/Route Maps, clickable 350m corridor cameras, Traffic & Cams toggle, and dashed slate-blue unmonitored roads', () => {
+  const sb = loadHardcodeAndPlannerSandbox();
+  const mapSrc = fs.readFileSync('public/map.js', 'utf8');
+  const html = fs.readFileSync('index.html', 'utf8');
+  const workerSrc = fs.readFileSync('functions/api/worker.js', 'utf8');
+
+  // 1. Verify Route Map toggle button label updated to Traffic & Cams ON / Traffic & Cams
+  assert.ok(html.includes('🚦 Traffic &amp; Cams ON') || html.includes('🚦 Traffic & Cams ON'), 'Route map button must show Traffic & Cams ON');
+  assert.ok(html.includes("'🚦 Traffic & Cams ON'") && html.includes("'🚦 Traffic & Cams'"), 'syncTrafficToggleButtonsUI must toggle Traffic & Cams ON / Traffic & Cams');
+
+  // 2. Verify worker computes bearingDeg for cameras and keeps strictly 1 export
+  assert.ok(workerSrc.includes('function computeCameraBearingDegWorker') && workerSrc.includes('bearingDeg'), 'worker.js must compute bearingDeg for every camera');
+  const workerExports = workerSrc.split('\n').filter((l) => /^\s*export\b/.test(l));
+  assert.equal(workerExports.length, 1, 'functions/api/worker.js must maintain strictly one export');
+
+  // 3. Load map.js helpers in sandbox to test resolveCameraBearingDeg, buildDirectionalCameraDivIcon, dashed unmonitored GeoJSON, and 350m route cameras
+  const markersAdded: any[] = [];
+  const geoJsonStyles: any[] = [];
+  const modalOpenedCams: any[] = [];
+  const mockMap: any = {
+    getZoom: () => 15,
+    getBounds: () => ({ pad: () => ({ contains: () => true }), contains: () => true }),
+    latLngToContainerPoint: (ll: [number, number]) => ({ x: ll[1] * 10000, y: ll[0] * 10000 }),
+    removeLayer: () => {},
+    on: () => {},
+  };
+  const makeMockLayer = () => ({
+    addTo: () => makeMockLayer(),
+    addLayer: () => {},
+    clearLayers: () => {},
+    bindTooltip: () => makeMockLayer(),
+    bindPopup: () => makeMockLayer(),
+    on: function (ev: string, fn: Function) { (this as any)._handlers = (this as any)._handlers || {}; (this as any)._handlers[ev] = fn; return this; },
+    bringToFront: () => {},
+  });
+  sb.ctx.L = {
+    layerGroup: (arr?: any[]) => ({ ...makeMockLayer(), _layers: arr || [] }),
+    polyline: () => makeMockLayer(),
+    divIcon: (opts: any) => opts,
+    marker: (latlng: any, opts: any) => {
+      const m: any = { latlng, opts, _handlers: {}, addTo: () => { markersAdded.push(m); return m; }, bindTooltip: () => m, bindPopup: () => m, on: (ev: string, fn: Function) => { m._handlers[ev] = fn; return m; } };
+      return m;
+    },
+    geoJSON: (gj: any, opts: any) => {
+      (gj.features || []).forEach((f: any) => {
+        if (typeof opts?.style === 'function') geoJsonStyles.push({ feat: f, style: opts.style(f) });
+      });
+      return makeMockLayer();
+    },
+  };
+  sb.ctx.window.L = sb.ctx.L;
+  sb.ctx.window.mapInstance = mockMap;
+  sb.ctx.window.trafficLayerEnabled = true;
+  sb.ctx.window.openTrafficCameraModal = (c: any) => modalOpenedCams.push(c);
+  sb.ctx.currentLang = 'en';
+  sb.ctx.escapeHtml = (s: any) => String(s ?? '');
+  sb.ctx.calculateDistanceKm = sb.ctx.window.calculateDistanceKm;
+
+  vm.runInContext(mapSrc, sb.ctx);
+
+  // 4. Test bearingDeg resolution across paired detector, explicit bound, and standalone roundabout/portal cameras
+  const dets = [
+    { id: 'TDS90061', camKey: 'TDS90061', lat: 22.4362, lon: 114.0062, rot: 74, spd: 68, roadEn: 'Yuen Long Highway - Eastbound' },
+    { id: 'TM_DET1', lat: 22.3820, lon: 113.9680, rot: 185, spd: 52, roadEn: 'Wong Chu Road - Southbound' },
+  ];
+  const brgPaired = sb.ctx.window.resolveCameraBearingDeg({ key: 'TDS90061', lat: 22.4362, lon: 114.0062, desc: 'Yuen Long Highway - Eastbound' }, dets);
+  assert.equal(brgPaired, 74, 'Paired detector rot must be used directly');
+
+  const brgBoundOnly = sb.ctx.window.resolveCameraBearingDeg({ key: 'WB_CAM', lat: 22.2800, lon: 114.1500, desc: 'Connaught Road Central - Westbound' }, []);
+  assert.equal(brgBoundOnly, 270, 'Westbound camera description must resolve to 270 deg');
+
+  // Standalone roundabout & portal cameras without a bound (TC002F, TC001F, RT116F, TM103F)
+  const tc002f = { key: 'TC002F', lat: 22.3735, lon: 113.9555, desc: 'Lung Mun Rd Roundabout near TM-CLKL' };
+  const tc001f = { key: 'TC001F', lat: 22.3135, lon: 113.9480, desc: 'TM-CLK Tunnel Southern Portal' };
+  const brgTC002F = sb.ctx.window.resolveCameraBearingDeg(tc002f, dets);
+  const brgTC001F = sb.ctx.window.resolveCameraBearingDeg(tc001f, dets);
+  assert.ok(brgTC002F > 120 && brgTC002F < 175, `TC002F looking from Lung Mun Rd Roundabout toward TM-CLKL portal should point SE/S (~140-165°), got ${brgTC002F}°`);
+  assert.ok(brgTC001F >= 0 && brgTC001F < 45, `TC001F looking toward TM-CLK Southern Portal should point NNE (~10-35°), got ${brgTC001F}°`);
+
+  // Verify directional SVG cone/arrow icon renders with exact transform:rotate(deg)
+  const iconObj = sb.ctx.window.buildDirectionalCameraDivIcon(tc002f, brgTC002F, false, true);
+  assert.ok(iconObj.html.includes(`transform:rotate(${brgTC002F}deg)`), 'Camera marker SVG cone/arrow must rotate to bearingDeg');
+  assert.ok(iconObj.html.includes('cam-fov-svg') && iconObj.html.includes('<path'), 'Camera marker must include translucent FOV cone and arrowhead SVG paths');
+
+  // 5. Verify dashed slate-blue styling (#3b82f6, dashArray: '6, 6') on unmonitored segments vs crisp solid speed segments
+  const sampleRouteCoords = [
+    [22.3712, 113.9562], // Lung Mun Rd Roundabout (unmonitored)
+    [22.3735, 113.9555],
+    [22.3820, 113.9680], // Wong Chu Rd (monitored by TM_DET1)
+    [22.3850, 113.9720],
+  ];
+  sb.ctx.window.buildDetailBusPolylineLayer = sb.ctx.buildDetailBusPolylineLayer;
+  sb.ctx.buildDetailBusPolylineLayer(sampleRouteCoords, [], 0, '#FF3B30');
+  const unmonitoredStyles = geoJsonStyles.filter((x) => x.feat.properties.hasSpeedData === false);
+  const monitoredStyles = geoJsonStyles.filter((x) => x.feat.properties.hasSpeedData === true);
+  assert.ok(unmonitoredStyles.length > 0, 'Route with unmonitored roundabout segment must emit hasSpeedData=false feature');
+  assert.equal(unmonitoredStyles[0].style.color, '#3b82f6', 'Unmonitored segment must use slate-blue #3b82f6');
+  assert.equal(unmonitoredStyles[0].style.dashArray, '6, 6', 'Unmonitored segment must render with dashed line (6, 6)');
+  if (monitoredStyles.length > 0) {
+    assert.equal(monitoredStyles[0].style.dashArray, null, 'Monitored live speed segment must stay solid');
+  }
+
+  // 6. Verify Route Map renders clickable directional camera markers within 350m (e.g. TC002F) and excludes distant cameras
+  sb.ctx.window.mapInstance = mockMap;
+  sb.ctx.window.__LIVE_TRAFFIC_DETECTORS__ = dets;
+  sb.ctx.window.__LIVE_TRAFFIC_CAMERAS__ = [
+    tc002f,
+    { key: 'FAR_CAM', lat: 22.2800, lon: 114.2200, desc: 'Chai Wan Rd - Eastbound' },
+  ];
+  vm.runInContext(`
+    currentDetailCorridorMeta = {
+      isBusRoute: true,
+      isRoadSnapped: true,
+      hasHighwaySpan: true,
+      coords: ${JSON.stringify(sampleRouteCoords)},
+      bboxes: [{ minLat: 22.36, maxLat: 22.39, minLon: 113.94, maxLon: 113.98 }]
+    };
+    renderTrafficOverlayOnMap(window.mapInstance, true);
+  `, sb.ctx);
+  const tc002fMarker = markersAdded.find((m) => String(m.opts?.icon?.html || '').includes('data-cam-key="TC002F"'));
+  const farCamMarker = markersAdded.find((m) => String(m.opts?.icon?.html || '').includes('data-cam-key="FAR_CAM"'));
+  assert.ok(tc002fMarker, 'TC002F within 350m of route corridor must render as a directional camera marker on Route Map');
+  assert.equal(farCamMarker, undefined, 'Distant camera >350m away must NOT render on Route Map');
+  tc002fMarker._handlers.click?.({});
+  assert.equal(modalOpenedCams.length, 1, 'Clicking route camera marker must invoke openTrafficCameraModal');
+  assert.equal(modalOpenedCams[0].key, 'TC002F');
+});
+
+test('Commuter Update 4: Graceful Video Lost pixel detection (no OCR) & strict worker cam_img key allowlist', () => {
+  const html = fs.readFileSync('index.html', 'utf8');
+  const workerSrc = fs.readFileSync('functions/api/worker.js', 'utf8');
+
+  // 1. Verify worker cam_img proxy strictly validates key format against SSRF
+  assert.ok(workerSrc.includes("if (action === 'cam_img') return handleCameraImageProxy(url);"), 'worker.js must route action=cam_img');
+  assert.ok(workerSrc.includes('/^[A-Z0-9_-]{3,16}$/i'), 'worker.js cam_img proxy must enforce strict camera key allowlist');
+
+  // 2. Extract detectVideoLostFromPixels from index.html and test synthetic HKSAR TD frames
+  const fnMatch = html.match(/function detectVideoLostFromPixels\(rgba, width, height\)[\s\S]*?window\.detectVideoLostFromPixels = detectVideoLostFromPixels;/);
+  assert.ok(fnMatch, 'Must find detectVideoLostFromPixels in index.html');
+  const ctx: any = { window: {} };
+  vm.createContext(ctx);
+  vm.runInContext(fnMatch[0], ctx);
+  const detect = ctx.window.detectVideoLostFromPixels;
+
+  const W = 64, H = 48;
+  // Case A: Classic HKSAR TD black "Video Lost" frame (pure black + small centered white text band)
+  const blackLost = new Uint8ClampedArray(W * H * 4);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = (y * W + x) * 4;
+      const isCenterText = (y >= 21 && y <= 26 && x >= 18 && x <= 46 && (x % 3 === 0));
+      const v = isCenterText ? 240 : 6;
+      blackLost[i] = v; blackLost[i + 1] = v; blackLost[i + 2] = v; blackLost[i + 3] = 255;
+    }
+  }
+  const resBlackLost = detect(blackLost, W, H);
+  assert.equal(resBlackLost.isVideoLost, true, 'Black HKSAR TD Video Lost placeholder with centered white text must be flagged');
+
+  // Case B: Uniform flat-gray "Feed Unavailable" slate
+  const grayLost = new Uint8ClampedArray(W * H * 4);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = (y * W + x) * 4;
+      const isCenterText = (y >= 22 && y <= 25 && x >= 20 && x <= 44 && (x % 2 === 0));
+      const v = isCenterText ? 235 : 96;
+      grayLost[i] = v; grayLost[i + 1] = v; grayLost[i + 2] = v; grayLost[i + 3] = 255;
+    }
+  }
+  const resGrayLost = detect(grayLost, W, H);
+  assert.equal(resGrayLost.isVideoLost, true, 'Uniform flat-gray placeholder slate must be flagged as Video Lost');
+
+  // Case C: Real daytime highway image (sky top, greenery/buildings sides, asphalt + vehicles bottom)
+  const liveDay = new Uint8ClampedArray(W * H * 4);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = (y * W + x) * 4;
+      if (y < 14) { liveDay[i] = 150 + (x % 20); liveDay[i + 1] = 190; liveDay[i + 2] = 235; }
+      else if (x < 12 || x > 52) { liveDay[i] = 55; liveDay[i + 1] = 110 + (y % 25); liveDay[i + 2] = 60; }
+      else { const road = 75 + ((x * 7 + y * 5) % 60); liveDay[i] = road; liveDay[i + 1] = road; liveDay[i + 2] = road + 5; }
+      liveDay[i + 3] = 255;
+    }
+  }
+  const resDay = detect(liveDay, W, H);
+  assert.equal(resDay.isVideoLost, false, 'Real daytime highway camera frame must pass as live');
+
+  // Case D: Real nighttime highway image (dark sky, warm amber streetlights, bright headlights & road gradient)
+  const liveNight = new Uint8ClampedArray(W * H * 4);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = (y * W + x) * 4;
+      const isLamp = (y === 6 || y === 10) && (x % 11 === 0);
+      const isRoadGlow = y >= 28;
+      if (isLamp) { liveNight[i] = 255; liveNight[i + 1] = 210; liveNight[i + 2] = 110; }
+      else if (isRoadGlow) { liveNight[i] = 48 + (x % 35); liveNight[i + 1] = 44 + (y % 25); liveNight[i + 2] = 38; }
+      else { liveNight[i] = 18 + (x % 14); liveNight[i + 1] = 24 + (y % 18); liveNight[i + 2] = 45 + (y % 20); }
+      liveNight[i + 3] = 255;
+    }
+  }
+  const resNight = detect(liveNight, W, H);
+  assert.equal(resNight.isVideoLost, false, 'Real nighttime highway camera frame must NOT trigger false Video Lost');
+});
+
+
 
 
 

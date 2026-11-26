@@ -30,8 +30,8 @@ async function startServer() {
       webRes.headers.forEach((val, key) => {
         res.setHeader(key, val);
       });
-      const bodyText = await webRes.text();
-      res.send(bodyText);
+      const bodyBuf = Buffer.from(await webRes.arrayBuffer());
+      res.send(bodyBuf);
     } catch (err) {
       res.status(500).json({ ok: false, error: 'Worker proxy error' });
     }

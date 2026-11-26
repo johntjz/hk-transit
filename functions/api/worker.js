@@ -886,6 +886,125 @@ async function getTrafficStaticMetadata() {
   return _cachedTrafficStaticMeta || { detectorMeta, cameras };
 }
 
+function getTrafficSpeedColorHexWorker(speedKmh) {
+  if (speedKmh === null || speedKmh === undefined) return '#8E8E93';
+  const s = Number(speedKmh);
+  if (!Number.isFinite(s)) return '#8E8E93';
+  if (s < 20) return '#FF3B30';
+  if (s <= 40) return '#FFCC00';
+  return '#34C759';
+}
+
+function projectPointMetersWorker(lat, lon, bearingDeg, meters) {
+  const rad = (Number(bearingDeg) || 0) * Math.PI / 180;
+  const dLat = (meters * Math.cos(rad)) / 111111;
+  const dLon = (meters * Math.sin(rad)) / (111111 * Math.max(0.2, Math.cos(lat * Math.PI / 180)));
+  return [Number((lat + dLat).toFixed(6)), Number((lon + dLon).toFixed(6))];
+}
+
+function angDiffDegWorker(a, b) {
+  const d = Math.abs(((Number(a) || 0) - (Number(b) || 0)) % 360);
+  return d > 180 ? 360 - d : d;
+}
+
+function bearingDegWorker(lat1, lon1, lat2, lon2) {
+  const toRad = Math.PI / 180;
+  const dLon = (lon2 - lon1) * toRad;
+  const y = Math.sin(dLon) * Math.cos(lat2 * toRad);
+  const x = Math.cos(lat1 * toRad) * Math.sin(lat2 * toRad) - Math.sin(lat1 * toRad) * Math.cos(lat2 * toRad) * Math.cos(dLon);
+  return ((Math.atan2(y, x) * 180 / Math.PI) + 360) % 360;
+}
+
+function buildWorkerSpeedMapGeoJson(detectorMeta, combinedLive) {
+  const features = [];
+  const allEntries = [];
+  for (const [id, det] of detectorMeta.entries()) {
+    const reading = combinedLive.get(id);
+    const spd = reading ? reading.speed : null;
+    const occ = reading ? reading.occ : 0;
+    const tier = reading ? classifyDetectorCongestion(reading.speed, reading.occ) : 'NO_DATA';
+    const color = getTrafficSpeedColorHexWorker(spd);
+    // Offset slightly left-hand (12m) for HK left-hand traffic separation
+    const leftBrg = ((Number(det.rot) || 0) + 270) % 360;
+    const [cLat, cLon] = projectPointMetersWorker(det.lat, det.lon, leftBrg, 12);
+    allEntries.push({
+      id,
+      lat: det.lat,
+      lon: det.lon,
+      cLat,
+      cLon,
+      rot: Number(det.rot) || 0,
+      spd,
+      occ,
+      dir: det.dir || '',
+      roadEn: det.roadEn || '',
+      roadTc: det.roadTc || det.roadEn || '',
+      roadCore: String(det.roadEn || '').split(/\s+near\s+|\s+-\s+|\s*\/\s*/i)[0].trim().toLowerCase(),
+      tier,
+      color,
+      camKey: det.camKey || ''
+    });
+  }
+
+  // Group by road core name to stitch adjacent same-direction strategic detectors into continuous road links
+  const byRoad = new Map();
+  for (let i = 0; i < allEntries.length; i++) {
+    const e = allEntries[i];
+    const rk = e.roadCore || e.id;
+    if (!byRoad.has(rk)) byRoad.set(rk, []);
+    byRoad.get(rk).push(e);
+  }
+
+  for (const list of byRoad.values()) {
+    for (let i = 0; i < list.length; i++) {
+      const a = list[i];
+      let bestNext = null;
+      let bestDistKm = Infinity;
+      for (let j = 0; j < list.length; j++) {
+        if (i === j) continue;
+        const b = list[j];
+        if (angDiffDegWorker(a.rot, b.rot) > 42) continue;
+        const dKm = haversineKmWorker(a.lat, a.lon, b.lat, b.lon);
+        if (dKm < 0.06 || dKm > 2.0) continue;
+        const linkBrg = bearingDegWorker(a.lat, a.lon, b.lat, b.lon);
+        if (angDiffDegWorker(a.rot, linkBrg) > 38) continue;
+        if (dKm < bestDistKm) {
+          bestDistKm = dKm;
+          bestNext = b;
+        }
+      }
+
+      let coords;
+      if (bestNext) {
+        coords = [[a.cLon, a.cLat], [bestNext.cLon, bestNext.cLat]];
+      } else {
+        const pStart = projectPointMetersWorker(a.cLat, a.cLon, (a.rot + 180) % 360, 120);
+        const pEnd = projectPointMetersWorker(a.cLat, a.cLon, a.rot, 120);
+        coords = [[pStart[1], pStart[0]], [pEnd[1], pEnd[0]]];
+      }
+
+      features.push({
+        type: 'Feature',
+        geometry: { type: 'LineString', coordinates: coords },
+        properties: {
+          id: a.id,
+          roadEn: a.roadEn,
+          roadTc: a.roadTc,
+          dir: a.dir,
+          rot: a.rot,
+          spd: a.spd,
+          occ: a.occ,
+          tier: a.tier,
+          color: a.color,
+          camKey: a.camKey
+        }
+      });
+    }
+  }
+
+  return { type: 'FeatureCollection', features };
+}
+
 async function handleTrafficLiveRequest() {
   const [metaBundle, majXmlRes, slpXmlRes] = await Promise.all([
     getTrafficStaticMetadata(),
@@ -894,6 +1013,7 @@ async function handleTrafficLiveRequest() {
   ]);
 
   const detectorMeta = metaBundle?.detectorMeta || new Map();
+  const cameras = Array.isArray(metaBundle?.cameras) ? metaBundle.cameras : [];
   const parsedMaj = majXmlRes?.ok ? parseRawSpeedVolXml(await majXmlRes.text()) : { capturedAt: '', liveMap: new Map() };
   const parsedSlp = slpXmlRes?.ok ? parseRawSpeedVolXml(await slpXmlRes.text()) : { capturedAt: '', liveMap: new Map() };
 
@@ -922,17 +1042,22 @@ async function handleTrafficLiveRequest() {
       roadEn: det.roadEn,
       roadTc: det.roadTc,
       tier,
+      color: getTrafficSpeedColorHexWorker(reading.speed),
       camKey: det.camKey || ''
     });
   }
+
+  const speedMapGeoJson = buildWorkerSpeedMapGeoJson(detectorMeta, combinedLive);
 
   return new Response(
     JSON.stringify({
       ok: true,
       ts: Date.now(),
       capturedAt: parsedMaj.capturedAt || parsedSlp.capturedAt || '',
-      stats: { total: detectors.length, smooth, slow, jammed },
-      detectors
+      stats: { total: detectors.length, smooth, slow, jammed, cameras: cameras.length },
+      detectors,
+      cameras,
+      speedMapGeoJson
     }),
     { headers: { ...CORS_HEADERS, 'Cache-Control': 'public, max-age=20' } }
   );

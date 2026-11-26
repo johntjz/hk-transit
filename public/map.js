@@ -37,6 +37,11 @@ var _trafficLayerByMap = new WeakMap();
 var _trafficMarkersByMap = new WeakMap();
 var _trafficMoveTimerByMap = new WeakMap();
 window.trafficLayerEnabled = true;
+window.globalTrafficLayerEnabled = false;
+var _globalTrafficLayerGroup = null;
+var _globalCameraClusterGroup = null;
+var _globalTrafficControl = null;
+var _detailFocusedAwayFromStop = false;
 window.__ROUTE_GEOM_CACHE__ = window.__ROUTE_GEOM_CACHE__ || {};
 var _busGeomInFlight = new Map();
 var _detailGeomToken = 0;
@@ -730,9 +735,38 @@ function bindTrafficRefreshOnMapMove(targetMap) {
   });
 }
 
+function _refreshDetailBusSpeedPolylineIfActive() {
+  if (!window.mapInstance || !currentDetailCorridorMeta?.isBusRoute) return;
+  if (!Array.isArray(currentDetailRoadCoords) || currentDetailRoadCoords.length < 2) return;
+  if (typeof detailRouteGroup === 'undefined' || !detailRouteGroup) return;
+  const stops = (typeof getStopsForGroup === 'function')
+    ? getStopsForGroup(detailRouteGroup, typeof detailTargetStopKey !== 'undefined' ? detailTargetStopKey : null)
+    : [];
+  const activeIdx = (typeof detailExpandedStopIdx === 'number' && detailExpandedStopIdx >= 0) ? detailExpandedStopIdx : 0;
+  const routeAccent = detailRouteGroup?.colorHex ||
+    (typeof window.__GET_ROUTE_COLOR_HEX__ === 'function'
+      ? window.__GET_ROUTE_COLOR_HEX__(detailRouteGroup?.mode, detailRouteGroup?.company, detailRouteGroup?.routeNo)
+      : '#FF3B30');
+  if (detailPolylineLayer) {
+    try { window.mapInstance.removeLayer(detailPolylineLayer); } catch (e) {}
+  }
+  detailPolylineLayer = buildDetailBusPolylineLayer(currentDetailRoadCoords, stops, activeIdx, routeAccent);
+  if (detailPolylineLayer) {
+    detailPolylineLayer.addTo(window.mapInstance);
+    _bringLayerGroupToFront(detailPolylineLayer);
+  }
+}
+
 function syncTrafficOverlaysAllMaps() {
-  if (window.mapInstance) renderTrafficOverlayOnMap(window.mapInstance, true);
-  if (window.browseMapInstance) renderTrafficOverlayOnMap(window.browseMapInstance, true);
+  if (window.mapInstance) {
+    _refreshDetailBusSpeedPolylineIfActive();
+    renderTrafficOverlayOnMap(window.mapInstance, true);
+  }
+  if (window.browseMapInstance) {
+    if (window.globalTrafficLayerEnabled) {
+      renderGlobalTrafficDashboard(window.browseMapInstance);
+    }
+  }
   if (window.xferMapInstance) {
     renderTrafficOverlayOnMap(window.xferMapInstance, true);
   }
@@ -753,6 +787,91 @@ function toggleTrafficLayerOverlay(forceState = null) {
   }
 }
 
+function _getActiveDetailStopContext() {
+  if (typeof detailRouteGroup === 'undefined' || !detailRouteGroup || typeof getStopsForGroup !== 'function') return null;
+  const stops = getStopsForGroup(detailRouteGroup, typeof detailTargetStopKey !== 'undefined' ? detailTargetStopKey : null);
+  if (!Array.isArray(stops) || !stops.length) return null;
+  const idx = (typeof detailExpandedStopIdx === 'number' && detailExpandedStopIdx >= 0 && detailExpandedStopIdx < stops.length)
+    ? detailExpandedStopIdx
+    : 0;
+  const stop = stops[idx];
+  const lat = parseFloat(stop?.latitude ?? stop?.lat);
+  const lon = parseFloat(stop?.longitude ?? stop?.lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  return { idx, seq: idx + 1, stop, lat, lon };
+}
+
+function _distanceMetersFast(lat1, lon1, lat2, lon2) {
+  if (typeof calculateDistanceKm === 'function') {
+    return calculateDistanceKm(lat1, lon1, lat2, lon2) * 1000;
+  }
+  const cosLat = Math.max(0.2, Math.cos(((lat1 + lat2) / 2) * Math.PI / 180));
+  return Math.hypot((lat2 - lat1) * 111111, (lon2 - lon1) * 111111 * cosLat);
+}
+
+function hideDetailBackToStopPill() {
+  _detailFocusedAwayFromStop = false;
+  const pill = document.getElementById('detailBackToStopPill');
+  if (pill) pill.style.display = 'none';
+}
+
+function updateDetailBackToStopPill(forceShowIfFar = false) {
+  const pill = document.getElementById('detailBackToStopPill');
+  if (!pill) return;
+  if (!window.mapInstance || (typeof currentView !== 'undefined' && currentView !== 'detail')) {
+    pill.style.display = 'none';
+    return;
+  }
+  const activeCtx = _getActiveDetailStopContext();
+  if (!activeCtx) {
+    pill.style.display = 'none';
+    return;
+  }
+  const center = window.mapInstance.getCenter ? window.mapInstance.getCenter() : null;
+  if (!center || !Number.isFinite(center.lat) || !Number.isFinite(center.lng)) {
+    pill.style.display = 'none';
+    return;
+  }
+  const distM = _distanceMetersFast(center.lat, center.lng, activeCtx.lat, activeCtx.lon);
+  if ((forceShowIfFar || _detailFocusedAwayFromStop) && distM > 300) {
+    const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
+    const lbl = isZh ? `↩ 返回第 ${activeCtx.seq} 站` : `↩ Back to Stop ${activeCtx.seq}`;
+    pill.innerText = lbl;
+    pill.setAttribute('aria-label', lbl);
+    pill.style.display = 'inline-flex';
+  } else if (distM <= 260 || !_detailFocusedAwayFromStop) {
+    _detailFocusedAwayFromStop = false;
+    pill.style.display = 'none';
+  }
+}
+
+function returnToActiveDetailStop() {
+  if (typeof triggerHaptic === 'function') triggerHaptic(10);
+  if (typeof window.closeTrafficDecisionModal === 'function') {
+    window.closeTrafficDecisionModal();
+  }
+  window.__FOCUSED_TRAFFIC_DET_ID__ = '';
+  hideDetailBackToStopPill();
+  const activeCtx = _getActiveDetailStopContext();
+  if (window.mapInstance) {
+    try { window.mapInstance.closePopup?.(); } catch (e) {}
+    if (activeCtx) {
+      const targetZoom = Math.min(Math.max(window.mapInstance.getZoom ? (window.mapInstance.getZoom() || 15) : 15, 15), 16);
+      if (typeof window.mapInstance.flyTo === 'function') {
+        window.mapInstance.flyTo([activeCtx.lat, activeCtx.lon], targetZoom, { duration: 0.45 });
+      } else if (typeof window.mapInstance.setView === 'function') {
+        window.mapInstance.setView([activeCtx.lat, activeCtx.lon], targetZoom, { animate: true });
+      }
+      if (mapMarkers[activeCtx.idx] && typeof mapMarkers[activeCtx.idx].openTooltip === 'function') {
+        setTimeout(() => {
+          try { mapMarkers[activeCtx.idx]?.openTooltip?.(); } catch (e) {}
+        }, 420);
+      }
+    }
+    renderTrafficOverlayOnMap(window.mapInstance, true);
+  }
+}
+
 function focusTrafficDetectorOnDetailMap(lat, lon, detId = '') {
   if (!window.mapInstance || !isValidRailOrFerryCoord(lat, lon)) return;
   if (!window.trafficLayerEnabled) {
@@ -760,6 +879,10 @@ function focusTrafficDetectorOnDetailMap(lat, lon, detId = '') {
     if (typeof window.syncTrafficToggleButtonsUI === 'function') window.syncTrafficToggleButtonsUI();
   }
   window.__FOCUSED_TRAFFIC_DET_ID__ = String(detId || '');
+  const activeCtx = _getActiveDetailStopContext();
+  const distFromStopM = activeCtx ? _distanceMetersFast(activeCtx.lat, activeCtx.lon, Number(lat), Number(lon)) : 0;
+  _detailFocusedAwayFromStop = distFromStopM > 300;
+
   const mapEl = document.getElementById('map-container');
   if (mapEl) mapEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 
@@ -775,10 +898,14 @@ function focusTrafficDetectorOnDetailMap(lat, lon, detId = '') {
     if (layer && typeof layer.openTooltip === 'function') {
       layer.openTooltip();
     }
+    updateDetailBackToStopPill(_detailFocusedAwayFromStop);
   };
 
   window.mapInstance.once('moveend', () => setTimeout(focusTargetMarker, 60));
   window.mapInstance.setView([lat, lon], Math.max(window.mapInstance.getZoom() || 14, 15), { animate: false });
+  if (_detailFocusedAwayFromStop) {
+    updateDetailBackToStopPill(true);
+  }
   setTimeout(focusTargetMarker, 260);
 }
 
@@ -791,6 +918,9 @@ window.renderTrafficOverlayOnMap = renderTrafficOverlayOnMap;
 window.syncTrafficOverlaysAllMaps = syncTrafficOverlaysAllMaps;
 window.toggleTrafficLayerOverlay = toggleTrafficLayerOverlay;
 window.focusTrafficDetectorOnDetailMap = focusTrafficDetectorOnDetailMap;
+window.hideDetailBackToStopPill = hideDetailBackToStopPill;
+window.updateDetailBackToStopPill = updateDetailBackToStopPill;
+window.returnToActiveDetailStop = returnToActiveDetailStop;
 window._setDetailCorridorMetaForTest = function(meta) { currentDetailCorridorMeta = meta; };
 
 window.attachStandardMapLayers = function(targetMap) {
@@ -1324,6 +1454,70 @@ function zoomMapOut() { window.mapInstance?.zoomOut(); }
 function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) {
   if (!Array.isArray(coords) || coords.length < 2) return null;
   const layers = [];
+  const liveDetectors = Array.isArray(window.__LIVE_TRAFFIC_DETECTORS__) ? window.__LIVE_TRAFFIC_DETECTORS__ : [];
+  const hasGeoJsonTwin = Boolean(
+    window.trafficLayerEnabled &&
+    liveDetectors.length > 0 &&
+    typeof window.buildRouteSpeedGeoJson === 'function' &&
+    typeof L !== 'undefined' &&
+    typeof L.geoJSON === 'function'
+  );
+
+  if (hasGeoJsonTwin) {
+    const isRoadSnapped = Boolean(currentDetailCorridorMeta?.isRoadSnapped);
+    const hasHighwaySpan = Boolean(currentDetailCorridorMeta?.hasHighwaySpan || _stopsHaveHighwaySpan(stops));
+    const speedGeoJson = window.buildRouteSpeedGeoJson(coords, liveDetectors, {
+      isRoadSnapped,
+      hasHighwaySpan,
+      noDataColor: '#8E8E93'
+    });
+    window.__LAST_DETAIL_SPEED_GEOJSON__ = speedGeoJson;
+
+    if (speedGeoJson && Array.isArray(speedGeoJson.features) && speedGeoJson.features.length > 0) {
+      // Google Maps drive-line style: dark grey casing (weight 10) underneath + colored rounded GeoJSON (weight 6)
+      layers.push(
+        L.polyline(coords, {
+          color: '#2C2C2E',
+          weight: 10,
+          opacity: 0.9,
+          lineJoin: 'round',
+          lineCap: 'round',
+          interactive: false
+        })
+      );
+      const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
+      const geoLayer = L.geoJSON(speedGeoJson, {
+        style: (feat) => ({
+          color: feat?.properties?.color || '#8E8E93',
+          weight: 6,
+          opacity: 0.9,
+          lineJoin: 'round',
+          lineCap: 'round'
+        }),
+        onEachFeature: (feat, lyr) => {
+          const p = feat?.properties;
+          if (!p || !p.detectorId || p.speedKmh === null || !Number.isFinite(Number(p.speedKmh))) return;
+          const cleanName = sanitizeBottleneckLabel(isZh ? (p.roadTc || p.roadEn) : (p.roadEn || p.roadTc)) || (isZh ? '實時路況' : 'Live Road');
+          if (typeof lyr.bindTooltip === 'function') {
+            lyr.bindTooltip(`${cleanName} · ${Math.round(Number(p.speedKmh))} km/h`, { sticky: true, className: 'kmb-map-stop-label' });
+          }
+          if (typeof lyr.on === 'function') {
+            lyr.on('click', (ev) => {
+              if (ev?.originalEvent?.stopPropagation) ev.originalEvent.stopPropagation();
+              if (typeof window.openTrafficDecisionModal === 'function') {
+                const detObj = liveDetectors.find(x => x.id === p.detectorId);
+                const oppId = detObj ? _findOppositeTrafficDetectorId(detObj) : '';
+                window.openTrafficDecisionModal(p.detectorId, oppId, '', false);
+              }
+            });
+          }
+        }
+      });
+      layers.push(geoLayer);
+      return L.layerGroup(layers);
+    }
+  }
+
   const activeStop = stops?.[activeStopIdx];
   const actLat = parseFloat(activeStop?.latitude ?? activeStop?.lat);
   const actLon = parseFloat(activeStop?.longitude ?? activeStop?.lon);
@@ -1335,15 +1529,15 @@ function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) 
     const upstreamCoords = coords.slice(0, splitIdx + 1);
     const activeCoords = coords.slice(splitIdx);
     layers.push(
-      L.polyline(upstreamCoords, { color: '#FFFFFF', weight: 6.5, opacity: 0.60, lineJoin: 'round', lineCap: 'round', interactive: false }),
-      L.polyline(upstreamCoords, { color: routeAccent, weight: 4, opacity: 0.42, lineJoin: 'round', lineCap: 'round', interactive: false }),
-      L.polyline(activeCoords, { color: '#FFFFFF', weight: 8.5, opacity: 0.88, lineJoin: 'round', lineCap: 'round', interactive: false }),
-      L.polyline(activeCoords, { color: routeAccent, weight: 5.5, opacity: 0.96, lineJoin: 'round', lineCap: 'round' })
+      L.polyline(upstreamCoords, { color: '#2C2C2E', weight: 8, opacity: 0.48, lineJoin: 'round', lineCap: 'round', interactive: false }),
+      L.polyline(upstreamCoords, { color: routeAccent, weight: 4.5, opacity: 0.45, lineJoin: 'round', lineCap: 'round', interactive: false }),
+      L.polyline(activeCoords, { color: '#2C2C2E', weight: 10, opacity: 0.88, lineJoin: 'round', lineCap: 'round', interactive: false }),
+      L.polyline(activeCoords, { color: routeAccent, weight: 6, opacity: 0.92, lineJoin: 'round', lineCap: 'round' })
     );
   } else {
     layers.push(
-      L.polyline(coords, { color: '#FFFFFF', weight: 8.2, opacity: 0.86, lineJoin: 'round', lineCap: 'round', interactive: false }),
-      L.polyline(coords, { color: routeAccent, weight: 5.2, opacity: 0.94, lineJoin: 'round', lineCap: 'round' })
+      L.polyline(coords, { color: '#2C2C2E', weight: 10, opacity: 0.88, lineJoin: 'round', lineCap: 'round', interactive: false }),
+      L.polyline(coords, { color: routeAccent, weight: 6, opacity: 0.92, lineJoin: 'round', lineCap: 'round' })
     );
   }
   return L.layerGroup(layers);
@@ -1370,6 +1564,9 @@ function drawRouteOnMap(group, activeStopIdx = 0) {
         isDetailGpsLocked = false;
         syncDetailGpsLockBtnUI();
       }
+    });
+    window.mapInstance.on('moveend', () => {
+      if (_detailFocusedAwayFromStop) updateDetailBackToStopPill(false);
     });
     attachMapResizeObserver('map-container', window.mapInstance);
     bindTrafficRefreshOnMapMove(window.mapInstance);
@@ -1617,6 +1814,280 @@ function clearAllActiveBrowseMarkers() {
   activeBrowseMarkersByKey.clear();
 }
 
+function buildGlobalSpeedMapGeoJsonFallback(detectors = []) {
+  const features = [];
+  if (!Array.isArray(detectors) || !detectors.length) {
+    return { type: 'FeatureCollection', features };
+  }
+  const colorFn = (spd) => {
+    if (typeof window.getTrafficSpeedColorHex === 'function') return window.getTrafficSpeedColorHex(spd, '#8E8E93');
+    if (spd === null || spd === undefined || !Number.isFinite(Number(spd))) return '#8E8E93';
+    const n = Number(spd);
+    return n < 20 ? '#FF3B30' : (n <= 40 ? '#FFCC00' : '#34C759');
+  };
+  for (let i = 0; i < detectors.length; i++) {
+    const d = detectors[i];
+    if (!d || !Number.isFinite(Number(d.lat)) || !Number.isFinite(Number(d.lon))) continue;
+    const rot = Number(d.rot) || 0;
+    const leftBrg = (rot + 270) % 360;
+    const [cLat, cLon] = projectPointMeters(Number(d.lat), Number(d.lon), leftBrg, 12);
+    const pStart = projectPointMeters(cLat, cLon, (rot + 180) % 360, 125);
+    const pEnd = projectPointMeters(cLat, cLon, rot, 125);
+    features.push({
+      type: 'Feature',
+      geometry: {
+        type: 'LineString',
+        coordinates: [[pStart[1], pStart[0]], [pEnd[1], pEnd[0]]]
+      },
+      properties: {
+        id: d.id || '',
+        roadEn: d.roadEn || '',
+        roadTc: d.roadTc || d.roadEn || '',
+        dir: d.dir || '',
+        rot,
+        spd: d.spd ?? null,
+        occ: d.occ || 0,
+        tier: d.tier || 'SMOOTH',
+        color: d.color || colorFn(d.spd),
+        camKey: d.camKey || ''
+      }
+    });
+  }
+  return { type: 'FeatureCollection', features };
+}
+
+function clearGlobalTrafficDashboard(targetMap = window.browseMapInstance) {
+  if (_globalCameraClusterGroup) {
+    try { _globalCameraClusterGroup.clearLayers?.(); } catch (e) {}
+    if (targetMap) {
+      try { targetMap.removeLayer(_globalCameraClusterGroup); } catch (e) {}
+    }
+    _globalCameraClusterGroup = null;
+  }
+  if (_globalTrafficLayerGroup) {
+    try { _globalTrafficLayerGroup.clearLayers?.(); } catch (e) {}
+    if (targetMap) {
+      try { targetMap.removeLayer(_globalTrafficLayerGroup); } catch (e) {}
+    }
+    _globalTrafficLayerGroup = null;
+  }
+}
+
+function renderGlobalTrafficDashboard(targetMap = window.browseMapInstance) {
+  if (!targetMap || typeof L === 'undefined') return;
+
+  if (!window.globalTrafficLayerEnabled) {
+    clearGlobalTrafficDashboard(targetMap);
+    return;
+  }
+
+  // De-cluttering Logic: immediately hide all bus/MTR/ferry stop markers so macro traffic lines are unobstructed
+  clearAllActiveBrowseMarkers();
+  clearGlobalTrafficDashboard(targetMap);
+
+  _globalTrafficLayerGroup = L.layerGroup().addTo(targetMap);
+  const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
+
+  const detectors = Array.isArray(window.__LIVE_TRAFFIC_DETECTORS__) ? window.__LIVE_TRAFFIC_DETECTORS__ : [];
+  const workerGeo = window.__LIVE_TRAFFIC_SPEED_GEOJSON__;
+  const speedGeo = (workerGeo && workerGeo.type === 'FeatureCollection' && Array.isArray(workerGeo.features) && workerGeo.features.length > 0)
+    ? workerGeo
+    : buildGlobalSpeedMapGeoJsonFallback(detectors);
+
+  if (speedGeo && Array.isArray(speedGeo.features) && speedGeo.features.length > 0) {
+    if (typeof L.geoJSON === 'function') {
+      // Dark grey casing polyline directly underneath
+      L.geoJSON(speedGeo, {
+        interactive: false,
+        style: () => ({
+          color: '#2C2C2E',
+          weight: 10,
+          opacity: 0.88,
+          lineCap: 'round',
+          lineJoin: 'round'
+        })
+      }).addTo(_globalTrafficLayerGroup);
+
+      // Colored live speed GeoJSON segments on top
+      L.geoJSON(speedGeo, {
+        style: (feat) => ({
+          color: feat?.properties?.color || '#8E8E93',
+          weight: 6,
+          opacity: 0.9,
+          lineCap: 'round',
+          lineJoin: 'round'
+        }),
+        onEachFeature: (feat, lyr) => {
+          const p = feat?.properties;
+          if (!p) return;
+          const cleanName = sanitizeBottleneckLabel(isZh ? (p.roadTc || p.roadEn) : (p.roadEn || p.roadTc)) || (isZh ? '主要幹道' : 'Major Road');
+          const spdTxt = (p.spd !== null && p.spd !== undefined && Number.isFinite(Number(p.spd)))
+            ? `${Math.round(Number(p.spd))} km/h`
+            : (isZh ? '無實時數據' : 'No live speed');
+          if (typeof lyr.bindTooltip === 'function') {
+            lyr.bindTooltip(`${cleanName} · ${spdTxt}`, { sticky: true, className: 'kmb-map-stop-label' });
+          }
+          if (p.id && typeof lyr.on === 'function') {
+            lyr.on('click', (ev) => {
+              if (ev?.originalEvent?.stopPropagation) ev.originalEvent.stopPropagation();
+              if (typeof window.openTrafficDecisionModal === 'function') {
+                const detObj = detectors.find(x => x.id === p.id);
+                window.openTrafficDecisionModal(p.id, detObj ? _findOppositeTrafficDetectorId(detObj) : '', '', false);
+              }
+            });
+          }
+        }
+      }).addTo(_globalTrafficLayerGroup);
+    } else {
+      // Safe fallback for headless/mock Leaflet environments without L.geoJSON
+      speedGeo.features.forEach((feat) => {
+        const coords = feat?.geometry?.coordinates || [];
+        if (coords.length < 2) return;
+        const latlngs = coords.map(c => [c[1], c[0]]);
+        L.polyline(latlngs, { color: '#2C2C2E', weight: 10, opacity: 0.88, lineCap: 'round', lineJoin: 'round', interactive: false }).addTo(_globalTrafficLayerGroup);
+        L.polyline(latlngs, { color: feat?.properties?.color || '#8E8E93', weight: 6, opacity: 0.9, lineCap: 'round', lineJoin: 'round' }).addTo(_globalTrafficLayerGroup);
+      });
+    }
+  }
+
+  // Build active TD traffic cameras list (prefer full worker cameras list, fallback to detector-bound cameras)
+  let cameras = Array.isArray(window.__LIVE_TRAFFIC_CAMERAS__) && window.__LIVE_TRAFFIC_CAMERAS__.length
+    ? window.__LIVE_TRAFFIC_CAMERAS__
+    : [];
+  if (!cameras.length && detectors.length) {
+    const seenCam = new Set();
+    cameras = [];
+    for (let i = 0; i < detectors.length; i++) {
+      const d = detectors[i];
+      if (!d?.camKey || seenCam.has(d.camKey)) continue;
+      seenCam.add(d.camKey);
+      cameras.push({
+        key: d.camKey,
+        desc: d.roadEn || d.roadTc || d.camKey,
+        lat: d.lat,
+        lon: d.lon,
+        detId: d.id
+      });
+    }
+  }
+
+  if (cameras.length) {
+    const useCluster = typeof L.markerClusterGroup === 'function';
+    _globalCameraClusterGroup = useCluster
+      ? L.markerClusterGroup({
+          maxClusterRadius: 48,
+          spiderfyOnMaxZoom: true,
+          showCoverageOnHover: false,
+          disableClusteringAtZoom: 16
+        })
+      : L.layerGroup();
+
+    const camIcon = L.divIcon({
+      className: 'global-traffic-cam-icon',
+      html: `<div class="global-traffic-cam-marker" title="${isZh ? '運輸署實時鏡頭' : 'TD Live Traffic Camera'}">📷</div>`,
+      iconSize: [26, 26],
+      iconAnchor: [13, 13]
+    });
+
+    for (let i = 0; i < cameras.length; i++) {
+      const cam = cameras[i];
+      const cLat = Number(cam.lat), cLon = Number(cam.lon);
+      if (!Number.isFinite(cLat) || !Number.isFinite(cLon)) continue;
+      const m = L.marker([cLat, cLon], { icon: camIcon, zIndexOffset: 240 });
+      const cleanDesc = sanitizeBottleneckLabel(cam.desc || cam.key);
+      if (typeof m.bindTooltip === 'function') {
+        m.bindTooltip(`📷 ${cleanDesc}`, { direction: 'top', offset: [0, -8], className: 'kmb-map-stop-label' });
+      }
+      if (typeof m.on === 'function') {
+        m.on('click', (ev) => {
+          if (ev?.originalEvent?.stopPropagation) ev.originalEvent.stopPropagation();
+          const matchedDet = detectors.find(x => x.camKey === cam.key) || null;
+          if (matchedDet && typeof window.openTrafficDecisionModal === 'function') {
+            window.openTrafficDecisionModal(matchedDet.id, _findOppositeTrafficDetectorId(matchedDet), '', false);
+          } else if (typeof window.openTrafficCameraModal === 'function') {
+            window.openTrafficCameraModal(cam);
+          }
+        });
+      }
+      _globalCameraClusterGroup.addLayer ? _globalCameraClusterGroup.addLayer(m) : m.addTo(_globalCameraClusterGroup);
+    }
+    _globalCameraClusterGroup.addTo(targetMap);
+
+    // If markercluster plugin hasn't loaded yet, fetch asynchronously and re-render with real clustering
+    if (!useCluster && typeof window.ensureMarkerClusterLoaded === 'function') {
+      window.ensureMarkerClusterLoaded().then((loaded) => {
+        if (loaded && window.globalTrafficLayerEnabled && window.browseMapInstance === targetMap) {
+          renderGlobalTrafficDashboard(targetMap);
+        }
+      });
+    }
+  }
+}
+
+function toggleGlobalTrafficLayer(forceState = null) {
+  if (typeof triggerHaptic === 'function') triggerHaptic(10);
+  window.globalTrafficLayerEnabled = (typeof forceState === 'boolean') ? forceState : !window.globalTrafficLayerEnabled;
+  if (typeof window.syncTrafficToggleButtonsUI === 'function') {
+    window.syncTrafficToggleButtonsUI();
+  }
+  const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
+
+  if (window.globalTrafficLayerEnabled) {
+    if (window.browseMapInstance) {
+      clearAllActiveBrowseMarkers();
+      renderGlobalTrafficDashboard(window.browseMapInstance);
+    }
+    // Refresh complete unfiltered TD Speed Map & cameras from Worker cache
+    if (typeof syncEdgeTrafficCorridors === 'function') {
+      syncEdgeTrafficCorridors();
+    }
+    if (typeof showToast === 'function') {
+      showToast(isZh ? '🚦 全港實時路況及鏡頭圖層已開啟（已隱藏巴士站）' : '🚦 City-Wide Live Traffic & Cameras ON (Bus stops hidden)');
+    }
+  } else {
+    clearGlobalTrafficDashboard(window.browseMapInstance);
+    if (window.browseMapInstance) {
+      renderBrowseMapVisiblePins();
+    }
+    if (typeof showToast === 'function') {
+      showToast(isZh ? '🚏 已關閉全港路況，恢復顯示巴士及鐵路站' : '🚏 Global Traffic OFF — Bus & rail stops restored');
+    }
+  }
+}
+
+function attachGlobalTrafficControlToBrowseMap(mapInst) {
+  if (!mapInst || typeof L === 'undefined' || typeof L.Control === 'undefined' || _globalTrafficControl) return;
+  const GlobalTrafficControl = L.Control.extend({
+    options: { position: 'bottomleft' },
+    onAdd: function() {
+      const container = L.DomUtil.create('div', 'leaflet-control-global-traffic');
+      const btn = L.DomUtil.create('button', 'map-traffic-chip-btn map-traffic-toggle global-traffic-btn', container);
+      btn.type = 'button';
+      btn.id = 'browseMapTrafficBtn';
+      const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
+      btn.innerText = window.globalTrafficLayerEnabled
+        ? (isZh ? '🚦 全港路況 開' : '🚦 Traffic ON')
+        : (isZh ? '🚦 全港路況' : '🚦 Traffic');
+      btn.classList.toggle('active', Boolean(window.globalTrafficLayerEnabled));
+      btn.setAttribute('aria-pressed', window.globalTrafficLayerEnabled ? 'true' : 'false');
+      L.DomEvent.disableClickPropagation(container);
+      L.DomEvent.disableScrollPropagation(container);
+      L.DomEvent.on(btn, 'click', (e) => {
+        L.DomEvent.preventDefault(e);
+        toggleGlobalTrafficLayer();
+      });
+      return container;
+    }
+  });
+  _globalTrafficControl = new GlobalTrafficControl();
+  _globalTrafficControl.addTo(mapInst);
+}
+
+window.buildGlobalSpeedMapGeoJsonFallback = buildGlobalSpeedMapGeoJsonFallback;
+window.renderGlobalTrafficDashboard = renderGlobalTrafficDashboard;
+window.clearGlobalTrafficDashboard = clearGlobalTrafficDashboard;
+window.toggleGlobalTrafficLayer = toggleGlobalTrafficLayer;
+
 function initAndRenderBrowseMap() {
   if (typeof L === 'undefined') {
     if (typeof window.ensureLeafletLoaded === 'function') {
@@ -1633,8 +2104,12 @@ function initAndRenderBrowseMap() {
   if (!window.browseMapInstance) {
     window.browseMapInstance = L.map('browse-map-canvas', { zoomControl: false, preferCanvas: true }).setView([centerLat, centerLon], 15);
     window.attachStandardMapLayers(window.browseMapInstance);
+    attachGlobalTrafficControlToBrowseMap(window.browseMapInstance);
     window.browseMapInstance.on('moveend', scheduleBrowseMapPinDiff);
-    attachMapResizeObserver('browse-map-canvas', window.browseMapInstance, () => renderBrowseMapVisiblePins());
+    attachMapResizeObserver('browse-map-canvas', window.browseMapInstance, () => {
+      if (window.globalTrafficLayerEnabled) renderGlobalTrafficDashboard(window.browseMapInstance);
+      else renderBrowseMapVisiblePins();
+    });
 
     window.browseMapInstance.on('contextmenu', (e) => {
       const lat = Number(e.latlng.lat.toFixed(5));
@@ -1673,7 +2148,11 @@ function initAndRenderBrowseMap() {
   }
   updateUserMarkers();
   if (!browseMapStopGrid.size && allStops.length) rebuildBrowseMapSpatialGrid();
-  renderBrowseMapVisiblePins();
+  if (window.globalTrafficLayerEnabled) {
+    renderGlobalTrafficDashboard(window.browseMapInstance);
+  } else {
+    renderBrowseMapVisiblePins();
+  }
 }
 
 function createBrowseMapStopMarker(s, displayLat = null, displayLon = null) {
@@ -1724,8 +2203,13 @@ function createBrowseMapStopMarker(s, displayLat = null, displayLon = null) {
 
 function renderBrowseMapVisiblePins() {
   if (!window.browseMapInstance) return;
-  if (!browseMapStopGrid.size && allStops.length) rebuildBrowseMapSpatialGrid();
   updateUserMarkers();
+  // De-cluttering Logic: while Global Traffic Dashboard is ON, suppress all bus/rail stop markers
+  if (window.globalTrafficLayerEnabled) {
+    clearAllActiveBrowseMarkers();
+    return;
+  }
+  if (!browseMapStopGrid.size && allStops.length) rebuildBrowseMapSpatialGrid();
 
   const bounds = window.browseMapInstance.getBounds();
   const zoom = window.browseMapInstance.getZoom() || 15;
@@ -1818,7 +2302,6 @@ function renderBrowseMapVisiblePins() {
     const marker = createBrowseMapStopMarker(spec.item, spec.dispLat, spec.dispLon);
     activeBrowseMarkersByKey.set(key, marker);
   }
-  renderTrafficOverlayOnMap(window.browseMapInstance);
 }
 
 async function recenterBrowseMapToGps(forceFreshFix = false) {

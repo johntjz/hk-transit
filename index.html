@@ -34,8 +34,33 @@
           js: 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'
         }
       ];
+      const MARKERCLUSTER_CDNS = [
+        {
+          css: [
+            'https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.min.css',
+            'https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.Default.min.css'
+          ],
+          js: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/leaflet.markercluster.min.js'
+        },
+        {
+          css: [
+            'https://cdn.jsdelivr.net/npm/leaflet.markercluster@1.5.3/dist/MarkerCluster.css',
+            'https://cdn.jsdelivr.net/npm/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css'
+          ],
+          js: 'https://cdn.jsdelivr.net/npm/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js'
+        },
+        {
+          css: [
+            'https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css',
+            'https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css'
+          ],
+          js: 'https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js'
+        }
+      ];
       let _leafletPromise = null;
       let _leafletCssInjected = false;
+      let _mcPromise = null;
+      let _mcCssInjected = false;
       function loadCssOnce(href) {
         if (_leafletCssInjected) return;
         const link = document.createElement('link');
@@ -45,7 +70,18 @@
         document.head.appendChild(link);
         _leafletCssInjected = true;
       }
-      function loadScriptWithTimeout(src, ms) {
+      function loadMcCssOnce(hrefs) {
+        if (_mcCssInjected || !Array.isArray(hrefs)) return;
+        hrefs.forEach((href) => {
+          const link = document.createElement('link');
+          link.rel = 'stylesheet';
+          link.href = href;
+          link.crossOrigin = 'anonymous';
+          document.head.appendChild(link);
+        });
+        _mcCssInjected = true;
+      }
+      function loadScriptWithTimeout(src, ms, checkFn) {
         return new Promise((resolve) => {
           const s = document.createElement('script');
           let done = false;
@@ -62,19 +98,42 @@
           s.src = src;
           s.async = true;
           s.crossOrigin = 'anonymous';
-          s.onload = () => finish(typeof window.L !== 'undefined');
+          s.onload = () => finish(checkFn ? Boolean(checkFn()) : typeof window.L !== 'undefined');
           s.onerror = () => { try { s.remove(); } catch (e) {} finish(false); };
           document.head.appendChild(s);
         });
       }
+      window.ensureMarkerClusterLoaded = function() {
+        if (typeof window.L !== 'undefined' && typeof window.L.markerClusterGroup === 'function') {
+          return Promise.resolve(true);
+        }
+        if (_mcPromise) return _mcPromise;
+        _mcPromise = (async () => {
+          if (typeof window.L === 'undefined') {
+            const okL = await window.ensureLeafletLoaded();
+            if (!okL) { _mcPromise = null; return false; }
+          }
+          for (const cdn of MARKERCLUSTER_CDNS) {
+            loadMcCssOnce(cdn.css);
+            const ok = await loadScriptWithTimeout(cdn.js, 4200, () => typeof window.L?.markerClusterGroup === 'function');
+            if (ok) return true;
+          }
+          _mcPromise = null;
+          return typeof window.L?.markerClusterGroup === 'function';
+        })();
+        return _mcPromise;
+      };
       window.ensureLeafletLoaded = function() {
         if (typeof window.L !== 'undefined') return Promise.resolve(true);
         if (_leafletPromise) return _leafletPromise;
         _leafletPromise = (async () => {
           for (const cdn of LEAFLET_CDNS) {
             loadCssOnce(cdn.css);
-            const ok = await loadScriptWithTimeout(cdn.js, 4200);
-            if (ok && typeof window.L !== 'undefined') return true;
+            const ok = await loadScriptWithTimeout(cdn.js, 4200, () => typeof window.L !== 'undefined');
+            if (ok && typeof window.L !== 'undefined') {
+              window.ensureMarkerClusterLoaded().catch(() => {});
+              return true;
+            }
           }
           _leafletPromise = null;
           return typeof window.L !== 'undefined';
@@ -589,6 +648,70 @@
       box-shadow: 0 3px 10px rgba(0, 0, 0, 0.16);
     }
     .map-traffic-chip-btn.active { border-color: rgba(22, 163, 74, 0.55); color: var(--ios-green); }
+    .leaflet-control-global-traffic { margin: 0 0 12px 10px !important; }
+    .leaflet-control-global-traffic .global-traffic-btn {
+      position: static;
+      padding: 6px 12px;
+      font-size: 0.74rem;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    }
+    .map-back-to-stop-pill {
+      position: absolute;
+      top: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 1150;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      padding: 6px 14px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.22);
+      background: rgba(15, 23, 42, 0.92);
+      color: #FFFFFF;
+      font-size: 0.76rem;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+      cursor: pointer;
+      white-space: nowrap;
+      max-width: calc(100% - 28px);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+    }
+    .map-back-to-stop-pill:hover { filter: brightness(1.08); }
+    .map-back-to-stop-pill:active { transform: translateX(-50%) scale(0.97); }
+    .global-traffic-cam-icon { background: transparent !important; border: none !important; }
+    .global-traffic-cam-marker {
+      width: 26px;
+      height: 26px;
+      border-radius: 999px;
+      background: rgba(15, 23, 42, 0.92);
+      color: #FFFFFF;
+      border: 2px solid #FFFFFF;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.72rem;
+      line-height: 1;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.36);
+      cursor: pointer;
+    }
+    .marker-cluster-small, .marker-cluster-medium, .marker-cluster-large {
+      background-color: rgba(15, 23, 42, 0.28) !important;
+    }
+    .marker-cluster-small div, .marker-cluster-medium div, .marker-cluster-large div {
+      background-color: rgba(15, 23, 42, 0.92) !important;
+      color: #FFFFFF !important;
+      font-weight: 800 !important;
+      font-size: 0.74rem !important;
+      font-family: inherit !important;
+      border: 1.5px solid #FFFFFF;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.32);
+    }
     .traffic-modal-card {
       width: 100%; max-width: 440px; max-height: 86dvh; overflow-y: auto; -webkit-overflow-scrolling: touch;
       background: var(--bg-white); border-radius: 20px; border: 1px solid var(--border-color);
@@ -1827,7 +1950,6 @@
   </div>
   <div style="flex:1; position:relative; width:100%; height:100%;">
     <div id="browse-map-canvas" style="position:absolute; inset:0; width:100%; height:100%;"></div>
-    <button type="button" class="map-traffic-chip-btn map-traffic-toggle active" id="browseMapTrafficBtn" onclick="toggleTrafficLayerOverlay()">🚦 Traffic ON</button>
     <div class="map-floating-controls" style="bottom:26px; right:12px;">
       <button class="map-ctrl-btn" id="browseMapGpsBtn" onclick="recenterBrowseMapToGps(true)" title="Center on My Current GPS Location">🎯</button>
       <button class="map-ctrl-btn" onclick="window.browseMapInstance?.zoomIn()" title="Zoom In">+</button>
@@ -1847,6 +1969,7 @@
   </div>
   <div id="map-container">
     <div id="map-canvas-inner"></div>
+    <button type="button" class="map-back-to-stop-pill" id="detailBackToStopPill" style="display:none;" onclick="returnToActiveDetailStop()">↩ Back to Stop 1</button>
     <button type="button" class="map-traffic-chip-btn map-traffic-toggle active" id="detailMapTrafficBtn" onclick="toggleTrafficLayerOverlay()">🚦 Traffic ON</button>
     <div class="map-floating-controls">
       <button class="map-ctrl-btn" id="mapGpsRecenterBtn" onclick="toggleDetailGpsLock()" title="Lock / Unlock GPS Follow">🎯</button>
@@ -2057,6 +2180,8 @@ window.__LAST_TD_UPDATED__ = '';
 window.__LIVE_HIGHWAY_KMH__ = 70;
 window.__LIVE_CORRIDORS__ = {};
 window.__LIVE_TRAFFIC_DETECTORS__ = [];
+window.__LIVE_TRAFFIC_CAMERAS__ = [];
+window.__LIVE_TRAFFIC_SPEED_GEOJSON__ = null;
 window.__LIVE_TRAFFIC_CAPTURED_AT__ = '';
 window.__HKO_WEATHER__ = null;
 window.MULTI_MODAL_HUBS_DIRECTORY = [];
@@ -2066,17 +2191,27 @@ window.QUICK_LRT_LINES = [];
 window.QUICK_FERRY_LINES = [];
 
 function syncTrafficToggleButtonsUI() {
-  const on = (window.trafficLayerEnabled !== false);
+  const detailOn = (window.trafficLayerEnabled !== false);
+  const globalOn = Boolean(window.globalTrafficLayerEnabled);
   const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
-  ['detailMapTrafficBtn', 'browseMapTrafficBtn'].forEach(id => {
-    const b = document.getElementById(id);
-    if (!b) return;
-    b.classList.toggle('active', on);
-    b.innerText = on ? (isZh ? '🚦 實時路況 開' : '🚦 Traffic ON') : (isZh ? '🚦 路況 關' : '🚦 Traffic');
-  });
+
+  const dBtn = document.getElementById('detailMapTrafficBtn');
+  if (dBtn) {
+    dBtn.classList.toggle('active', detailOn);
+    dBtn.setAttribute('aria-pressed', detailOn ? 'true' : 'false');
+    dBtn.innerText = detailOn ? (isZh ? '🚦 實時路況 開' : '🚦 Traffic ON') : (isZh ? '🚦 路況 關' : '🚦 Traffic');
+  }
+
+  const bBtn = document.getElementById('browseMapTrafficBtn');
+  if (bBtn) {
+    bBtn.classList.toggle('active', globalOn);
+    bBtn.setAttribute('aria-pressed', globalOn ? 'true' : 'false');
+    bBtn.innerText = globalOn ? (isZh ? '🚦 全港路況 開' : '🚦 Traffic ON') : (isZh ? '🚦 全港路況' : '🚦 Traffic');
+  }
+
   const xBtn = document.getElementById('xferMapTrafficBtn');
   if (xBtn) {
-    xBtn.classList.toggle('active', on);
+    xBtn.classList.toggle('active', detailOn);
     xBtn.title = isZh ? '切換實時道路交通及路面鏡頭' : 'Toggle Live Road Traffic & Cameras';
   }
 }
@@ -2517,8 +2652,11 @@ function analyzeStopSectionFareProfile(group, stops, stopIdx, isHol = isHongKong
 }
 
 function extractRouteBoundCode(group) {
-  const rId = group?.routeIds?.[0] || '';
-  if (rId.includes('_I') || group?.key?.endsWith('_I')) return 'I';
+  const tdB = String(group?.tdBound || group?.bound || '').trim().toUpperCase();
+  if (tdB === 'I' || tdB === 'INBOUND' || tdB === '2') return 'I';
+  if (tdB === 'O' || tdB === 'OUTBOUND' || tdB === '1') return 'O';
+  const rId = String(group?.routeIds?.[0] || '');
+  if (rId.includes('_I') || String(group?.key || '').endsWith('_I')) return 'I';
   return 'O';
 }
 
@@ -4845,9 +4983,29 @@ async function renderMainNearby(isSilentRefresh = false) {
 
   updateMainStopHeaderDisplay(uniqueClusterBays.length);
 
-  const activeClusterStops = activeClusterSubStopKey === 'ALL'
+  let activeClusterStops = activeClusterSubStopKey === 'ALL'
     ? rawClusterStops
     : rawClusterStops.filter(s => getBaseStopNameKey(s.stopName_e) === activeClusterSubStopKey);
+
+  // GPS Direction Toggle Fix: when Dir A / Dir B is toggled, aggregate all opposite-side twin poles
+  // sharing the normalized stop name within 200m (0.20 km) so users don't get empty lists across the street.
+  if (stopDirectionFilterMode !== 'BOTH' && typeof window.collectDirectionClusterStops === 'function') {
+    const dirAnchor = (activeClusterSubStopKey === 'ALL') ? centerStop : (activeClusterStops[0] || centerStop);
+    const pairedStops = window.collectDirectionClusterStops(allStops, dirAnchor, activeAppMode, 0.20, { refLat, refLon });
+    if (pairedStops.length > 0) {
+      const mergedMap = new Map();
+      activeClusterStops.forEach(s => mergedMap.set(s.stopKey || getGlobalStopKey(s), s));
+      pairedStops.forEach(s => {
+        const k = s.stopKey || getGlobalStopKey(s);
+        if (!mergedMap.has(k)) mergedMap.set(k, s);
+      });
+      activeClusterStops = Array.from(mergedMap.values()).sort((a, b) => {
+        const dA = calculateDistanceKm(refLat, refLon, parseFloat(a.latitude), parseFloat(a.longitude));
+        const dB = calculateDistanceKm(refLat, refLon, parseFloat(b.latitude), parseFloat(b.longitude));
+        return dA - dB;
+      });
+    }
+  }
 
   const hkNow = getHongKongNow();
   const minsNow = hkNow.getHours() * 60 + hkNow.getMinutes();
@@ -4857,6 +5015,9 @@ async function renderMainNearby(isSilentRefresh = false) {
 
   activeClusterStops.forEach(st => {
     const stBase = getBaseStopNameKey(st.stopName_e);
+    const stPairedKey = (typeof window.normalizePairedStopNameKey === 'function')
+      ? window.normalizePairedStopNameKey(st.stopName_e, st.name_tc)
+      : stBase;
     const stPierCanon = normStationLookupKey(st.stopName_e);
     (st.groupKeys || []).forEach(gk => {
       const g = routeMapIndex.get(gk);
@@ -4874,10 +5035,21 @@ async function renderMainNearby(isSilentRefresh = false) {
       const isPenultimateDualBranch = (g.mode === 'MTR' && gStops.length >= 3 && isParallelRailTerminusPair(gStops[gStops.length - 2]?.stopId, gStops[gStops.length - 1]?.stopId));
       const maxBoardIdx = isPenultimateDualBranch ? gStops.length - 3 : gStops.length - 2;
 
-      const boardingIdx = gStops.findIndex((x, idx) =>
+      // Match exact source pole stopKey first so paired opposite-side poles preserve their true physical stop & walking distance
+      let boardingIdx = gStops.findIndex((x, idx) =>
         (idx <= maxBoardIdx || gStops.length === 1 || allowFinalStop) &&
-        (x.stopKey === st.stopKey || getBaseStopNameKey(x.stopName_e) === stBase || (g.mode === 'FERRY' && stPierCanon && normStationLookupKey(x.stopName_e) === stPierCanon))
+        x.stopKey === st.stopKey
       );
+      if (boardingIdx === -1) {
+        boardingIdx = gStops.findIndex((x, idx) =>
+          (idx <= maxBoardIdx || gStops.length === 1 || allowFinalStop) &&
+          (
+            getBaseStopNameKey(x.stopName_e) === stBase ||
+            (stPairedKey && typeof window.normalizePairedStopNameKey === 'function' && window.normalizePairedStopNameKey(x.stopName_e, x.name_tc) === stPairedKey) ||
+            (g.mode === 'FERRY' && stPierCanon && normStationLookupKey(x.stopName_e) === stPierCanon)
+          )
+        );
+      }
       if (boardingIdx === -1) return;
       if (g.mode === 'FERRY' && !allowFinalStop && boardingIdx >= gStops.length - 1) return;
 
@@ -4887,7 +5059,7 @@ async function renderMainNearby(isSilentRefresh = false) {
       if (seenRouteDirSig.has(routeDirSig)) return;
 
       seenRouteDirSig.add(routeDirSig);
-      candidatePairs.push({ group: g, stop: gStops[boardingIdx] || st, boardingIdx });
+      candidatePairs.push({ group: g, stop: gStops[boardingIdx] || st, sourceStop: st, boardingIdx });
     });
   });
 
@@ -4929,14 +5101,14 @@ async function renderMainNearby(isSilentRefresh = false) {
   if (!isSilentRefresh || lastRenderedCenterStopKey !== sigKey || !listEl.querySelector('.route-list-item')) {
     lastRenderedCenterStopKey = sigKey;
     listEl.innerHTML = smartTop.html + bayFilterBarHtml + `<div id="mainRouteCardsWrap">` + candidatePairs.map((pair, idx) => {
-      const g = pair.group, st = pair.stop;
+      const g = pair.group, st = pair.stop, distStop = pair.sourceStop || pair.stop;
       const isFerry = (g.mode === 'FERRY');
       const escKey = escapeJsAttr(st.stopKey || getGlobalStopKey(st));
       const dispBadge = window.getDisplayRouteBadge ? window.getDisplayRouteBadge(g) : g.routeNo;
       const cleanDest = cleanFerryLabel(getRouteName(g)).replace(/\s+at\s+.*$/i, '').split(',')[0].trim();
       const pierTag = isFerry ? extractPierNumberBadge(st.stopName_e, st.name_tc, g.dest_e) : '';
       const pierBadgeHtml = pierTag ? ` <span class="ferry-pier-tag" style="margin-left:4px;">${escapeHtml(pierTag)}</span>` : '';
-      const stDist = formatStopDistance(st);
+      const stDist = formatStopDistance(distStop);
       const stopSubLabel = `${getStopName(st)}${stDist ? ` · ${stDist}` : ''}`;
       return `
         <div class="route-list-item ${isFerry ? 'ferry-card' : ''}" id="main-route-card-${idx}" data-sort-ms="9999999999999" onclick="if(!isUserSelectingText())openRouteDetail('${escapeJsAttr(g.key)}', '${escKey}', ${pair.boardingIdx})">
@@ -5618,6 +5790,35 @@ window.refreshTrafficDecisionCam = function(camKey) {
   }
 };
 
+window.openTrafficCameraModal = function(cam) {
+  if (!cam || !cam.key) return;
+  const modal = document.getElementById('trafficDecisionModal');
+  const bodyEl = document.getElementById('trafficModalBody');
+  if (!modal || !bodyEl) return;
+  const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
+  const titleEl = document.getElementById('trafficModalTitle');
+  const subEl = document.getElementById('trafficModalSub');
+  const closeEl = document.getElementById('trafficModalCloseBtn');
+  const cleanTitle = (typeof sanitizeBottleneckLabel === 'function' ? sanitizeBottleneckLabel(cam.desc || cam.key) : (cam.desc || cam.key));
+  if (titleEl) titleEl.innerText = cleanTitle || (isZh ? '運輸署實時路況鏡頭' : 'HKSAR TD Traffic Camera');
+  if (subEl) subEl.innerText = [cam.key, window.__LIVE_TRAFFIC_CAPTURED_AT__ || ''].filter(Boolean).join(' · ');
+  if (closeEl) closeEl.innerText = isZh ? '✕ 關閉' : '✕ Close';
+  const camUrl = `https://tdcctv.data.one.gov.hk/${encodeURIComponent(cam.key)}.JPG?t=${Math.floor(Date.now() / 60000)}`;
+  bodyEl.innerHTML = `
+    <div class="traffic-cam-frame">
+      <img id="trafficDecisionCamImg" src="${camUrl}" alt="${escapeHtml(cleanTitle)} TD live camera snapshot" loading="eager" onerror="this.parentElement.innerHTML='<div style=&quot;color:#CBD5E1;font-size:0.78rem;padding:16px;text-align:center;&quot;>${isZh ? '運輸署實拍圖暫時未能載入' : 'TD road snapshot temporarily unavailable'}</div>'">
+    </div>
+    <div class="traffic-cam-caption">
+      <span>📷 ${isZh ? '運輸署實時路況快拍' : 'HKSAR TD Live Road Snapshot'} (${escapeHtml(cam.key)})</span>
+      <button type="button" style="border:none; background:none; color:var(--ios-blue); font-weight:700; font-size:0.72rem; cursor:pointer; padding:2px 4px;" onclick="refreshTrafficDecisionCam('${escapeJsAttr(cam.key)}')">↻ ${isZh ? '更新圖片' : 'Refresh'}</button>
+    </div>
+    <div class="traffic-modal-actions">
+      <button type="button" class="traffic-modal-btn primary" onclick="closeTrafficDecisionModal()">${isZh ? '知道了' : 'Got it'}</button>
+    </div>
+  `;
+  modal.style.display = 'flex';
+};
+
 window.closeTrafficDecisionModal = function() {
   const modal = document.getElementById('trafficDecisionModal');
   if (modal) modal.style.display = 'none';
@@ -5735,6 +5936,10 @@ function switchView(viewName, skipHistoryPush = false, forcePushSameView = false
 
   syncTopNavHighlights();
   updateTopBackButtonVisibility();
+
+  if (viewName !== 'detail' && typeof window.hideDetailBackToStopPill === 'function') {
+    window.hideDetailBackToStopPill();
+  }
 
   if (viewName === 'detail') {
     requestAnimationFrame(() => window.mapInstance?.invalidateSize(false));
@@ -5860,6 +6065,7 @@ function openRouteDetail(groupKey, targetStopKey = null, explicitStopIdx = null,
   detailTargetStopKey = targetStopKey;
   detailSelectedEtaBusIdx = 0;
   detailLastFetchedArrs = [];
+  if (typeof window.hideDetailBackToStopPill === 'function') window.hideDetailBackToStopPill();
 
   switchView('detail', isBackRestore, isSameViewDifferentRoute);
 
@@ -6051,6 +6257,7 @@ async function expandStop(idx, isSilent = false, autoScrolled = false, skipMapPa
   const stops = getStopsForGroup(detailRouteGroup, detailTargetStopKey);
   if (!stops[idx]) return;
   if (!isSilent && !autoScrolled) triggerHaptic(8);
+  if (!isSilent && typeof window.hideDetailBackToStopPill === 'function') window.hideDetailBackToStopPill();
 
   if (detailExpandedStopIdx !== idx) {
     detailSelectedEtaBusIdx = 0;
@@ -6105,6 +6312,7 @@ async function expandStop(idx, isSilent = false, autoScrolled = false, skipMapPa
 function reverseCurrentRouteDirection() {
   if (!detailRouteGroup) return;
   triggerHaptic(12);
+  if (typeof window.hideDetailBackToStopPill === 'function') window.hideDetailBackToStopPill();
   let opposite = null;
   if (typeof findOppositeDirectionGroup === 'function') {
     opposite = findOppositeDirectionGroup(detailRouteGroup, groupedRoutes);
@@ -7654,6 +7862,10 @@ async function syncEdgeTrafficCorridors() {
     if (tdLive?.ok && Array.isArray(tdLive.detectors)) {
       const hadDetectorsBefore = Array.isArray(window.__LIVE_TRAFFIC_DETECTORS__) && window.__LIVE_TRAFFIC_DETECTORS__.length > 0;
       window.__LIVE_TRAFFIC_DETECTORS__ = tdLive.detectors;
+      if (Array.isArray(tdLive.cameras)) window.__LIVE_TRAFFIC_CAMERAS__ = tdLive.cameras;
+      if (tdLive.speedMapGeoJson && tdLive.speedMapGeoJson.type === 'FeatureCollection') {
+        window.__LIVE_TRAFFIC_SPEED_GEOJSON__ = tdLive.speedMapGeoJson;
+      }
       window.__LIVE_TRAFFIC_CAPTURED_AT__ = tdLive.capturedAt || '';
       if (typeof window.syncTrafficOverlaysAllMaps === 'function') {
         window.syncTrafficOverlaysAllMaps();

@@ -2935,8 +2935,11 @@ test('hardcode.js, map.js & worker.js: road-snapped E36 polyline strictly matche
     },
   ];
 
-  // 1. With road-snapped polyline: strictly locks onto TDS90067 (YLH) and preserves opposite-bound jam callout
-  const sumRoadSnapped = sb.getDirectionalRoadSummary(stops, 0, detectors, false, 8, e36RoadPolyline);
+  // 0. Cross-tunnel lookahead cap: at Yu Tung Court (Lantau, startIdx=0), MUST NOT cross TM-CLKL subsea tunnel into Tuen Mun/Yuen Long
+  assert.equal(sb.getDirectionalRoadSummary(stops, 0, detectors, false, 8, e36RoadPolyline), null, 'Lantau stop before TM-CLKL tunnel must NOT leak Tuen Mun / Yuen Long highway alerts');
+
+  // 1. At TM-CLK Tunnel BBI (startIdx=1) with road-snapped polyline: strictly locks onto TDS90067 (YLH) and preserves opposite-bound jam callout
+  const sumRoadSnapped = sb.getDirectionalRoadSummary(stops, 1, detectors, false, 8, e36RoadPolyline);
   assert.ok(sumRoadSnapped, 'Expected road-snapped summary');
   assert.equal(sumRoadSnapped.tone, 'smooth', 'On-corridor YLH is smooth (82 km/h); off-corridor slow detectors must NOT poison verdict');
   assert.equal(sumRoadSnapped.focusDet?.id, 'TDS90067', `Must select on-corridor YLH detector TDS90067, got ${sumRoadSnapped.focusDet?.id}`);
@@ -2944,7 +2947,7 @@ test('hardcode.js, map.js & worker.js: road-snapped E36 polyline strictly matche
 
   // 2. Even WITHOUT road-snapped polyline (before async fetch completes), Castle Peak Rd / LRT detector is strictly excluded on highway/BBI spans
   const onlyCprAndYlh = [detectors[0], detectors[2]];
-  const sumFallback = sb.getDirectionalRoadSummary(stops, 0, onlyCprAndYlh, false, 8, null);
+  const sumFallback = sb.getDirectionalRoadSummary(stops, 1, onlyCprAndYlh, false, 8, null);
   assert.ok(sumFallback, 'Expected fallback summary');
   assert.equal(sumFallback.focusDet?.id, 'TDS90067', 'Fallback corridor matcher must also reject TDSCPRHSK10004 Castle Peak Rd LRT detector on highway BBI span');
 
@@ -3221,7 +3224,7 @@ test('Decision-first Transit: zero off-route clutter (<=2 bottlenecks on route m
     { id: 'TDS90048', lat: 22.3965, lon: 113.9775, rot: 15, spd: 38, occ: 32, tier: 'SLOW', roadEn: 'Tuen Mun Road near San Hui Market - Northbound', roadTc: '屯門公路近新墟街市 - 北行', camKey: 'TDS90048' },
     { id: 'TDS90067', lat: 22.4338, lon: 114.0025, rot: 46, spd: 82, occ: 12, tier: 'SMOOTH', roadEn: 'YLH/Shap Pat Heung Int - Eastbound (1)', roadTc: '元朗公路近十八鄉交匯處 - 東行 (1)', camKey: 'TDS90067' },
   ];
-  const sumA = sb.getDirectionalRoadSummary(e36Stops, 0, detCaseA, false, 8, e36RealPolyline);
+  const sumA = sb.getDirectionalRoadSummary(e36Stops, 1, detCaseA, false, 8, e36RealPolyline);
   assert.equal(sumA.focusDet?.id, 'TDS90048', 'When TMR is slower than YLH, TDS90048 must win while CPR-* is rejected');
   assert.equal(sumA.headline, 'Take Bus · Corridor moving (+2–5m)');
 
@@ -3231,7 +3234,7 @@ test('Decision-first Transit: zero off-route clutter (<=2 bottlenecks on route m
     detCaseA[1],
     { ...detCaseA[2], spd: 11, occ: 90, tier: 'JAMMED' },
   ];
-  const sumB = sb.getDirectionalRoadSummary(e36Stops, 0, detCaseB, false, 8, e36RealPolyline);
+  const sumB = sb.getDirectionalRoadSummary(e36Stops, 1, detCaseB, false, 8, e36RealPolyline);
   assert.equal(sumB.focusDet?.id, 'TDS90067', 'When YLH is jammed worse than TMR, TDS90067 must win');
   assert.equal(sumB.modeRec, 'SWITCH_MTR');
   assert.ok(sumB.headline.includes('Switch to MTR · Heavy jam on Yuen Long Highway (+15m)'), `Unexpected YLH severe jam headline: ${sumB.headline}`);
@@ -3754,6 +3757,401 @@ test('SmartReturnManager & index.html: tight Quick Return confidence threshold (
   const keep29mNoImminent = sr.shouldSuppressByWaitTime(srEta29m, localSlowOnly, 127, now1907);
   assert.equal(keep29mNoImminent.suppress, false, 'Must NOT suppress 29m Quick Return if no closer route arrives within 5m');
 });
+
+test('Architecture Update 1: Cross-Tunnel & 5km Lookahead Cap blocks Lantau -> Tuen Mun Wong Chu Rd leakage at E36 Stop 8 while preserving TM-CLKL BBI Stop 11', () => {
+  const sb = loadHardcodeAndPlannerSandbox();
+  const db = JSON.parse(fs.readFileSync('public/bus_index.min.json', 'utf8'));
+  const e36PatHeung = db.groupedRoutes.find((g: any) => g.routeNo === 'E36' && /Pat Heung/i.test(g.dest_e));
+  assert.ok(e36PatHeung, 'bus_index.min.json must contain E36 To Pat Heung Road');
+  const rawStops = db.routeStopsCache[e36PatHeung.routeIds[0]];
+  const stops = rawStops.map((entry: any) => {
+    const idx = Array.isArray(entry) ? entry[0] : entry;
+    const s = db.stopsDict[idx];
+    return { stopKey: `S_${s[0]}`, stopName_e: s[1], name_tc: s[2], latitude: String(s[3]), longitude: String(s[4]) };
+  });
+
+  const stop8Idx = stops.findIndex((s: any) => /Tung Chung Cable Car/i.test(s.stopName_e));
+  const stop11Idx = stops.findIndex((s: any) => /Tuen Mun.*Chek Lap Kok.*Tunnel/i.test(s.stopName_e));
+  assert.ok(stop8Idx >= 0 && stop11Idx > stop8Idx, `Expected Tung Chung Cable Car before TM-CLKL BBI (${stop8Idx} < ${stop11Idx})`);
+
+  const wongChuDetectors = [
+    {
+      id: 'TDSLFR10003',
+      lat: 22.3849,
+      lon: 113.9721,
+      rot: 65,
+      spd: 34,
+      occ: 36,
+      tier: 'SLOW',
+      roadEn: 'Wong Chu Road near Tuen Mun Heung Sze Wui Road - Eastbound',
+      roadTc: '皇珠路近屯門鄉事會路 - 東行',
+      camKey: 'TDSLFR10003',
+    },
+  ];
+
+  // Stop 8 (Tung Chung Cable Car Terminal on Lantau) MUST NOT pull Wong Chu Road across TM-CLKL subsea tunnel
+  const atStop8 = sb.getDirectionalRoadSummary(stops, stop8Idx, wongChuDetectors, false, 8);
+  assert.equal(atStop8, null, 'Stop 8 on Lantau must NOT pull Tuen Mun Wong Chu Road alerts across TM-CLKL tunnel');
+
+  // Stop 11 (TM-CLKL Tunnel BBI itself) DOES see Wong Chu Road on its immediate departing leg
+  const atStop11 = sb.getDirectionalRoadSummary(stops, stop11Idx, wongChuDetectors, false, 8);
+  assert.ok(atStop11 && atStop11.focusDet?.id === 'TDSLFR10003', 'Stop 11 (TM-CLKL Tunnel BBI) must still surface Wong Chu Road ahead');
+
+  // Strict 5km lookahead cap on normal multi-stop urban corridor (detectors > 5km downroute excluded)
+  const urbanStops = Array.from({ length: 12 }, (_, i) => ({
+    stopKey: `U_${i}`,
+    stopName_e: `Nathan Road Stop ${i + 1}`,
+    latitude: String(22.300 + i * 0.009), // ~1.0 km per stop -> 11 km total
+    longitude: '114.1715',
+  }));
+  const detAt3Km = { id: 'URB_3KM', lat: 22.327, lon: 114.1715, rot: 0, spd: 18, occ: 85, tier: 'JAMMED', roadEn: 'Nathan Road (3km)', camKey: 'K101F' };
+  const detAt8Km = { id: 'URB_8KM', lat: 22.372, lon: 114.1715, rot: 0, spd: 8, occ: 98, tier: 'JAMMED', roadEn: 'Nathan Road (8km)', camKey: 'K109F' };
+
+  const onlyFar = sb.getDirectionalRoadSummary(urbanStops, 0, [detAt8Km], false, 12, null, 5000);
+  assert.equal(onlyFar, null, 'Detector 8km ahead on urban route must be excluded by 5km maxLookaheadMeters cap');
+
+  const bothUrban = sb.getDirectionalRoadSummary(urbanStops, 0, [detAt3Km, detAt8Km], false, 12, null, 5000);
+  assert.equal(bothUrban?.focusDet?.id, 'URB_3KM', 'Detector within 5km must be selected while 8km detector is ignored');
+});
+
+test('Architecture Update 1B: Floating Back to Stop pill appears when panning >300m away from active stop and pans back cleanly', () => {
+  const mapCode = fs.readFileSync('public/map.js', 'utf8');
+  const html = fs.readFileSync('index.html', 'utf8');
+  assert.ok(html.includes('id="detailBackToStopPill"') && html.includes('returnToActiveDetailStop()'), 'index.html must include top-center #detailBackToStopPill button');
+
+  const pillEl = { style: { display: 'none' }, innerText: '', setAttribute() {} };
+  let mapCenter = { lat: 22.3690, lng: 113.9476 };
+  const setViewCalls: any[] = [];
+  let closedPopups = 0;
+  let closedModal = 0;
+
+  const fakeDetailMap = {
+    getCenter: () => mapCenter,
+    getZoom: () => 15,
+    once() {},
+    setView(coords: [number, number], zoom: number) {
+      mapCenter = { lat: coords[0], lng: coords[1] };
+      setViewCalls.push({ coords, zoom });
+    },
+    closePopup() { closedPopups++; },
+    getBounds: () => ({ isValid: () => true, pad: () => ({ contains: () => true }) }),
+  };
+
+  const ctx: any = {
+    window: {
+      trafficLayerEnabled: true,
+      __LIVE_TRAFFIC_DETECTORS__: [
+        { id: 'TDS90048', lat: 22.3965, lon: 113.9775, rot: 15, spd: 14, occ: 88, tier: 'JAMMED', roadEn: 'Tuen Mun Road' },
+      ],
+      closeTrafficDecisionModal() { closedModal++; },
+    },
+    document: {
+      getElementById: (id: string) => (id === 'detailBackToStopPill' ? pillEl : null),
+    },
+    isValidRailOrFerryCoord: (la: number, lo: number) => Number.isFinite(la) && Number.isFinite(lo) && la > 22 && la < 23 && lo > 113 && lo < 115,
+    currentLang: 'en',
+    currentView: 'detail',
+    detailRouteGroup: { key: 'LWB_E36_O', mode: 'BUS', routeNo: 'E36' },
+    detailExpandedStopIdx: 10,
+    getStopsForGroup: () => Array.from({ length: 12 }, (_, i) => ({
+      stopName_e: i === 10 ? 'Tuen Mun Chek Lap Kok Tunnel BBI' : `Stop ${i + 1}`,
+      latitude: i === 10 ? '22.3690' : String(22.28 + i * 0.005),
+      longitude: i === 10 ? '113.9476' : '113.9420',
+    })),
+    escapeHtml: (s: string) => String(s ?? ''),
+    L: {
+      layerGroup: () => ({ addTo() { return this; }, clearLayers() {} }),
+      polyline: () => ({ addTo() { return this; }, bindTooltip() { return this; }, on() { return this; } }),
+      divIcon: (o: any) => o,
+      marker: () => ({ addTo() { return this; }, bindTooltip() { return this; }, openTooltip() {}, on() { return this; } }),
+    },
+    console,
+    Math,
+    Number,
+    String,
+    Array,
+    Map,
+    Set,
+    setTimeout: (fn: any) => fn(),
+    clearTimeout: () => {},
+  };
+  ctx.window.document = ctx.document;
+  vm.createContext(ctx);
+  vm.runInContext(mapCode, ctx);
+  ctx.mapInstance = fakeDetailMap;
+  ctx.window.mapInstance = fakeDetailMap;
+
+  // Pan to detector ~4.3km away from Stop 11 -> pill MUST show "↩ Back to Stop 11"
+  ctx.focusTrafficDetectorOnDetailMap(22.3965, 113.9775, 'TDS90048');
+  assert.equal(pillEl.style.display, 'inline-flex', 'Back to Stop pill must appear after panning >300m away');
+  assert.equal(pillEl.innerText, '↩ Back to Stop 11', 'Pill text must dynamically reflect active stop sequence 11');
+
+  // Tap pill -> pans back to Stop 11, closes popup/modal, hides pill
+  ctx.returnToActiveDetailStop();
+  assert.equal(pillEl.style.display, 'none', 'Pill must auto-hide after returning to active stop');
+  assert.ok(closedPopups >= 1 && closedModal >= 1, 'Returning to stop must close open popup and camera modal');
+  const lastView = setViewCalls[setViewCalls.length - 1];
+  assert.ok(Math.abs(lastView.coords[0] - 22.3690) < 0.001 && Math.abs(lastView.coords[1] - 113.9476) < 0.001, 'Map must pan back to Stop 11 coordinates');
+});
+
+test('Architecture Update 2: Route-Level Speed Digital Twin GeoJSON colors, casing, and Worker unfiltered speedMapGeoJson + cameras', () => {
+  const sb = loadHardcodeAndPlannerSandbox();
+  const getTrafficSpeedColorHex = sb.ctx.window.getTrafficSpeedColorHex;
+  const buildRouteSpeedGeoJson = sb.ctx.window.buildRouteSpeedGeoJson;
+
+  // Exact speed color thresholds
+  assert.equal(getTrafficSpeedColorHex(12), '#FF3B30');
+  assert.equal(getTrafficSpeedColorHex(19.9), '#FF3B30');
+  assert.equal(getTrafficSpeedColorHex(20), '#FFCC00');
+  assert.equal(getTrafficSpeedColorHex(40), '#FFCC00');
+  assert.equal(getTrafficSpeedColorHex(40.1), '#34C759');
+  assert.equal(getTrafficSpeedColorHex(85), '#34C759');
+  assert.equal(getTrafficSpeedColorHex(null), '#8E8E93');
+
+  // Build route speed GeoJSON along a northbound highway with 1 jammed, 1 slow, 1 smooth, and 1 opposite-bound detector
+  const coords = [
+    [22.3700, 113.9600],
+    [22.3850, 113.9600],
+    [22.4000, 113.9600],
+    [22.4250, 113.9600],
+  ];
+  const dets = [
+    { id: 'D_JAM', lat: 22.3740, lon: 113.9601, rot: 0, spd: 14, tier: 'JAMMED', roadEn: 'Highway South' },
+    { id: 'D_SLOW', lat: 22.3920, lon: 113.9601, rot: 2, spd: 32, tier: 'SLOW', roadEn: 'Highway Mid' },
+    { id: 'D_FAST', lat: 22.4220, lon: 113.9601, rot: 358, spd: 78, tier: 'SMOOTH', roadEn: 'Highway North' },
+    // Opposite bound jammed detector right next to D_FAST -> must be rejected by direction check!
+    { id: 'D_OPP', lat: 22.4220, lon: 113.9600, rot: 180, spd: 9, tier: 'JAMMED', roadEn: 'Highway North SB' },
+  ];
+  const fc = buildRouteSpeedGeoJson(coords, dets, { isRoadSnapped: true });
+  assert.equal(fc.type, 'FeatureCollection');
+  assert.ok(fc.features.length >= 4, 'Expected multiple distinct speed-colored LineString segments');
+  const colors = new Set(fc.features.map((f: any) => f.properties.color));
+  assert.ok(colors.has('#FF3B30') && colors.has('#FFCC00') && colors.has('#34C759') && colors.has('#8E8E93'), `Expected all 4 speed/no-data colors, got ${[...colors].join(',')}`);
+  const oppUsed = fc.features.some((f: any) => f.properties.detectorId === 'D_OPP');
+  assert.equal(oppUsed, false, 'Opposite-direction detector must NOT color the active route polyline');
+
+  // Verify map.js renders dark grey casing (#2C2C2E weight 10) + colored GeoJSON (weight 6, opacity 0.9, round caps)
+  const mapCode = fs.readFileSync('public/map.js', 'utf8');
+  const polyCalls: any[] = [];
+  const geoJsonCalls: any[] = [];
+  const mCtx: any = {
+    window: {
+      trafficLayerEnabled: true,
+      __LIVE_TRAFFIC_DETECTORS__: dets,
+      buildRouteSpeedGeoJson,
+    },
+    document: { getElementById: () => null },
+    L: {
+      layerGroup: (items: any[] = []) => ({ _items: items, addTo() { return this; }, clearLayers() {} }),
+      polyline: (c: any, opts: any) => { polyCalls.push({ c, opts }); return { addTo() { return this; } }; },
+      geoJSON: (data: any, opts: any) => { geoJsonCalls.push({ data, opts }); return { addTo() { return this; } }; },
+    },
+    console, Math, Number, String, Array, Map, Set,
+  };
+  vm.createContext(mCtx);
+  vm.runInContext(mapCode, mCtx);
+  mCtx.buildDetailBusPolylineLayer(coords, '#FF3B30', { isRoadSnapped: true });
+  assert.ok(polyCalls.some(p => p.opts?.color === '#2C2C2E' && p.opts?.weight === 10), 'Route speed polyline must render dark grey casing (#2C2C2E, weight 10)');
+  assert.equal(geoJsonCalls.length, 1, 'Route speed polyline must use L.geoJSON for speed-colored segments');
+  const sampleStyle = geoJsonCalls[0].opts.style(fc.features[0]);
+  assert.equal(sampleStyle.weight, 6);
+  assert.equal(sampleStyle.opacity, 0.9);
+  assert.equal(sampleStyle.lineCap, 'round');
+  assert.equal(sampleStyle.lineJoin, 'round');
+
+  // Verify worker.js returns speedMapGeoJson + cameras and keeps sole export
+  const workerSrc = fs.readFileSync('functions/api/worker.js', 'utf8');
+  assert.ok(workerSrc.includes('speedMapGeoJson') && workerSrc.includes('buildWorkerSpeedMapGeoJson'), 'worker.js must expose speedMapGeoJson');
+  assert.ok(workerSrc.includes('cameras: cameras.length') && workerSrc.includes('      cameras,'), 'worker.js traffic_live must expose active TD cameras array');
+  const exportLines = workerSrc.split('\n').filter((l) => /^\s*export\b/.test(l));
+  assert.equal(exportLines.length, 1, 'worker.js must keep exactly one export (onRequest)');
+});
+
+test('Architecture Update 3: Global Map View Traffic Toggle hides bus stops, renders unfiltered GeoJSON + MarkerClusterGroup cameras, and restores stops when OFF', () => {
+  const mapCode = fs.readFileSync('public/map.js', 'utf8');
+  const addedControls: any[] = [];
+  const addedToBrowseMap = new Set<any>();
+  const clusterMarkers: any[] = [];
+  const geoJsonLayers: any[] = [];
+  const casingPolylines: any[] = [];
+
+  const fakeBrowseMap: any = {
+    addControl(ctrl: any) { addedControls.push(ctrl); ctrl.onAdd(this); },
+    hasLayer(l: any) { return addedToBrowseMap.has(l); },
+    removeLayer(l: any) { addedToBrowseMap.delete(l); },
+    getCenter: () => ({ lat: 22.4447, lng: 114.0243 }),
+    getBounds: () => ({
+      isValid: () => true,
+      pad: () => ({ contains: () => true }),
+      contains: () => true,
+      getSouth: () => 22.40,
+      getNorth: () => 22.48,
+      getWest: () => 113.98,
+      getEast: () => 114.06,
+    }),
+    getZoom: () => 15,
+    on() {},
+  };
+
+  const makeGroup = () => ({
+    _layers: [] as any[],
+    addTo() { addedToBrowseMap.add(this); return this; },
+    addLayer(l: any) { this._layers.push(l); return this; },
+    clearLayers() { this._layers.length = 0; },
+  });
+
+  const fakeCluster = {
+    _markers: clusterMarkers,
+    addTo() { addedToBrowseMap.add(this); return this; },
+    addLayer(l: any) { clusterMarkers.push(l); return this; },
+    clearLayers() { clusterMarkers.length = 0; },
+  };
+
+  const initialStopMarker = { id: 'stop1' };
+  addedToBrowseMap.add(initialStopMarker);
+
+  const ctx: any = {
+    window: {
+      __LIVE_TRAFFIC_DETECTORS__: [
+        { id: 'AID1', lat: 22.3965, lon: 113.9775, rot: 15, spd: 16, occ: 85, tier: 'JAMMED', color: '#FF3B30', roadEn: 'Tuen Mun Road' },
+        { id: 'AID2', lat: 22.4338, lon: 114.0025, rot: 45, spd: 80, occ: 10, tier: 'SMOOTH', color: '#34C759', roadEn: 'Yuen Long Highway' },
+      ],
+      __LIVE_TRAFFIC_CAMERAS__: [
+        { key: 'TM105F', lat: 22.3965, lon: 113.9775, descEn: 'Tuen Mun Rd', descTc: '屯門公路', region: 'TM', url: 'https://tdcctv.data.one.gov.hk/TM105F.JPG' },
+        { key: 'YL102F', lat: 22.4440, lon: 114.0220, descEn: 'Yuen Long Hwy', descTc: '元朗公路', region: 'YL', url: 'https://tdcctv.data.one.gov.hk/YL102F.JPG' },
+      ],
+      __LIVE_TRAFFIC_SPEED_GEOJSON__: {
+        type: 'FeatureCollection',
+        features: [
+          { type: 'Feature', geometry: { type: 'LineString', coordinates: [[113.977, 22.395], [113.978, 22.398]] }, properties: { color: '#FF3B30', speedKmh: 16, detectorId: 'AID1', roadEn: 'Tuen Mun Road' } },
+          { type: 'Feature', geometry: { type: 'LineString', coordinates: [[114.001, 22.432], [114.004, 22.435]] }, properties: { color: '#34C759', speedKmh: 80, detectorId: 'AID2', roadEn: 'Yuen Long Highway' } },
+        ],
+      },
+      syncTrafficToggleButtonsUI() {},
+    },
+    document: { getElementById: () => null },
+    isValidRailOrFerryCoord: (la: number, lo: number) => Number.isFinite(la) && Number.isFinite(lo),
+    getStopName: (s: any) => s.stopName_e || '',
+    getBaseStopNameKey: (s: any) => String(s?.stopName_e || '').toLowerCase(),
+    cleanFerryLabel: (s: string) => String(s || ''),
+    buildBrowseMapActionPopupHtml: () => '<div>stop</div>',
+    currentLang: 'en',
+    activeAppMode: 'BUS',
+    allStops: [
+      { stopKey: 'KMB_S1', mode: 'BUS', stopName_e: 'Yuen Long Plaza', latitude: '22.4447', longitude: '114.0243', routeNos: new Set(['E36']) },
+    ],
+    escapeHtml: (s: string) => String(s ?? ''),
+    escapeJsAttr: (s: string) => String(s ?? ''),
+    L: {
+      Control: {
+        extend(def: any) {
+          return function(this: any) {
+            Object.assign(this, def);
+            this.addTo = (m: any) => { m.addControl(this); return this; };
+          };
+        },
+      },
+      DomUtil: {
+        create(_tag: string, cls: string) {
+          return { className: cls, id: '', type: '', innerHTML: '', classList: { toggle() {}, add() {}, remove() {} }, setAttribute() {}, addEventListener() {} };
+        },
+      },
+      DomEvent: { disableClickPropagation() {}, disableScrollPropagation() {}, stop() {}, on() {} },
+      layerGroup: () => makeGroup(),
+      markerClusterGroup: () => fakeCluster,
+      geoJSON: (fc: any, opts: any) => { geoJsonLayers.push({ fc, opts }); return { addTo(g: any) { g.addLayer(this); return this; } }; },
+      polyline: (c: any, opts: any) => { casingPolylines.push({ c, opts }); return { addTo(g: any) { g.addLayer(this); return this; } }; },
+      divIcon: (o: any) => o,
+      circleMarker: (ll: any, opts: any) => ({ ll, opts, bindTooltip() { return this; }, bindPopup() { return this; }, addTo() { addedToBrowseMap.add(this); return this; } }),
+      marker: (ll: any, opts: any) => ({ ll, opts, bindTooltip() { return this; }, bindPopup() { return this; }, on() { return this; }, addTo(g: any) { g?.addLayer?.(this); return this; } }),
+    },
+    console, Math, Number, String, Array, Map, Set,
+  };
+  vm.createContext(ctx);
+  vm.runInContext(mapCode, ctx);
+
+  // Wire mock browseMapInstance and pre-populate an active bus stop marker
+  ctx.browseMapInstance = fakeBrowseMap;
+  ctx.window.browseMapInstance = fakeBrowseMap;
+  ctx.activeBrowseMarkersByKey.set('KMB_S1', initialStopMarker);
+
+  // Attach custom Leaflet control
+  ctx.attachGlobalTrafficControlToBrowseMap(fakeBrowseMap);
+  assert.equal(addedControls.length, 1, 'Must attach custom Leaflet L.Control for Global Traffic Toggle');
+  assert.equal(ctx.window.globalTrafficLayerEnabled, false, 'Global traffic toggle must default to OFF so stops browse normally');
+
+  // Toggle ON -> bus stops hidden, unfiltered GeoJSON + MarkerClusterGroup cameras rendered
+  ctx.toggleGlobalTrafficLayer(true);
+  assert.equal(ctx.window.globalTrafficLayerEnabled, true);
+  assert.equal(ctx.activeBrowseMarkersByKey.size, 0, 'Turning Global Traffic ON must immediately hide all bus stop markers');
+  assert.equal(addedToBrowseMap.has(initialStopMarker), false, 'Bus stop marker must be removed from browseMapInstance while Global Traffic is ON');
+  assert.equal(geoJsonLayers.length, 2, 'Global Traffic ON must render 2 L.geoJSON layers (dark grey casing + speed-colored lines)');
+  const casingStyle = typeof geoJsonLayers[0].opts.style === 'function' ? geoJsonLayers[0].opts.style(geoJsonLayers[0].fc.features[0]) : geoJsonLayers[0].opts.style;
+  assert.equal(casingStyle.color, '#2C2C2E', 'Global Traffic casing GeoJSON must be #2C2C2E');
+  assert.equal(casingStyle.weight, 10, 'Global Traffic casing GeoJSON must have weight 10');
+  const topStyle = geoJsonLayers[1].opts.style(geoJsonLayers[1].fc.features[0]);
+  assert.equal(topStyle.color, '#FF3B30', 'Global Traffic speed GeoJSON must apply live speed color');
+  assert.equal(topStyle.weight, 6, 'Global Traffic speed GeoJSON must have weight 6');
+  assert.equal(clusterMarkers.length, 2, 'Global Traffic ON must plot active TD cameras into L.markerClusterGroup');
+
+  // Calling renderBrowseMapVisiblePins() while Global Traffic is ON must keep bus stops hidden
+  ctx.renderBrowseMapVisiblePins();
+  assert.equal(ctx.activeBrowseMarkersByKey.size, 0, 'Bus stops must remain hidden during pan/zoom while Global Traffic is ON');
+
+  // Toggle OFF -> clears global traffic + camera clusters and restores bus stops
+  ctx.toggleGlobalTrafficLayer(false);
+  assert.equal(ctx.window.globalTrafficLayerEnabled, false);
+  assert.equal(clusterMarkers.length, 0, 'Turning Global Traffic OFF must clear camera clusters');
+  assert.equal(ctx.activeBrowseMarkersByKey.size, 1, 'Turning Global Traffic OFF must immediately restore bus stop markers');
+});
+
+test('Architecture Update 4: GPS Direction Toggle clusters paired same-name stops within 200m (Sun Wai Tsuen 88m poles) and reads tdBound for NLB & GMB routes', () => {
+  const sb = loadHardcodeAndPlannerSandbox();
+  const collectDirectionClusterStops = sb.ctx.window.collectDirectionClusterStops;
+  const db = JSON.parse(fs.readFileSync('public/bus_index.min.json', 'utf8'));
+  const html = fs.readFileSync('index.html', 'utf8');
+
+  // 1. Verify extractRouteBoundCode in index.html checks tdBound BEFORE routeIds / key
+  const fnMatch = html.match(/function extractRouteBoundCode\(group\)\s*\{[\s\S]*?\n\}/);
+  assert.ok(fnMatch, 'index.html must define extractRouteBoundCode');
+  const fnCtx: any = {};
+  vm.createContext(fnCtx);
+  vm.runInContext(fnMatch[0], fnCtx);
+
+  const nlb3mO = db.groupedRoutes.find((g: any) => g.company === 'NLB' && g.routeNo === '3M' && g.tdBound === 'O');
+  const nlb3mI = db.groupedRoutes.find((g: any) => g.company === 'NLB' && g.routeNo === '3M' && g.tdBound === 'I');
+  assert.ok(nlb3mO && nlb3mI, 'bus_index.min.json must contain both O and I bounds of NLB 3M');
+  assert.equal(fnCtx.extractRouteBoundCode(nlb3mO), 'O', 'NLB 3M outbound must resolve to bound O');
+  assert.equal(fnCtx.extractRouteBoundCode(nlb3mI), 'I', 'NLB 3M inbound must resolve to bound I via tdBound');
+
+  // 2. Real Sun Wai Tsuen paired stops (88m apart, opposite sides of South Lantau Rd)
+  const allStops = db.stopsDict.map((s: any, idx: number) => ({
+    stopKey: `S_${idx}`,
+    stopId: String(s[0]),
+    mode: 'BUS',
+    stopName_e: s[1],
+    name_tc: s[2],
+    latitude: String(s[3]),
+    longitude: String(s[4]),
+  }));
+  const swtPoleA = allStops.find((s: any) => s.stopName_e === 'Sun Wai Tsuen' && s.stopId === '13');
+  const swtPoleB = allStops.find((s: any) => s.stopName_e === 'Sun Wai Tsuen' && s.stopId === '260');
+  assert.ok(swtPoleA && swtPoleB, 'bus_index.min.json must contain both Sun Wai Tsuen poles (13 & 260)');
+
+  const cluster = collectDirectionClusterStops(allStops, swtPoleA, 'BUS', 0.20, { refLat: 22.2435, refLon: 113.9781 });
+  const ids = cluster.map((s: any) => s.stopId);
+  assert.ok(ids.includes('13') && ids.includes('260'), `Expected Sun Wai Tsuen 200m direction cluster to include both poles 13 & 260, got ${ids.join(',')}`);
+
+  // 3. Name normalization pairs suffixed opposite-side stops within 200m and excludes >200m stops
+  const synthStops = [
+    { stopKey: 'A', mode: 'BUS', stopName_e: 'Yuen Long Plaza (YL101)', name_tc: '元朗廣場', latitude: '22.4447', longitude: '114.0243' },
+    { stopKey: 'B', mode: 'BUS', stopName_e: 'Yuen Long Plaza (Opposite)', name_tc: '元朗廣場 (對面)', latitude: '22.4455', longitude: '114.0243' },
+    { stopKey: 'C', mode: 'BUS', stopName_e: 'Yuen Long Plaza', name_tc: '元朗廣場', latitude: '22.4480', longitude: '114.0243' },
+  ];
+  const synthCluster = collectDirectionClusterStops(synthStops, synthStops[0], 'BUS', 0.20);
+  assert.deepEqual(Array.from(synthCluster, (s: any) => s.stopKey), ['A', 'B'], 'Must cluster same-name opposite stop within 200m and reject >200m stop');
+});
+
 
 
 

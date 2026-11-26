@@ -979,6 +979,8 @@ function buildSpeedLinkTangentsWorker(detectorList = []) {
       }
       if (!bestNext) continue;
       links.push({
+        fromId: a.id || '',
+        toId: bestNext.id || '',
         aLat: a.lat,
         aLon: a.lon,
         bLat: bestNext.lat,
@@ -987,6 +989,7 @@ function buildSpeedLinkTangentsWorker(detectorList = []) {
         midLon: (a.lon + bestNext.lon) * 0.5,
         tangentDeg: _normalizeBearingDegWorker(bearingDegWorker(a.lat, a.lon, bestNext.lat, bestNext.lon)),
         roadCore: a.roadCore,
+        explicitDir: _extractCardinalDirWorker(a.roadEn || '', null),
         dir: _extractCardinalDirWorker(`${a.roadEn || ''} ${a.dir || ''}`, a.rot)
       });
     }
@@ -1019,8 +1022,6 @@ function computeCameraBearingDegWorker(cam, detectorList = [], cameraList = [], 
   const desc = String(cam.desc || '');
   const cRoad = _extractRoadCoreWorker(desc);
 
-  // 1. Explicit cardinal / intercardinal bound from camera description:
-  //    snap bearingDeg to the exact tangent of the nearest matching TD speed-link in that bound
   let textDir = cam.dir || _extractCardinalDirWorker(desc, null);
   if (!textDir) {
     if (/\bnorth[\s-]*east(?:bound)?\b/i.test(desc)) textDir = 'NE';
@@ -1029,63 +1030,107 @@ function computeCameraBearingDegWorker(cam, detectorList = [], cameraList = [], 
     else if (/\bsouth[\s-]*west(?:bound)?\b/i.test(desc)) textDir = 'SW';
   }
   const textDeg = _cardinalToDegWorker(textDir);
+
+  // 1. Exact TD detector match (e.g. all AID* and TDS* roadside cameras like TDS90070 EB @ 30° / TDS91054 WB @ 200°):
+  //    On curved HK highways (Yuen Long Hwy, Sha Tin Rd, Kwun Tong Bypass, Princess Margaret Rd), the corridor bound
+  //    label ("Eastbound") can differ by 60–80° from true compass East (90°). Always trust the exact detector's road
+  //    tangent / official TD rot bearing first!
+  if (Array.isArray(detectorList) && detectorList.length) {
+    let exactDet = null;
+    let pairedDet = null;
+    for (let i = 0; i < detectorList.length; i++) {
+      const d = detectorList[i];
+      if (!d || !Number.isFinite(Number(d.rot))) continue;
+      if (d.id === cam.key) { exactDet = d; break; }
+      if (!pairedDet && d.camKey === cam.key) {
+        const dTextDir = _extractCardinalDirWorker(d.roadEn || '', null);
+        if (!textDir || !dTextDir || !_isOppositeCardinalWorker(textDir, dTextDir)) {
+          pairedDet = d;
+        }
+      }
+    }
+    const matchedDet = exactDet || pairedDet;
+    if (matchedDet) {
+      const detRot = _normalizeBearingDegWorker(matchedDet.rot);
+      if (Array.isArray(speedLinkTangents) && speedLinkTangents.length) {
+        for (let i = 0; i < speedLinkTangents.length; i++) {
+          const lk = speedLinkTangents[i];
+          if (!lk) continue;
+          if ((lk.fromId === matchedDet.id || lk.toId === matchedDet.id) && angDiffDegWorker(detRot, lk.tangentDeg) <= 25) {
+            return _normalizeBearingDegWorker(lk.tangentDeg);
+          }
+        }
+      }
+      return detRot;
+    }
+  }
+
+  // 2. Explicit cardinal / intercardinal bound from camera description:
+  //    2a. Match same-road TD speed-link or detector sharing the EXACT SAME explicit bound label at any curve angle
+  //    2b. Fallback to nearby speed-link tangent or detector rot within <= 75° of textDeg (never opposite bound)
   if (textDeg !== null) {
     if (Number.isFinite(cLat) && Number.isFinite(cLon)) {
       if (Array.isArray(speedLinkTangents) && speedLinkTangents.length) {
-        let bestTangent = null;
-        let bestScore = Infinity;
+        let bestSameBoundTangent = null;
+        let bestSameBoundDist = Infinity;
+        let bestCompassTangent = null;
+        let bestCompassScore = Infinity;
         for (let i = 0; i < speedLinkTangents.length; i++) {
           const lk = speedLinkTangents[i];
           if (!lk) continue;
           if (Math.abs(lk.midLat - cLat) > 0.015 || Math.abs(lk.midLon - cLon) > 0.015) continue;
-          const dAng = angDiffDegWorker(textDeg, lk.tangentDeg);
-          if (dAng > 55) continue;
+          if (textDir && lk.explicitDir && _isOppositeCardinalWorker(textDir, lk.explicitDir)) continue;
           const dKm = _pointToLinkDistKmWorker(cLat, cLon, lk);
-          if (dKm > 0.85) continue;
           const sameRoad = Boolean(cRoad && lk.roadCore && (cRoad === lk.roadCore || cRoad.includes(lk.roadCore) || lk.roadCore.includes(cRoad)));
-          const score = dKm + (sameRoad ? 0 : 0.28) + dAng * 0.0015;
-          if (score < bestScore) {
-            bestScore = score;
-            bestTangent = lk.tangentDeg;
+          if (sameRoad && textDir && lk.explicitDir === textDir && dKm <= 1.2 && dKm < bestSameBoundDist) {
+            bestSameBoundDist = dKm;
+            bestSameBoundTangent = lk.tangentDeg;
+          }
+          const dAng = angDiffDegWorker(textDeg, lk.tangentDeg);
+          if (dAng <= 75 && dKm <= 0.85) {
+            const score = dKm + (sameRoad ? 0 : 0.28) + dAng * 0.0015;
+            if (score < bestCompassScore) {
+              bestCompassScore = score;
+              bestCompassTangent = lk.tangentDeg;
+            }
           }
         }
-        if (bestTangent !== null) return _normalizeBearingDegWorker(bestTangent);
+        if (bestSameBoundTangent !== null) return _normalizeBearingDegWorker(bestSameBoundTangent);
+        if (bestCompassTangent !== null) return _normalizeBearingDegWorker(bestCompassTangent);
       }
 
       if (Array.isArray(detectorList) && detectorList.length) {
-        let bestDetRot = null;
-        let bestScore = Infinity;
+        let bestSameBoundRot = null;
+        let bestSameBoundDist = Infinity;
+        let bestCompassRot = null;
+        let bestCompassScore = Infinity;
         for (let i = 0; i < detectorList.length; i++) {
           const d = detectorList[i];
           if (!d || !Number.isFinite(Number(d.rot)) || !Number.isFinite(Number(d.lat)) || !Number.isFinite(Number(d.lon))) continue;
-          if (Math.abs(d.lat - cLat) > 0.007 || Math.abs(d.lon - cLon) > 0.007) continue;
+          if (Math.abs(d.lat - cLat) > 0.01 || Math.abs(d.lon - cLon) > 0.01) continue;
+          const dTextDir = _extractCardinalDirWorker(d.roadEn || '', null);
+          if (textDir && dTextDir && _isOppositeCardinalWorker(textDir, dTextDir)) continue;
           const dKm = haversineKmWorker(cLat, cLon, d.lat, d.lon);
-          if (dKm > 0.65) continue;
-          const dAng = angDiffDegWorker(textDeg, Number(d.rot));
-          if (dAng > 55) continue;
           const dRoad = _extractRoadCoreWorker(d.roadEn);
           const sameRoad = Boolean(cRoad && dRoad && (cRoad === dRoad || cRoad.includes(dRoad) || dRoad.includes(cRoad)));
-          const score = dKm + (sameRoad ? 0 : 0.25) + dAng * 0.002;
-          if (score < bestScore) {
-            bestScore = score;
-            bestDetRot = Number(d.rot);
+          if (sameRoad && textDir && dTextDir === textDir && dKm <= 1.0 && dKm < bestSameBoundDist) {
+            bestSameBoundDist = dKm;
+            bestSameBoundRot = Number(d.rot);
+          }
+          const dAng = angDiffDegWorker(textDeg, Number(d.rot));
+          if (dKm <= 0.65 && dAng <= 75) {
+            const score = dKm + (sameRoad ? 0 : 0.25) + dAng * 0.002;
+            if (score < bestCompassScore) {
+              bestCompassScore = score;
+              bestCompassRot = Number(d.rot);
+            }
           }
         }
-        if (bestDetRot !== null) return _normalizeBearingDegWorker(bestDetRot);
+        if (bestSameBoundRot !== null) return _normalizeBearingDegWorker(bestSameBoundRot);
+        if (bestCompassRot !== null) return _normalizeBearingDegWorker(bestCompassRot);
       }
     }
     return textDeg;
-  }
-
-  // 2. Exact paired detector rot bearing (for cameras without an explicit bound in description)
-  if (Array.isArray(detectorList) && detectorList.length) {
-    for (let i = 0; i < detectorList.length; i++) {
-      const d = detectorList[i];
-      if (!d) continue;
-      if ((d.id === cam.key || d.camKey === cam.key) && Number.isFinite(Number(d.rot))) {
-        return _normalizeBearingDegWorker(d.rot);
-      }
-    }
   }
 
   // 3. Standalone intersection / roundabout / tunnel portal cameras:

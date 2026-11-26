@@ -2488,18 +2488,28 @@ function renderGlobalTrafficDashboard(targetMap = window.browseMapInstance) {
       if (!Number.isFinite(cLat) || !Number.isFinite(cLon)) continue;
       const bearingDeg = resolveCameraBearingDeg(cam, detectors, null);
       const compassTxt = formatCompassFromBearingDeg(bearingDeg, isZh);
+      const dirMeta = (typeof window.extractCardinalDirectionMeta === 'function')
+        ? window.extractCardinalDirectionMeta(cam, isZh)
+        : null;
+      const boundBadge = dirMeta?.code ? `${dirMeta.arrowGlyph} ${dirMeta.code}` : '';
       const camIcon = buildDirectionalCameraDivIcon(cam, bearingDeg, isZh, false);
       const m = L.marker([cLat, cLon], { icon: camIcon, zIndexOffset: 240 });
       const cleanDesc = sanitizeBottleneckLabel(cam.desc || cam.key);
+      const orientTag = [boundBadge, compassTxt].filter(Boolean).join(' · ');
       if (typeof m.bindTooltip === 'function') {
-        m.bindTooltip(`📷 ${cleanDesc}${compassTxt ? ` (${compassTxt})` : ''}`, { direction: 'top', offset: [0, -10], className: 'kmb-map-stop-label' });
+        m.bindTooltip(`📷 ${cleanDesc}${orientTag ? ` (${orientTag})` : ''}`, { direction: 'top', offset: [0, -10], className: 'kmb-map-stop-label' });
       }
       if (typeof m.on === 'function') {
         m.on('click', (ev) => {
           if (ev?.originalEvent?.stopPropagation) ev.originalEvent.stopPropagation();
+          try {
+            document.querySelectorAll('.global-traffic-cam-marker.cam-selected').forEach(el => el.classList.remove('cam-selected'));
+            const clickedEl = document.querySelector(`.global-traffic-cam-marker[data-cam-key="${CSS.escape ? CSS.escape(cam.key) : cam.key}"]`);
+            if (clickedEl) clickedEl.classList.add('cam-selected');
+          } catch (e) {}
           const matchedDet = (typeof window.findNearestMatchingDetectorForCamera === 'function')
             ? window.findNearestMatchingDetectorForCamera(cam, detectors)
-            : (detectors.find(x => x.camKey === cam.key) || null);
+            : (detectors.find(x => x.id === cam.key || x.camKey === cam.key) || null);
           if (matchedDet && typeof window.openTrafficDecisionModal === 'function') {
             window.openTrafficDecisionModal(matchedDet.id, _findOppositeTrafficDetectorId(matchedDet), '', false, { ...cam, bearingDeg });
           } else if (typeof window.openTrafficCameraModal === 'function') {
@@ -2607,25 +2617,72 @@ function resolveCameraBearingDeg(cam, detectors = [], routeCoords = null) {
   const detList = Array.isArray(detectors) ? detectors : [];
   const cRoad = desc.split(/\s+near\s+|\s+-\s+|\s*\/\s*|\s*\(/i)[0].trim().toLowerCase();
 
-  // 1. Explicit cardinal / intercardinal bound from camera description:
-  //    align to nearest matching TD speed-link tangent in that bound first, then compatible detector rot, then cardinal
+  const extractTextDir = (s) => {
+    const t = String(s || '');
+    if (/\b(?:northbound|north[\s-]*bound|\(nb\)|nb)\b|北行/i.test(t)) return 'NB';
+    if (/\b(?:eastbound|east[\s-]*bound|\(eb\)|eb)\b|東行/i.test(t)) return 'EB';
+    if (/\b(?:southbound|south[\s-]*bound|\(sb\)|sb)\b|南行/i.test(t)) return 'SB';
+    if (/\b(?:westbound|west[\s-]*bound|\(wb\)|wb)\b|西行/i.test(t)) return 'WB';
+    return '';
+  };
+  const isOppDir = (a, b) => (a === 'EB' && b === 'WB') || (a === 'WB' && b === 'EB') || (a === 'NB' && b === 'SB') || (a === 'SB' && b === 'NB');
+
   const dirTxt = `${cam.dir || ''} ${desc}`;
+  const textDir = extractTextDir(dirTxt);
   let cardinalDeg = null;
   if (/\bnorth[\s-]*east(?:bound)?\b/i.test(dirTxt)) cardinalDeg = 45;
   else if (/\bnorth[\s-]*west(?:bound)?\b/i.test(dirTxt)) cardinalDeg = 315;
   else if (/\bsouth[\s-]*east(?:bound)?\b/i.test(dirTxt)) cardinalDeg = 135;
   else if (/\bsouth[\s-]*west(?:bound)?\b/i.test(dirTxt)) cardinalDeg = 225;
-  else if (/\b(?:northbound|north[\s-]*bound|\(nb\)|nb)\b|北行/i.test(dirTxt)) cardinalDeg = 0;
-  else if (/\b(?:eastbound|east[\s-]*bound|\(eb\)|eb)\b|東行/i.test(dirTxt)) cardinalDeg = 90;
-  else if (/\b(?:southbound|south[\s-]*bound|\(sb\)|sb)\b|南行/i.test(dirTxt)) cardinalDeg = 180;
-  else if (/\b(?:westbound|west[\s-]*bound|\(wb\)|wb)\b|西行/i.test(dirTxt)) cardinalDeg = 270;
+  else if (textDir === 'NB') cardinalDeg = 0;
+  else if (textDir === 'EB') cardinalDeg = 90;
+  else if (textDir === 'SB') cardinalDeg = 180;
+  else if (textDir === 'WB') cardinalDeg = 270;
 
+  // 1. Exact TD detector match (e.g. AID* / TDS* cameras like TDS90070 EB @ 30° & TDS91054 WB @ 200°):
+  //    Always prioritize exact detector road heading/link tangent before cardinal compass fallbacks.
+  if (detList.length) {
+    let exactDet = null;
+    let pairedDet = null;
+    for (let i = 0; i < detList.length; i++) {
+      const d = detList[i];
+      if (!d || !Number.isFinite(Number(d.rot))) continue;
+      if (d.id === cam.key) { exactDet = d; break; }
+      if (!pairedDet && d.camKey === cam.key) {
+        const dTextDir = extractTextDir(d.roadEn || '');
+        if (!textDir || !dTextDir || !isOppDir(textDir, dTextDir)) pairedDet = d;
+      }
+    }
+    const matchedDet = exactDet || pairedDet;
+    if (matchedDet) {
+      const detRot = ((Math.round(Number(matchedDet.rot)) % 360) + 360) % 360;
+      const speedFeats = window?.__LIVE_TRAFFIC_SPEED_GEOJSON__?.features;
+      if (Array.isArray(speedFeats) && speedFeats.length) {
+        for (let i = 0; i < speedFeats.length; i++) {
+          const f = speedFeats[i];
+          if (f?.properties?.id !== matchedDet.id && f?.properties?.toId !== matchedDet.id) continue;
+          const rc = Array.isArray(f?.properties?.rawCoords) && f.properties.rawCoords.length >= 2
+            ? f.properties.rawCoords
+            : f?.geometry?.coordinates;
+          if (!Array.isArray(rc) || rc.length < 2) continue;
+          const a = rc[0], b = rc[rc.length - 1];
+          const linkTangent = _camBearingDeg(a[1], a[0], b[1], b[0]);
+          if (_mapAngDiffDeg(detRot, linkTangent) <= 25) return ((Math.round(linkTangent) % 360) + 360) % 360;
+        }
+      }
+      return detRot;
+    }
+  }
+
+  // 2. Explicit cardinal / intercardinal bound from camera description:
+  //    2a. Match same-road TD speed-link or detector with the SAME explicit bound label at any curve angle
+  //    2b. Fallback to nearby speed-link tangent or detector rot within <= 75° of cardinalDeg (never opposite bound)
   if (cardinalDeg !== null) {
     if (Number.isFinite(cLat) && Number.isFinite(cLon)) {
       const speedFeats = window?.__LIVE_TRAFFIC_SPEED_GEOJSON__?.features;
       if (Array.isArray(speedFeats) && speedFeats.length) {
-        let bestTangent = null;
-        let bestScore = Infinity;
+        let bestSameBoundTangent = null, bestSameBoundDist = Infinity;
+        let bestTangent = null, bestScore = Infinity;
         for (let i = 0; i < speedFeats.length; i++) {
           const f = speedFeats[i];
           const rc = Array.isArray(f?.properties?.rawCoords) && f.properties.rawCoords.length >= 2
@@ -2635,50 +2692,58 @@ function resolveCameraBearingDeg(cam, detectors = [], routeCoords = null) {
           const a = rc[0], b = rc[rc.length - 1];
           const midLat = (a[1] + b[1]) * 0.5, midLon = (a[0] + b[0]) * 0.5;
           if (Math.abs(midLat - cLat) > 0.015 || Math.abs(midLon - cLon) > 0.015) continue;
+          const fTextDir = extractTextDir(f?.properties?.roadEn || '');
+          if (textDir && fTextDir && isOppDir(textDir, fTextDir)) continue;
           const linkTangent = _camBearingDeg(a[1], a[0], b[1], b[0]);
-          const dAng = _mapAngDiffDeg(cardinalDeg, linkTangent);
-          if (dAng > 55) continue;
           const dKm = _mapPointToSegDistKm(cLat, cLon, a[1], a[0], b[1], b[0]);
-          if (dKm > 0.85) continue;
           const fRoad = String(f?.properties?.roadEn || '').split(/\s+near\s+|\s+-\s+|\s*\/\s*|\s*\(/i)[0].trim().toLowerCase();
           const sameRoad = Boolean(cRoad && fRoad && (cRoad === fRoad || cRoad.includes(fRoad) || fRoad.includes(cRoad)));
-          const score = dKm + (sameRoad ? 0 : 0.28) + dAng * 0.0015;
-          if (score < bestScore) {
-            bestScore = score;
-            bestTangent = linkTangent;
+          if (sameRoad && textDir && fTextDir === textDir && dKm <= 1.2 && dKm < bestSameBoundDist) {
+            bestSameBoundDist = dKm;
+            bestSameBoundTangent = linkTangent;
+          }
+          const dAng = _mapAngDiffDeg(cardinalDeg, linkTangent);
+          if (dAng <= 75 && dKm <= 0.85) {
+            const score = dKm + (sameRoad ? 0 : 0.28) + dAng * 0.0015;
+            if (score < bestScore) {
+              bestScore = score;
+              bestTangent = linkTangent;
+            }
           }
         }
+        if (bestSameBoundTangent !== null) return ((Math.round(bestSameBoundTangent) % 360) + 360) % 360;
         if (bestTangent !== null) return ((Math.round(bestTangent) % 360) + 360) % 360;
       }
 
       if (detList.length) {
+        let bestSameBoundRot = null, bestSameBoundDist = Infinity;
         let bestRot = null, bestScore = Infinity;
         for (let i = 0; i < detList.length; i++) {
           const d = detList[i];
           if (!d || !Number.isFinite(Number(d.rot)) || !Number.isFinite(Number(d.lat)) || !Number.isFinite(Number(d.lon))) continue;
+          const dTextDir = extractTextDir(d.roadEn || '');
+          if (textDir && dTextDir && isOppDir(textDir, dTextDir)) continue;
           const dKm = _camHaversineKm(cLat, cLon, d.lat, d.lon);
-          const dAng = _mapAngDiffDeg(cardinalDeg, Number(d.rot));
-          if (dKm > 0.65 || dAng > 55) continue;
           const dRoad = String(d.roadEn || '').split(/\s+near\s+|\s+-\s+|\s*\/\s*|\s*\(/i)[0].trim().toLowerCase();
           const sameRoad = Boolean(cRoad && dRoad && (cRoad === dRoad || cRoad.includes(dRoad) || dRoad.includes(cRoad)));
-          const score = dKm + (sameRoad ? 0 : 0.25) + dAng * 0.002;
-          if (score < bestScore) {
-            bestScore = score;
-            bestRot = Number(d.rot);
+          if (sameRoad && textDir && dTextDir === textDir && dKm <= 1.0 && dKm < bestSameBoundDist) {
+            bestSameBoundDist = dKm;
+            bestSameBoundRot = Number(d.rot);
+          }
+          const dAng = _mapAngDiffDeg(cardinalDeg, Number(d.rot));
+          if (dKm <= 0.65 && dAng <= 75) {
+            const score = dKm + (sameRoad ? 0 : 0.25) + dAng * 0.002;
+            if (score < bestScore) {
+              bestScore = score;
+              bestRot = Number(d.rot);
+            }
           }
         }
+        if (bestSameBoundRot !== null) return ((Math.round(bestSameBoundRot) % 360) + 360) % 360;
         if (bestRot !== null) return ((Math.round(bestRot) % 360) + 360) % 360;
       }
     }
     return cardinalDeg;
-  }
-
-  // 2. Paired detector rot (for cameras without an explicit bound in description)
-  for (let i = 0; i < detList.length; i++) {
-    const d = detList[i];
-    if (d && (d.id === cam.key || d.camKey === cam.key) && Number.isFinite(Number(d.rot))) {
-      return ((Math.round(Number(d.rot)) % 360) + 360) % 360;
-    }
   }
 
   // 3. Landmark / cross-road vector for standalone intersection, roundabout & portal cameras
@@ -2746,7 +2811,6 @@ function formatCompassFromBearingDeg(deg, isZh = false) {
 
 function buildDirectionalCameraDivIcon(cam, bearingDeg, isZh = false, isRouteView = false) {
   const deg = ((Math.round(Number(bearingDeg) || 0) % 360) + 360) % 360;
-  const badgeBg = isRouteView ? 'rgba(15, 23, 42, 0.94)' : 'rgba(15, 23, 42, 0.92)';
   const titleTxt = escapeHtml(cam?.desc || cam?.key || (isZh ? '運輸署實時鏡頭' : 'TD Live Traffic Camera'));
   // High-contrast 45° radar FOV sector (36px radius wedge centered at 40,40) rotated clockwise by bearingDeg
   const html = `
@@ -2755,7 +2819,7 @@ function buildDirectionalCameraDivIcon(cam, bearingDeg, isZh = false, isRouteVie
         <path d="M40 40 L26.22 6.74 A36 36 0 0 1 53.78 6.74 Z" fill="rgba(37, 99, 235, 0.28)" stroke="#2563eb" stroke-width="1.5" stroke-linejoin="round"/>
         <path d="M40 2.6 L43.4 9.2 L40 7.6 L36.6 9.2 Z" fill="#2563eb" stroke="#FFFFFF" stroke-width="0.9" stroke-linejoin="round"/>
       </svg>
-      <div class="global-traffic-cam-marker" style="background:${badgeBg};">📷</div>
+      <div class="global-traffic-cam-marker" data-cam-key="${escapeHtml(cam?.key || '')}">📷</div>
     </div>`;
   return L.divIcon({
     className: 'global-traffic-cam-icon',

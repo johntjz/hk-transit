@@ -1922,12 +1922,12 @@ test('planner.js & index.html: deduplicates opposite-side stops in Settings Hub 
   assert.ok(
     html.includes('id="aboutModal"') &&
     html.includes('id="settingAboutRow"') &&
-    html.includes('Rent, Buy &amp; Livability Twin') &&
-    html.includes('DrySmart HK — 晾衫王') &&
-    html.includes('https://hksundry.pages.dev/') &&
-    html.includes('Historical Split-View Map') &&
+    html.includes('HK Property (樓)') &&
+    html.includes('HK Sundry (雜)') &&
+    html.includes('https://hksundry.pages.dev') &&
+    html.includes('HK Past 1889 (昔)') &&
     html.includes("openCompanionAppAtCurrentStop('sundry')"),
-    'About subpage in Settings must include updated HKProperty, DrySmart HK (hksundry.pages.dev), and HK Past companion links'
+    'About subpage in Settings must include updated HK Property, HK Sundry (hksundry.pages.dev), and HK Past ecosystem links'
   );
   assert.ok(html.includes('ONBOARDING_SEEN_KEY') && html.includes('maybeShowFirstVisitOnboarding') && html.includes('openPlannerFromTutorial'), 'First-use visual onboarding carousel with Skip/Next/Open Planner must be wired');
 });
@@ -4829,3 +4829,132 @@ test('Camera FOV & Corridor Geometry Fix: Verified azimuth overrides, speed-link
   `, sb.ctx);
   assert.equal(detailOverlayPolylines.length, 0, 'Route Detail Map must NEVER draw raw 2-point TD speed chords over the active road-snapped route speed corridor');
 });
+
+test('Global Camera Orientation, Full-Frame Camera Modal & 7-App HK Ecosystem Links in About Modal', () => {
+  const workerSrc = fs.readFileSync('functions/api/worker.js', 'utf8');
+  const mapSrc = fs.readFileSync('public/map.js', 'utf8');
+  const html = fs.readFileSync('index.html', 'utf8');
+  const sb = loadHardcodeAndPlannerSandbox();
+
+  // 1. Verify worker.js exact-detector priority & same-road curved-highway matching (fixes TDS90070, TDS91054, AID01129, AID01134)
+  const workerHelpersMatch = workerSrc.match(/function _extractRoadCoreWorker\([\s\S]*?function buildWorkerSpeedMapGeoJson\([\s\S]*?\n\}/);
+  assert.ok(workerHelpersMatch, 'worker.js must define camera bearing helpers');
+  const haversineMatch = workerSrc.match(/function haversineKmWorker\([\s\S]*?\n\}/);
+  const classifyMatch = workerSrc.match(/function classifyDetectorCongestion\([\s\S]*?\n\}/);
+  const workerCtx: any = { Math, Number, String, Array, Map, Set, Object, isFinite };
+  vm.createContext(workerCtx);
+  vm.runInContext(`${haversineMatch ? haversineMatch[0] : ''}\n${classifyMatch ? classifyMatch[0] : ''}\n${workerHelpersMatch[0]}`, workerCtx);
+
+  const curvedHighwayDetectors = [
+    // Real Yuen Long Highway near Pok Oi Interchange (runs NNE ~25-30° EB and SSW ~195-205° WB!)
+    { id: 'TDS90070', lat: 22.44653, lon: 114.03987, roadEn: 'Yuen Long Highway near Pok Oi Interchange - Eastbound (2)', spd: 62, rot: 30, dir: 'EB', camKey: 'TDS90070' },
+    { id: 'TDS90071', lat: 22.44880, lon: 114.04110, roadEn: 'Yuen Long Highway near Pok Oi Interchange - Eastbound (3)', spd: 65, rot: 28, dir: 'EB', camKey: 'TDS90071' },
+    { id: 'TDS91054', lat: 22.44551, lon: 114.03951, roadEn: 'Yuen Long Highway near Pok Oi Interchange - Westbound (2)', spd: 70, rot: 200, dir: 'WB', camKey: 'TDS91054' },
+    { id: 'TDS91053', lat: 22.44320, lon: 114.03870, roadEn: 'Yuen Long Highway near Pok Oi Interchange - Westbound (1)', spd: 68, rot: 198, dir: 'WB', camKey: 'TDS91053' },
+    // Sha Tin Road curved NB (~80°) and Tolo Highway curved NB (~310°)
+    { id: 'AID01129', lat: 22.3821, lon: 114.1982, roadEn: 'Sha Tin Road - Northbound', spd: 70, rot: 80, dir: 'NB', camKey: 'AID01129' },
+    { id: 'AID01134', lat: 22.4310, lon: 114.1950, roadEn: 'Tolo Highway - Northbound', spd: 82, rot: 310, dir: 'NB', camKey: 'AID01134' },
+  ];
+  const tangents = workerCtx.buildSpeedLinkTangentsWorker(curvedHighwayDetectors);
+
+  const wEb = workerCtx.computeCameraBearingDegWorker(
+    { key: 'TDS90070', lat: 22.44653, lon: 114.03987, desc: 'Yuen Long Highway near Pok Oi Interchange - Eastbound (2)' },
+    curvedHighwayDetectors,
+    [],
+    tangents
+  );
+  const wWb = workerCtx.computeCameraBearingDegWorker(
+    { key: 'TDS91054', lat: 22.44551, lon: 114.03951, desc: 'Yuen Long Highway near Pok Oi Interchange - Westbound (2)' },
+    curvedHighwayDetectors,
+    [],
+    tangents
+  );
+  const wStNb = workerCtx.computeCameraBearingDegWorker(
+    { key: 'AID01129', lat: 22.3821, lon: 114.1982, desc: 'Sha Tin Road - Northbound' },
+    curvedHighwayDetectors,
+    [],
+    tangents
+  );
+  const wToloNb = workerCtx.computeCameraBearingDegWorker(
+    { key: 'AID01134', lat: 22.4310, lon: 114.1950, desc: 'Tolo Highway - Northbound' },
+    curvedHighwayDetectors,
+    [],
+    tangents
+  );
+  assert.ok(wEb >= 18 && wEb <= 40, `worker.js TDS90070 must align NNE along Yuen Long Hwy (~26-30°), NOT due East 90° (got ${wEb}°)`);
+  assert.ok(wWb >= 185 && wWb <= 212, `worker.js TDS91054 must align SSW along Yuen Long Hwy (~198-200°), NOT due West 270° (got ${wWb}°)`);
+  assert.equal(wStNb, 80, `worker.js AID01129 curved NB must use exact detector rot 80° (got ${wStNb}°)`);
+  assert.equal(wToloNb, 310, `worker.js AID01134 curved NB must use exact detector rot 310° (got ${wToloNb}°)`);
+
+  // Non-AID camera on the same curved highway with explicit "- Eastbound" must match same-road EB link tangent even though 28° is >55° from 90°!
+  const wGenericCurvedEb = workerCtx.computeCameraBearingDegWorker(
+    { key: 'YL999F', lat: 22.4472, lon: 114.0402, desc: 'Yuen Long Highway near Pok Oi Interchange - Eastbound' },
+    curvedHighwayDetectors,
+    [],
+    tangents
+  );
+  assert.ok(wGenericCurvedEb >= 18 && wGenericCurvedEb <= 40, `worker.js curved same-road EB camera must follow highway tangent (~26-30°), got ${wGenericCurvedEb}°`);
+
+  // 2. Verify map.js resolveCameraBearingDeg matches the exact same curved-highway accuracy
+  sb.ctx.L = {
+    layerGroup: () => ({ addTo: () => ({}), addLayer: () => {}, clearLayers: () => {} }),
+    polyline: () => ({ addTo: () => ({}) }),
+    divIcon: (opts: any) => opts,
+    marker: () => ({ addTo: () => ({}), bindTooltip: () => ({}), on: () => ({}) }),
+    geoJSON: () => ({ addTo: () => ({}) }),
+  };
+  sb.ctx.window.L = sb.ctx.L;
+  sb.ctx.window.__LIVE_TRAFFIC_DETECTORS__ = curvedHighwayDetectors;
+  sb.ctx.window.__LIVE_TRAFFIC_SPEED_GEOJSON__ = workerCtx.buildWorkerSpeedMapGeoJson(
+    new Map(curvedHighwayDetectors.map((d) => [d.id, d])),
+    new Map(curvedHighwayDetectors.map((d) => [d.id, { speed: d.spd, occ: 10 }]))
+  );
+  sb.ctx.currentLang = 'en';
+  sb.ctx.escapeHtml = (s: any) => String(s ?? '');
+  sb.ctx.calculateDistanceKm = sb.ctx.window.calculateDistanceKm;
+  vm.runInContext(mapSrc, sb.ctx);
+
+  const mEb = sb.ctx.window.resolveCameraBearingDeg(
+    { key: 'TDS90070', lat: 22.44653, lon: 114.03987, desc: 'Yuen Long Highway near Pok Oi Interchange - Eastbound (2)' },
+    curvedHighwayDetectors
+  );
+  const mWb = sb.ctx.window.resolveCameraBearingDeg(
+    { key: 'TDS91054', lat: 22.44551, lon: 114.03951, desc: 'Yuen Long Highway near Pok Oi Interchange - Westbound (2)' },
+    curvedHighwayDetectors
+  );
+  assert.ok(mEb >= 18 && mEb <= 40, `map.js TDS90070 must align NNE along Yuen Long Hwy (~26-30°), got ${mEb}°`);
+  assert.ok(mWb >= 185 && mWb <= 212, `map.js TDS91054 must align SSW along Yuen Long Hwy (~198-200°), got ${mWb}°`);
+
+  // 3. Verify About modal contains all 7 HK ecosystem app links & preserves companion GPS hooks
+  const aboutStart = html.indexOf('id="aboutModal"');
+  const aboutEnd = html.indexOf('id="tutorialModal"');
+  assert.ok(aboutStart > 0 && aboutEnd > aboutStart, 'Must locate #aboutModal block in index.html');
+  const aboutSlice = html.slice(aboutStart, aboutEnd);
+  const expectedEcosystemUrls = [
+    'https://hkway.pages.dev',
+    'https://hkfleet.pages.dev',
+    'https://hkproperty.pages.dev',
+    'https://hkpast.pages.dev',
+    'https://hksundry.pages.dev',
+    'https://boat-eg5.pages.dev',
+    'https://hkfx.pages.dev',
+  ];
+  for (const url of expectedEcosystemUrls) {
+    assert.ok(aboutSlice.includes(`href="${url}"`), `#aboutModal must include ecosystem link ${url}`);
+  }
+  assert.ok(aboutSlice.includes('ModelSignal FX'), '#aboutModal must display ModelSignal FX');
+  assert.ok(aboutSlice.includes('Aero-Marine (翼)'), '#aboutModal must display Aero-Marine (翼)');
+  assert.ok(aboutSlice.includes('Pulse HK (車)'), '#aboutModal must display Pulse HK (車)');
+  assert.ok(aboutSlice.includes("openCompanionAppAtCurrentStop('property')"), '#aboutModal must preserve HK Property GPS hook');
+  assert.ok(aboutSlice.includes("openCompanionAppAtCurrentStop('past')"), '#aboutModal must preserve HK Past GPS hook');
+  assert.ok(aboutSlice.includes("openCompanionAppAtCurrentStop('sundry')"), '#aboutModal must preserve HK Sundry hook');
+
+  // 4. Verify full-frame uncropped camera view CSS (no forced 4/3 letterbox or dark #0F172A backdrop) & opposite-carriageway 1-tap switcher
+  const camFrameCss = html.match(/\.traffic-cam-frame\s*\{[\s\S]*?\}/);
+  assert.ok(camFrameCss, 'Must locate .traffic-cam-frame CSS rule');
+  assert.ok(!/aspect-ratio\s*:\s*4\s*\/\s*3/i.test(camFrameCss[0]), '.traffic-cam-frame must NOT force 4/3 aspect-ratio black letterbox');
+  assert.ok(!/#0F172A/i.test(camFrameCss[0]), '.traffic-cam-frame must NOT paint dark #0F172A letterbox bars');
+  assert.ok(html.includes('switchToOppositeTrafficCamera('), 'Traffic modal must allow 1-tap switching to opposite carriageway camera');
+  assert.ok(html.includes('.global-traffic-cam-marker.cam-selected'), 'Map camera markers must style active selected camera highlight');
+});
+

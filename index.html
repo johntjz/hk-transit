@@ -720,6 +720,13 @@
       box-shadow: 0 2px 8px rgba(0, 0, 0, 0.36);
       pointer-events: auto;
       cursor: pointer;
+      transition: transform 0.14s ease, background-color 0.14s ease, box-shadow 0.14s ease;
+    }
+    .global-traffic-cam-marker.cam-selected {
+      background: #1D4ED8;
+      border-color: #FFFFFF;
+      transform: scale(1.14);
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.45), 0 3px 10px rgba(0, 0, 0, 0.42);
     }
     .cam-fov-marker-wrap.is-route-cam .global-traffic-cam-marker {
       border-color: #DBEAFE;
@@ -738,10 +745,10 @@
       box-shadow: 0 2px 8px rgba(0, 0, 0, 0.32);
     }
     .traffic-modal-card {
-      width: 100%; max-width: 440px; max-height: 86dvh; overflow-y: auto; -webkit-overflow-scrolling: touch;
+      width: 100%; max-width: 440px; max-height: 94dvh; overflow-y: auto; -webkit-overflow-scrolling: touch;
       background: var(--bg-white); border-radius: 20px; border: 1px solid var(--border-color);
-      box-shadow: 0 22px 54px rgba(0, 0, 0, 0.34); padding: 14px 16px 16px 16px;
-      display: flex; flex-direction: column; gap: 11px;
+      box-shadow: 0 22px 54px rgba(0, 0, 0, 0.34); padding: 12px 14px 14px 14px;
+      display: flex; flex-direction: column; gap: 8px;
     }
     .traffic-modal-title {
       font-weight: 800; font-size: 0.93rem; line-height: 1.28; color: var(--text-main);
@@ -750,7 +757,7 @@
     }
     .traffic-modal-sub {
       display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
-      font-size: 0.72rem; color: var(--text-sub); margin-top: 4px;
+      font-size: 0.72rem; color: var(--text-sub); margin-top: 3px;
     }
     .traffic-dir-badge {
       display: inline-flex; align-items: center; gap: 3px;
@@ -759,30 +766,41 @@
       line-height: 1.35; flex-shrink: 0;
     }
     .traffic-verdict-banner {
-      border-radius: 13px; padding: 11px 13px; border: 1px solid var(--border-color);
+      border-radius: 12px; padding: 9px 12px; border: 1px solid var(--border-color);
       border-left: 4px solid #16A34A; background: var(--bg-surface);
-      display: flex; flex-direction: column; gap: 4px;
+      display: flex; flex-direction: column; gap: 3px;
     }
     .traffic-verdict-banner.tone-slow { border-left-color: #D97706; background: rgba(245, 158, 11, 0.10); }
     .traffic-verdict-banner.tone-jammed { border-left-color: #DC2626; background: rgba(220, 38, 38, 0.10); }
-    .traffic-verdict-title { font-size: 0.94rem; font-weight: 800; color: var(--text-main); line-height: 1.25; }
-    .traffic-verdict-tip { font-size: 0.78rem; font-weight: 600; color: var(--text-sub); line-height: 1.35; }
+    .traffic-verdict-title { font-size: 0.92rem; font-weight: 800; color: var(--text-main); line-height: 1.25; }
+    .traffic-verdict-tip { font-size: 0.76rem; font-weight: 600; color: var(--text-sub); line-height: 1.32; }
     .traffic-metrics-grid {
-      display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px;
+      display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px;
     }
     .traffic-metric-box {
-      background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 11px;
-      padding: 8px 9px; text-align: center;
+      background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 10px;
+      padding: 6px 8px; text-align: center;
     }
-    .traffic-metric-val { font-size: 0.92rem; font-weight: 800; color: var(--text-main); font-variant-numeric: tabular-nums; }
-    .traffic-metric-lbl { font-size: 0.66rem; font-weight: 600; color: var(--text-sub); margin-top: 2px; }
+    .traffic-metric-val { font-size: 0.90rem; font-weight: 800; color: var(--text-main); font-variant-numeric: tabular-nums; }
+    .traffic-metric-lbl { font-size: 0.65rem; font-weight: 600; color: var(--text-sub); margin-top: 1px; }
+    .traffic-opp-switch-btn {
+      width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+      font-family: inherit; font-size: 0.73rem; color: var(--text-sub); text-align: left;
+      padding: 7px 10px; border-radius: 10px; background: var(--bg-surface);
+      border: 1px solid var(--border-color); cursor: pointer;
+      transition: border-color 0.15s ease, background-color 0.15s ease;
+    }
+    .traffic-opp-switch-btn:hover { border-color: var(--ios-blue); }
+    .traffic-opp-switch-cta {
+      flex-shrink: 0; font-size: 0.70rem; font-weight: 700; color: var(--ios-blue); white-space: nowrap;
+    }
     .traffic-cam-frame {
-      position: relative; width: 100%; aspect-ratio: 4 / 3; border-radius: 12px; overflow: hidden;
-      background: #0F172A; border: 1px solid var(--border-color);
-      display: flex; align-items: center; justify-content: center;
+      position: relative; width: 100%; border-radius: 12px; overflow: hidden;
+      background: transparent; border: 1px solid var(--border-color);
+      display: flex; align-items: center; justify-content: center; min-height: 0;
     }
     .traffic-cam-frame img {
-      width: 100%; height: 100%; object-fit: contain; display: block;
+      width: 100%; height: auto; max-height: 46dvh; object-fit: contain; display: block;
     }
     .traffic-cam-status-banner {
       position: absolute; inset: auto 10px 10px 10px;
@@ -1603,6 +1621,17 @@
     .settings-row:last-child { border-bottom: none; }
     .settings-section-divider { font-size: 0.72rem; font-weight: 600; color: var(--text-sub); padding: 12px 2px 2px 2px; letter-spacing: 0.01em; }
     .settings-row-sub { display: block; font-size: 0.72rem; font-weight: 500; color: var(--text-sub); margin-top: 2px; }
+    .about-ecosystem-grid { margin-top: 8px; display: grid; gap: 8px; }
+    .about-ecosystem-link {
+      display: flex; justify-content: space-between; align-items: center; gap: 10px;
+      padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border-color);
+      background: var(--bg-surface); text-decoration: none; color: var(--text-main);
+      transition: border-color 0.15s ease, background-color 0.15s ease;
+    }
+    .about-ecosystem-link:hover { border-color: var(--ios-blue); }
+    .about-ecosystem-title { font-weight: 700; font-size: 0.88rem; line-height: 1.25; color: var(--text-main); }
+    .about-ecosystem-sub { font-size: 0.74rem; color: var(--text-sub); margin-top: 2px; line-height: 1.3; }
+    .about-ecosystem-cta { font-size: 0.74rem; font-weight: 600; color: var(--text-sub); flex-shrink: 0; white-space: nowrap; }
     .settings-val-pill { background: var(--bg-surface); border: none; padding: 4px 11px; border-radius: 999px; font-size: 0.75rem; font-weight: 600; color: var(--ios-blue); max-width: 55%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
     .settings-toggle-wrap { display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0; }
     .settings-toggle-state { font-size: 0.72rem; font-weight: 700; color: var(--text-sub); min-width: 24px; text-align: right; }
@@ -2166,28 +2195,58 @@
         <span class="about-version-tag" id="aboutAppVersionBadge">v2026-11</span>
       </div>
     </div>
-    <div class="settings-section-divider" id="aboutSecCompanion">Useful HK Companion Apps</div>
-    <button type="button" class="settings-row" onclick="openCompanionAppAtCurrentStop('property')">
-      <div>
-        <div id="settingRowLblProp">🏠 Rent, Buy &amp; Livability Twin</div>
-        <span class="settings-row-sub" id="settingRowSubProp">18 HK regions · 1,164+ homes, Rent/Buy/Near Work &amp; zero agent ads</span>
-      </div>
-      <span class="settings-val-pill">HKProperty ↗</span>
-    </button>
-    <button type="button" class="settings-row" onclick="openCompanionAppAtCurrentStop('sundry')">
-      <div>
-        <div id="settingRowLblSundry">👕 DrySmart HK — 晾衫王</div>
-        <span class="settings-row-sub" id="settingRowSubSundry">Live HK laundry drying call, humidity &amp; next outdoor drying window</span>
-      </div>
-      <span class="settings-val-pill">DrySmart ↗</span>
-    </button>
-    <button type="button" class="settings-row" onclick="openCompanionAppAtCurrentStop('past')">
-      <div>
-        <div id="settingRowLblPast">🕰️ Historical Split-View Map</div>
-        <span class="settings-row-sub" id="settingRowSubPast">1950s–1970s archival HK maps split against modern LandsD map</span>
-      </div>
-      <span class="settings-val-pill">HK Past ↗</span>
-    </button>
+    <div class="settings-section-divider" id="aboutSecCompanion">HK Ecosystem Apps</div>
+    <div class="about-ecosystem-grid" id="aboutEcosystemGrid">
+      <a href="https://hkway.pages.dev" target="_blank" rel="noopener noreferrer" class="about-ecosystem-link">
+        <div>
+          <div class="about-ecosystem-title" id="settingRowLblTransit">Transit HK (通)</div>
+          <div class="about-ecosystem-sub" id="settingRowSubTransit">Real-time Bus, MTR &amp; Ferry ETAs</div>
+        </div>
+        <span class="about-ecosystem-cta">Open ↗</span>
+      </a>
+      <a href="https://hkfleet.pages.dev" target="_blank" rel="noopener noreferrer" class="about-ecosystem-link">
+        <div>
+          <div class="about-ecosystem-title" id="settingRowLblFleet">Pulse HK (車)</div>
+          <div class="about-ecosystem-sub" id="settingRowSubFleet">Live Fleet &amp; Multi-Modal Radar</div>
+        </div>
+        <span class="about-ecosystem-cta">Open ↗</span>
+      </a>
+      <a href="https://hkproperty.pages.dev" target="_blank" rel="noopener noreferrer" class="about-ecosystem-link" onclick="event.preventDefault(); openCompanionAppAtCurrentStop('property');">
+        <div>
+          <div class="about-ecosystem-title" id="settingRowLblProp">HK Property (樓)</div>
+          <div class="about-ecosystem-sub" id="settingRowSubProp">Historical Transactions &amp; Valuation</div>
+        </div>
+        <span class="about-ecosystem-cta">Open ↗</span>
+      </a>
+      <a href="https://hkpast.pages.dev" target="_blank" rel="noopener noreferrer" class="about-ecosystem-link" onclick="event.preventDefault(); openCompanionAppAtCurrentStop('past');">
+        <div>
+          <div class="about-ecosystem-title" id="settingRowLblPast">HK Past 1889 (昔)</div>
+          <div class="about-ecosystem-sub" id="settingRowSubPast">Historical Maps &amp; Heritage Split-View</div>
+        </div>
+        <span class="about-ecosystem-cta">Open ↗</span>
+      </a>
+      <a href="https://hksundry.pages.dev" target="_blank" rel="noopener noreferrer" class="about-ecosystem-link" onclick="event.preventDefault(); openCompanionAppAtCurrentStop('sundry');">
+        <div>
+          <div class="about-ecosystem-title" id="settingRowLblSundry">HK Sundry (雜)</div>
+          <div class="about-ecosystem-sub" id="settingRowSubSundry">Local Utilities &amp; Daily Tools</div>
+        </div>
+        <span class="about-ecosystem-cta">Open ↗</span>
+      </a>
+      <a href="https://boat-eg5.pages.dev" target="_blank" rel="noopener noreferrer" class="about-ecosystem-link">
+        <div>
+          <div class="about-ecosystem-title" id="settingRowLblBoat">Aero-Marine (翼)</div>
+          <div class="about-ecosystem-sub" id="settingRowSubBoat">BAYWING Electric Hydrofoil &amp; MCS</div>
+        </div>
+        <span class="about-ecosystem-cta">Open ↗</span>
+      </a>
+      <a href="https://hkfx.pages.dev" target="_blank" rel="noopener noreferrer" class="about-ecosystem-link">
+        <div>
+          <div class="about-ecosystem-title" id="settingRowLblFx">ModelSignal FX</div>
+          <div class="about-ecosystem-sub" id="settingRowSubFx">Quantitative FX &amp; Macro Signal Ledger</div>
+        </div>
+        <span class="about-ecosystem-cta">Open ↗</span>
+      </a>
+    </div>
   </div>
 </div>
 
@@ -5855,11 +5914,12 @@ window.openTrafficDecisionModal = function(detId, oppDetId = '', segmentNote = '
 
   const toneDot = dec.tone === 'jammed' ? '🔴' : (dec.tone === 'slow' ? '🟠' : '🟢');
   const oppHtml = opp
-    ? `<div style="font-size:0.74rem; color:var(--text-sub); padding:7px 10px; border-radius:10px; background:var(--bg-surface); border:1px solid var(--border-color);">
-         ${opp.tier === 'JAMMED'
+    ? `<button type="button" class="traffic-opp-switch-btn" onclick="switchToOppositeTrafficCamera('${escapeJsAttr(opp.id)}', '${escapeJsAttr(det.id)}')">
+         <span>${opp.tier === 'JAMMED'
            ? (isZh ? `ℹ️ 對面線擠塞 (${Math.round(opp.spd)} km/h)，不影響你搭乘方向。` : `ℹ️ Opposite bound is jammed (${Math.round(opp.spd)} km/h) — does not affect your direction.`)
-           : (isZh ? `ℹ️ 對面線車速約 ${Math.round(opp.spd)} km/h。` : `ℹ️ Opposite carriageway moving at ~${Math.round(opp.spd)} km/h.`)}
-       </div>`
+           : (isZh ? `ℹ️ 對面線車速約 ${Math.round(opp.spd)} km/h。` : `ℹ️ Opposite carriageway moving at ~${Math.round(opp.spd)} km/h.`)}</span>
+         <span class="traffic-opp-switch-cta">${isZh ? '切換鏡頭 ⇄' : 'Switch cam ⇄'}</span>
+       </button>`
     : '';
 
   const effectiveCamKey = (camOverride && camOverride.key) ? camOverride.key : (det.camKey || '');
@@ -6111,9 +6171,32 @@ window.openTrafficCameraModal = function(cam) {
   modal.style.display = 'flex';
 };
 
+window.switchToOppositeTrafficCamera = function(oppDetId, curDetId = '') {
+  if (!oppDetId) return;
+  const detList = Array.isArray(window.__LIVE_TRAFFIC_DETECTORS__) ? window.__LIVE_TRAFFIC_DETECTORS__ : [];
+  const camList = Array.isArray(window.__LIVE_TRAFFIC_CAMERAS__) ? window.__LIVE_TRAFFIC_CAMERAS__ : [];
+  const oppDet = detList.find(d => d.id === oppDetId) || null;
+  const oppCam = oppDet
+    ? (camList.find(c => c.key === oppDet.id) || camList.find(c => oppDet.camKey && c.key === oppDet.camKey) || null)
+    : null;
+  try {
+    document.querySelectorAll('.global-traffic-cam-marker.cam-selected').forEach((el) => el.classList.remove('cam-selected'));
+    if (oppCam && oppCam.key) {
+      const targetPin = document.querySelector(`.global-traffic-cam-marker[data-cam-key="${CSS.escape ? CSS.escape(oppCam.key) : oppCam.key}"]`);
+      if (targetPin) targetPin.classList.add('cam-selected');
+    }
+  } catch (e) {}
+  if (typeof window.openTrafficDecisionModal === 'function') {
+    window.openTrafficDecisionModal(oppDetId, curDetId, '', false, oppCam);
+  }
+};
+
 window.closeTrafficDecisionModal = function() {
   const modal = document.getElementById('trafficDecisionModal');
   if (modal) modal.style.display = 'none';
+  try {
+    document.querySelectorAll('.global-traffic-cam-marker.cam-selected').forEach((el) => el.classList.remove('cam-selected'));
+  } catch (e) {}
 };
 
 function selectStopFromSearch(stopKey) {
@@ -6782,25 +6865,33 @@ function syncSettingsModalLabels() {
   setV('settingRowLblStatus', isZh ? '⚡ 狀態及時間表監察' : '⚡ Status & Watchdog');
   const driftTotal = (window.__DATA_DRIFT_ALERTS__?.length || 0) + (window.__LIVE_FERRY_DRIFT_ALERTS__?.size || 0);
   setV('settingValStatusOpen', driftTotal > 0 ? (isZh ? `⚠️ ${driftTotal}項提示 ›` : `⚠️ ${driftTotal} Alert ›`) : (isZh ? '開啟 ›' : 'Open ›'));
-  setV('settingRowLblAbout', isZh ? 'ℹ️ 關於及香港實用工具' : 'ℹ️ About & HK Apps');
-  setV('settingRowSubAbout', isZh ? '應用程式資料 · HKProperty、晾衫王、HK Past' : 'Transit HK info · HKProperty, DrySmart HK & HK Past');
+  setV('settingRowLblAbout', isZh ? 'ℹ️ 關於及香港生態應用' : 'ℹ️ About & HK Apps');
+  setV('settingRowSubAbout', isZh ? 'Transit HK、Pulse HK、樓市、歷史地圖、雜項、Aero-Marine 及 ModelSignal FX' : 'Transit HK, Pulse HK, Property, Past, Sundry, Aero-Marine & FX');
   setV('settingValAboutOpen', isZh ? '開啟 ›' : 'Open ›');
 
   setV('aboutBackBtn', isZh ? '‹ 返回' : '‹ Back');
-  setV('aboutModalTitle', isZh ? 'ℹ️ 關於及香港實用工具' : 'ℹ️ About & HK Apps');
+  setV('aboutModalTitle', isZh ? 'ℹ️ 關於及香港生態應用' : 'ℹ️ About & HK Apps');
   setV('aboutCloseBtn', isZh ? '✕ 關閉' : '✕ Close');
   setV('aboutAppTitle', isZh ? '香港交通通 (Transit HK)' : 'Transit HK (通)');
   setV('aboutAppDesc', isZh
     ? '整合九巴、城巴、嶼巴、小巴、港鐵、輕鐵及渡輪實時到站及多式聯運轉乘規劃，採用政府開放數據。'
     : 'Real-time Hong Kong Bus, MTR, Light Rail & Ferry ETAs and multi-modal route planner powered by open HKSAR data.');
   setV('aboutAppVersionBadge', `Build ${APP_VERSION}`);
-  setV('aboutSecCompanion', isZh ? '同系列香港實用網站' : 'Useful HK Companion Apps');
-  setV('settingRowLblProp', isZh ? '🏠 香港樓市・租買及宜居數碼分身' : '🏠 Rent, Buy & Livability Twin');
-  setV('settingRowSubProp', isZh ? '全港18區 · 1,164+ 屋苑租金買樓估值、Near Work 及零地產廣告' : '18 HK regions · 1,164+ homes, Rent/Buy/Near Work & zero agent ads');
-  setV('settingRowLblSundry', isZh ? '👕 DrySmart HK — 晾衫王' : '👕 DrySmart HK — 晾衫王');
-  setV('settingRowSubSundry', isZh ? '香港實時室內／室外晾衫建議、相對濕度及最佳乾衣時段' : 'Live HK laundry drying call, humidity & next outdoor drying window');
-  setV('settingRowLblPast', isZh ? '🕰️ 香港歷史地圖對照' : '🕰️ Historical Split-View Map');
-  setV('settingRowSubPast', isZh ? '1950–1970年代舊地圖與現代地政總署地圖同步拉頁' : '1950s–1970s archival HK maps split against modern LandsD map');
+  setV('aboutSecCompanion', isZh ? '同系列香港生態應用' : 'HK Ecosystem Apps');
+  setV('settingRowLblTransit', isZh ? 'Transit HK (通)' : 'Transit HK (通)');
+  setV('settingRowSubTransit', isZh ? '實時巴士、港鐵及渡輪到站預報' : 'Real-time Bus, MTR & Ferry ETAs');
+  setV('settingRowLblFleet', isZh ? 'Pulse HK (車)' : 'Pulse HK (車)');
+  setV('settingRowSubFleet', isZh ? '實時車隊及多式聯運雷達' : 'Live Fleet & Multi-Modal Radar');
+  setV('settingRowLblProp', isZh ? 'HK Property (樓)' : 'HK Property (樓)');
+  setV('settingRowSubProp', isZh ? '歷年成交紀錄及物業估值' : 'Historical Transactions & Valuation');
+  setV('settingRowLblPast', isZh ? 'HK Past 1889 (昔)' : 'HK Past 1889 (昔)');
+  setV('settingRowSubPast', isZh ? '歷史舊地圖及古蹟對照拉頁' : 'Historical Maps & Heritage Split-View');
+  setV('settingRowLblSundry', isZh ? 'HK Sundry (雜)' : 'HK Sundry (雜)');
+  setV('settingRowSubSundry', isZh ? '本地實用工具及日常小幫手' : 'Local Utilities & Daily Tools');
+  setV('settingRowLblBoat', isZh ? 'Aero-Marine (翼)' : 'Aero-Marine (翼)');
+  setV('settingRowSubBoat', isZh ? 'BAYWING 電動水翼船及海事系統' : 'BAYWING Electric Hydrofoil & MCS');
+  setV('settingRowLblFx', isZh ? 'ModelSignal FX' : 'ModelSignal FX');
+  setV('settingRowSubFx', isZh ? '量化外匯及宏觀信號日誌' : 'Quantitative FX & Macro Signal Ledger');
   setV('statusModalTitle', isZh ? '⚡ 狀態及時間表監察' : '⚡ Status & Watchdog');
 
   setV('settingValLang', userLangPref === 'auto' ? (isZh ? '自動' : 'Auto') : (userLangPref === 'zh' ? '繁體中文' : 'English'));

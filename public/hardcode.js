@@ -3644,7 +3644,7 @@ function buildRouteSpeedGeoJson(coords, detectors = [], opts = {}) {
   const maxMatchKm = Number(opts.maxMatchKm) || (isRoadSnapped ? 0.15 : 0.16);
   const maxAngleDeg = Number(opts.maxAngleDeg) || (isRoadSnapped ? 42 : 52);
   const influenceRadiusKm = Number(opts.influenceRadiusKm) || 0.70;
-  const maxMicroStepKm = Number(opts.maxMicroStepKm) || 0.25;
+  const maxMicroStepKm = Number(opts.maxMicroStepKm) || 0.15;
 
   // 1. Densify long segments so speed color transitions localize cleanly around each TD detector
   const densePts = [];

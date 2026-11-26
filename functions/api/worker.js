@@ -895,6 +895,15 @@ const HK_CAMERA_LANDMARK_ANCHORS = [
   { re: /\bcentral[\s-]*wan\s*chai\s*bypass\b/i, lat: 22.2852, lon: 114.1745 }
 ];
 
+const VERIFIED_CAMERA_AZIMUTHS = {
+  TC003F: 175, // TM-CLK Tunnel Northern Portal (looking south into tunnel portal)
+  TC002F: 225, // Lung Mun Rd Roundabout near TM-CLKL (looking southwest along Lung Fu Rd tunnel approach)
+  TC001F: 20,  // TM-CLK Tunnel Southern Portal (looking north into southern portal)
+  NL128F: 75,  // North Lantau Highway near Tung Chung
+  NL126F: 255, // North Lantau Highway near Pak Mong
+  NL206F: 205  // Shun Long Road near North Lantau Highway
+};
+
 function _normalizeBearingDegWorker(deg) {
   const n = Number(deg);
   if (!Number.isFinite(n)) return 0;
@@ -913,25 +922,105 @@ function _cardinalToDegWorker(dirCode) {
   return null;
 }
 
-function computeCameraBearingDegWorker(cam, detectorList = [], cameraList = []) {
+function _hasIntermediateDetectorWorker(list, idxA, idxB, a, b, dAB) {
+  const cosLat = Math.max(0.2, Math.cos(((a.lat + b.lat) * 0.5) * Math.PI / 180));
+  const ax = a.lon * 111.111 * cosLat, ay = a.lat * 111.111;
+  const bx = b.lon * 111.111 * cosLat, by = b.lat * 111.111;
+  const dx = bx - ax, dy = by - ay;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq < 1e-9) return false;
+  for (let k = 0; k < list.length; k++) {
+    if (k === idxA || k === idxB) continue;
+    const c = list[k];
+    if (!c || angDiffDegWorker(a.rot, c.rot) > 32) continue;
+    const dAC = haversineKmWorker(a.lat, a.lon, c.lat, c.lon);
+    if (dAC < 0.08 || dAC >= dAB - 0.05) continue;
+    const dCB = haversineKmWorker(c.lat, c.lon, b.lat, b.lon);
+    if (dCB < 0.08 || dCB >= dAB - 0.05) continue;
+    const cx = c.lon * 111.111 * cosLat, cy = c.lat * 111.111;
+    const t = ((cx - ax) * dx + (cy - ay) * dy) / lenSq;
+    if (t <= 0.08 || t >= 0.92) continue;
+    const perpKm = Math.hypot(cx - (ax + t * dx), cy - (ay + t * dy));
+    if (perpKm <= 0.11) return true;
+  }
+  return false;
+}
+
+function buildSpeedLinkTangentsWorker(detectorList = []) {
+  if (!Array.isArray(detectorList) || !detectorList.length) return [];
+  const byRoad = new Map();
+  for (let i = 0; i < detectorList.length; i++) {
+    const d = detectorList[i];
+    if (!d || !Number.isFinite(Number(d.lat)) || !Number.isFinite(Number(d.lon)) || !Number.isFinite(Number(d.rot))) continue;
+    const roadCore = _extractRoadCoreWorker(d.roadEn);
+    const rk = roadCore || d.id;
+    if (!byRoad.has(rk)) byRoad.set(rk, []);
+    byRoad.get(rk).push({ ...d, roadCore, rot: Number(d.rot) });
+  }
+  const links = [];
+  for (const list of byRoad.values()) {
+    for (let i = 0; i < list.length; i++) {
+      const a = list[i];
+      let bestNext = null;
+      let bestDistKm = Infinity;
+      for (let j = 0; j < list.length; j++) {
+        if (i === j) continue;
+        const b = list[j];
+        if (angDiffDegWorker(a.rot, b.rot) > 32) continue;
+        const dKm = haversineKmWorker(a.lat, a.lon, b.lat, b.lon);
+        if (dKm < 0.12 || dKm > 2.2) continue;
+        const linkBrg = bearingDegWorker(a.lat, a.lon, b.lat, b.lon);
+        const maxLinkAng = dKm > 1.0 ? 18 : 24;
+        if (angDiffDegWorker(a.rot, linkBrg) > maxLinkAng || angDiffDegWorker(b.rot, linkBrg) > maxLinkAng) continue;
+        if (dKm < bestDistKm) {
+          bestDistKm = dKm;
+          bestNext = b;
+        }
+      }
+      if (!bestNext) continue;
+      links.push({
+        aLat: a.lat,
+        aLon: a.lon,
+        bLat: bestNext.lat,
+        bLon: bestNext.lon,
+        midLat: (a.lat + bestNext.lat) * 0.5,
+        midLon: (a.lon + bestNext.lon) * 0.5,
+        tangentDeg: _normalizeBearingDegWorker(bearingDegWorker(a.lat, a.lon, bestNext.lat, bestNext.lon)),
+        roadCore: a.roadCore,
+        dir: _extractCardinalDirWorker(`${a.roadEn || ''} ${a.dir || ''}`, a.rot)
+      });
+    }
+  }
+  return links;
+}
+
+function _pointToLinkDistKmWorker(pLat, pLon, link) {
+  const cosLat = Math.max(0.2, Math.cos(((link.aLat + link.bLat) * 0.5) * Math.PI / 180));
+  const ax = link.aLon * 111.111 * cosLat, ay = link.aLat * 111.111;
+  const bx = link.bLon * 111.111 * cosLat, by = link.bLat * 111.111;
+  const px = pLon * 111.111 * cosLat, py = pLat * 111.111;
+  const dx = bx - ax, dy = by - ay;
+  const lenSq = dx * dx + dy * dy;
+  let t = lenSq > 1e-12 ? ((px - ax) * dx + (py - ay) * dy) / lenSq : 0;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+
+function computeCameraBearingDegWorker(cam, detectorList = [], cameraList = [], speedLinkTangents = []) {
   if (!cam) return 0;
+  const camKeyUpper = String(cam.key || '').trim().toUpperCase();
+  // 0. Verified per-camera viewing azimuth overrides for key tunnel/roundabout/highway cameras
+  if (camKeyUpper && Object.prototype.hasOwnProperty.call(VERIFIED_CAMERA_AZIMUTHS, camKeyUpper)) {
+    return _normalizeBearingDegWorker(VERIFIED_CAMERA_AZIMUTHS[camKeyUpper]);
+  }
+
   const cLat = Number(cam.lat);
   const cLon = Number(cam.lon);
   const desc = String(cam.desc || '');
   const cRoad = _extractRoadCoreWorker(desc);
 
-  // 1. Exact paired detector rot bearing
-  if (Array.isArray(detectorList) && detectorList.length) {
-    for (let i = 0; i < detectorList.length; i++) {
-      const d = detectorList[i];
-      if (!d) continue;
-      if ((d.id === cam.key || d.camKey === cam.key) && Number.isFinite(Number(d.rot))) {
-        return _normalizeBearingDegWorker(d.rot);
-      }
-    }
-  }
-
-  // 2. Explicit cardinal / intercardinal bound from camera description, refined by nearby compatible detector rot
+  // 1. Explicit cardinal / intercardinal bound from camera description:
+  //    snap bearingDeg to the exact tangent of the nearest matching TD speed-link in that bound
   let textDir = cam.dir || _extractCardinalDirWorker(desc, null);
   if (!textDir) {
     if (/\bnorth[\s-]*east(?:bound)?\b/i.test(desc)) textDir = 'NE';
@@ -941,28 +1030,62 @@ function computeCameraBearingDegWorker(cam, detectorList = [], cameraList = []) 
   }
   const textDeg = _cardinalToDegWorker(textDir);
   if (textDeg !== null) {
-    if (Number.isFinite(cLat) && Number.isFinite(cLon) && Array.isArray(detectorList) && detectorList.length) {
-      let bestDetRot = null;
-      let bestScore = Infinity;
-      for (let i = 0; i < detectorList.length; i++) {
-        const d = detectorList[i];
-        if (!d || !Number.isFinite(Number(d.rot)) || !Number.isFinite(Number(d.lat)) || !Number.isFinite(Number(d.lon))) continue;
-        if (Math.abs(d.lat - cLat) > 0.007 || Math.abs(d.lon - cLon) > 0.007) continue;
-        const dKm = haversineKmWorker(cLat, cLon, d.lat, d.lon);
-        if (dKm > 0.65) continue;
-        const dAng = angDiffDegWorker(textDeg, Number(d.rot));
-        if (dAng > 55) continue;
-        const dRoad = _extractRoadCoreWorker(d.roadEn);
-        const sameRoad = Boolean(cRoad && dRoad && (cRoad === dRoad || cRoad.includes(dRoad) || dRoad.includes(cRoad)));
-        const score = dKm + (sameRoad ? 0 : 0.25) + dAng * 0.002;
-        if (score < bestScore) {
-          bestScore = score;
-          bestDetRot = Number(d.rot);
+    if (Number.isFinite(cLat) && Number.isFinite(cLon)) {
+      if (Array.isArray(speedLinkTangents) && speedLinkTangents.length) {
+        let bestTangent = null;
+        let bestScore = Infinity;
+        for (let i = 0; i < speedLinkTangents.length; i++) {
+          const lk = speedLinkTangents[i];
+          if (!lk) continue;
+          if (Math.abs(lk.midLat - cLat) > 0.015 || Math.abs(lk.midLon - cLon) > 0.015) continue;
+          const dAng = angDiffDegWorker(textDeg, lk.tangentDeg);
+          if (dAng > 55) continue;
+          const dKm = _pointToLinkDistKmWorker(cLat, cLon, lk);
+          if (dKm > 0.85) continue;
+          const sameRoad = Boolean(cRoad && lk.roadCore && (cRoad === lk.roadCore || cRoad.includes(lk.roadCore) || lk.roadCore.includes(cRoad)));
+          const score = dKm + (sameRoad ? 0 : 0.28) + dAng * 0.0015;
+          if (score < bestScore) {
+            bestScore = score;
+            bestTangent = lk.tangentDeg;
+          }
         }
+        if (bestTangent !== null) return _normalizeBearingDegWorker(bestTangent);
       }
-      if (bestDetRot !== null) return _normalizeBearingDegWorker(bestDetRot);
+
+      if (Array.isArray(detectorList) && detectorList.length) {
+        let bestDetRot = null;
+        let bestScore = Infinity;
+        for (let i = 0; i < detectorList.length; i++) {
+          const d = detectorList[i];
+          if (!d || !Number.isFinite(Number(d.rot)) || !Number.isFinite(Number(d.lat)) || !Number.isFinite(Number(d.lon))) continue;
+          if (Math.abs(d.lat - cLat) > 0.007 || Math.abs(d.lon - cLon) > 0.007) continue;
+          const dKm = haversineKmWorker(cLat, cLon, d.lat, d.lon);
+          if (dKm > 0.65) continue;
+          const dAng = angDiffDegWorker(textDeg, Number(d.rot));
+          if (dAng > 55) continue;
+          const dRoad = _extractRoadCoreWorker(d.roadEn);
+          const sameRoad = Boolean(cRoad && dRoad && (cRoad === dRoad || cRoad.includes(dRoad) || dRoad.includes(cRoad)));
+          const score = dKm + (sameRoad ? 0 : 0.25) + dAng * 0.002;
+          if (score < bestScore) {
+            bestScore = score;
+            bestDetRot = Number(d.rot);
+          }
+        }
+        if (bestDetRot !== null) return _normalizeBearingDegWorker(bestDetRot);
+      }
     }
     return textDeg;
+  }
+
+  // 2. Exact paired detector rot bearing (for cameras without an explicit bound in description)
+  if (Array.isArray(detectorList) && detectorList.length) {
+    for (let i = 0; i < detectorList.length; i++) {
+      const d = detectorList[i];
+      if (!d) continue;
+      if ((d.id === cam.key || d.camKey === cam.key) && Number.isFinite(Number(d.rot))) {
+        return _normalizeBearingDegWorker(d.rot);
+      }
+    }
   }
 
   // 3. Standalone intersection / roundabout / tunnel portal cameras:
@@ -1128,10 +1251,11 @@ async function getTrafficStaticMetadata() {
     }
   }
 
-  // Compute directional viewing bearing (0-359 deg) for every TD camera (paired detectors, bounds & roundabout/portal landmarks)
+  // Compute directional viewing bearing (0-359 deg) for every TD camera (verified azimuths, speed-link tangents, bounds & landmarks)
   if (cameras.length) {
+    const speedLinkTangents = buildSpeedLinkTangentsWorker(detectorList);
     cameras = cameras.map((c) => {
-      const bearingDeg = computeCameraBearingDegWorker(c, detectorList, cameras);
+      const bearingDeg = computeCameraBearingDegWorker(c, detectorList, cameras, speedLinkTangents);
       return {
         ...c,
         bearingDeg
@@ -1221,24 +1345,28 @@ function buildWorkerSpeedMapGeoJson(detectorMeta, combinedLive) {
       const a = list[i];
       let bestNext = null;
       let bestDistKm = Infinity;
+      let bestNextIdx = -1;
       for (let j = 0; j < list.length; j++) {
         if (i === j) continue;
         const b = list[j];
-        if (angDiffDegWorker(a.rot, b.rot) > 30) continue;
+        if (angDiffDegWorker(a.rot, b.rot) > 32) continue;
         const dKm = haversineKmWorker(a.lat, a.lon, b.lat, b.lon);
         // Filter out short/curved interchange ramp stubs (< 350 m straight-line distance)
         if (dKm < 0.35 || dKm > 2.2) continue;
         const linkBrg = bearingDegWorker(a.lat, a.lon, b.lat, b.lon);
-        const maxLinkAng = dKm > 1.0 ? 16 : 22;
+        const maxLinkAng = dKm > 1.0 ? 16 : 24;
         if (angDiffDegWorker(a.rot, linkBrg) > maxLinkAng) continue;
         if (angDiffDegWorker(b.rot, linkBrg) > maxLinkAng) continue;
         if (dKm < bestDistKm) {
           bestDistKm = dKm;
           bestNext = b;
+          bestNextIdx = j;
         }
       }
 
       if (!bestNext) continue;
+      // Avoid duplicate overlapping chords that leapfrog over an intermediate same-direction detector
+      if (_hasIntermediateDetectorWorker(list, i, bestNextIdx, a, bestNext, bestDistKm)) continue;
 
       features.push({
         type: 'Feature',
@@ -1249,6 +1377,8 @@ function buildWorkerSpeedMapGeoJson(detectorMeta, combinedLive) {
           roadTc: a.roadTc,
           dir: a.dir,
           rot: a.rot,
+          rotA: a.rot,
+          rotB: bestNext.rot,
           spd: a.spd,
           occ: a.occ,
           tier: a.tier,

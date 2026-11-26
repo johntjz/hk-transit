@@ -639,10 +639,10 @@ function renderTrafficOverlayOnMap(targetMap, forceRedraw = false) {
       }
     };
 
-    // In Detail Bus View when the live speed-colored corridor GeoJSON is active, skip redundant smooth stripes
-    // so the route's own green/amber/red speed corridor remains crisp and unobstructed.
+    // In Detail Bus View when the road-snapped live speed corridor GeoJSON is active, never draw raw 2-point TD chords
+    // on top of the route polyline so highway curves and roundabouts remain smooth and unobstructed.
     const hasActiveDetailSpeedCorridor = Boolean(isDetailBusScoped && window.__LAST_DETAIL_SPEED_GEOJSON__?.features?.length);
-    const drawOverlayStripe = !hasActiveDetailSpeedCorridor || isBottleneck || isFocused;
+    const drawOverlayStripe = !hasActiveDetailSpeedCorridor;
     if (drawOverlayStripe) {
       L.polyline([pStart, pEnd], {
         color: '#FFFFFF',
@@ -1570,7 +1570,8 @@ function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) 
     const speedGeoJson = window.buildRouteSpeedGeoJson(coords, liveDetectors, {
       isRoadSnapped,
       hasHighwaySpan,
-      noDataColor: localStreetFallback
+      noDataColor: localStreetFallback,
+      maxMicroStepKm: 0.15
     });
     window.__LAST_DETAIL_SPEED_GEOJSON__ = speedGeoJson;
 
@@ -1589,6 +1590,7 @@ function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) 
               color: thinCasingColor,
               weight: 7.5,
               opacity: 0.72,
+              smoothFactor: 1.5,
               lineJoin: 'round',
               lineCap: 'round',
               interactive: false
@@ -1601,6 +1603,7 @@ function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) 
               weight: 7.0,
               opacity: 0.85,
               dashArray: '6, 6',
+              smoothFactor: 1.5,
               lineJoin: 'round',
               lineCap: 'butt',
               interactive: false
@@ -1619,6 +1622,7 @@ function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) 
               weight: 4.5,
               opacity: 0.92,
               dashArray: '6, 6',
+              smoothFactor: 1.5,
               lineJoin: 'round',
               lineCap: 'butt'
             };
@@ -1628,6 +1632,7 @@ function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) 
             weight: 5,
             opacity: 0.96,
             dashArray: null,
+            smoothFactor: 1.5,
             lineJoin: 'round',
             lineCap: 'round'
           };
@@ -1989,10 +1994,112 @@ function clearAllActiveBrowseMarkers() {
 
 function getGlobalTrafficLaneOffsetMeters(zoom = 13) {
   const z = Number.isFinite(Number(zoom)) ? Number(zoom) : 13;
-  if (z >= 15) return 4;
-  if (z >= 14) return 8;
-  if (z >= 13) return 12;
-  return 18;
+  // Tight HK keep-left offset: 1.8m at z >= 15 and 3.5m at z < 15 so opposite carriageways never crisscross
+  return z >= 15 ? 1.8 : 3.5;
+}
+
+function getGlobalTrafficSpeedColorHex(spd, fallback = '#3b82f6') {
+  if (spd !== null && spd !== undefined && Number.isFinite(Number(spd))) {
+    const n = Number(spd);
+    if (n < 20) return '#ef4444';
+    if (n <= 40) return '#f59e0b';
+    return '#22c55e';
+  }
+  const fb = String(fallback || '').toLowerCase();
+  if (fb === '#16a34a') return '#22c55e';
+  if (fb === '#dc2626') return '#ef4444';
+  return fallback || '#3b82f6';
+}
+
+function _buildHermiteSpeedCurveCoords(lonA, latA, rotA, lonB, latB, rotB, steps = 6) {
+  const midLat = (latA + latB) * 0.5;
+  const cosLat = Math.max(0.2, Math.cos(midLat * Math.PI / 180));
+  const x0 = 0, y0 = 0;
+  const x1 = (lonB - lonA) * 111111 * cosLat;
+  const y1 = (latB - latA) * 111111;
+  const L = Math.hypot(x1, y1);
+  if (!Number.isFinite(L) || L < 10) return [[lonA, latA], [lonB, latB]];
+  const rA = (Number(rotA) || 0) * Math.PI / 180;
+  const rB = (Number(rotB) || 0) * Math.PI / 180;
+  const tx0 = Math.sin(rA) * L, ty0 = Math.cos(rA) * L;
+  const tx1 = Math.sin(rB) * L, ty1 = Math.cos(rB) * L;
+  const pts = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const t2 = t * t, t3 = t2 * t;
+    const h00 = 2 * t3 - 3 * t2 + 1;
+    const h10 = t3 - 2 * t2 + t;
+    const h01 = -2 * t3 + 3 * t2;
+    const h11 = t3 - t2;
+    const x = h00 * x0 + h10 * tx0 + h01 * x1 + h11 * tx1;
+    const y = h00 * y0 + h10 * ty0 + h01 * y1 + h11 * ty1;
+    pts.push([
+      Number((lonA + x / (111111 * cosLat)).toFixed(6)),
+      Number((latA + y / 111111).toFixed(6))
+    ]);
+  }
+  return pts;
+}
+
+function _applyKeepLeftOffsetAlongCoords(coords, offsetM) {
+  if (!Array.isArray(coords) || coords.length < 2 || !Number.isFinite(offsetM) || offsetM === 0) return coords;
+  const out = [];
+  const last = coords.length - 1;
+  for (let i = 0; i <= last; i++) {
+    const pPrev = coords[Math.max(0, i - 1)];
+    const pNext = coords[Math.min(last, i + 1)];
+    const localBrg = _mapBearingDeg(pPrev[1], pPrev[0], pNext[1], pNext[0]);
+    const leftBrg = (localBrg + 270) % 360;
+    const [oLat, oLon] = projectPointMeters(coords[i][1], coords[i][0], leftBrg, offsetM);
+    out.push([Number(oLon.toFixed(6)), Number(oLat.toFixed(6))]);
+  }
+  return out;
+}
+
+function _segmentsIntersect2D(a1, a2, b1, b2) {
+  const cross = (p, q, r) => (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+  const d1 = cross(a1, a2, b1);
+  const d2 = cross(a1, a2, b2);
+  const d3 = cross(b1, b2, a1);
+  const d4 = cross(b1, b2, a2);
+  return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
+}
+
+function _polylinesIntersect2D(coordsA, coordsB) {
+  if (!Array.isArray(coordsA) || !Array.isArray(coordsB) || coordsA.length < 2 || coordsB.length < 2) return false;
+  for (let i = 0; i < coordsA.length - 1; i++) {
+    for (let j = 0; j < coordsB.length - 1; j++) {
+      if (_segmentsIntersect2D(coordsA[i], coordsA[i + 1], coordsB[j], coordsB[j + 1])) return true;
+    }
+  }
+  return false;
+}
+
+function _nearestPointOnPolylineMeters(pLon, pLat, coords) {
+  const cosLat = Math.max(0.2, Math.cos(pLat * Math.PI / 180));
+  const px = pLon * 111111 * cosLat, py = pLat * 111111;
+  let bestDistM = Infinity;
+  let bestProj = null;
+  for (let i = 0; i < coords.length - 1; i++) {
+    const a = coords[i], b = coords[i + 1];
+    const ax = a[0] * 111111 * cosLat, ay = a[1] * 111111;
+    const bx = b[0] * 111111 * cosLat, by = b[1] * 111111;
+    const dx = bx - ax, dy = by - ay;
+    const lenSq = dx * dx + dy * dy;
+    let t = lenSq > 1e-6 ? ((px - ax) * dx + (py - ay) * dy) / lenSq : 0;
+    t = Math.max(0, Math.min(1, t));
+    const qx = ax + t * dx, qy = ay + t * dy;
+    const dM = Math.hypot(px - qx, py - qy);
+    if (dM < bestDistM) {
+      bestDistM = dM;
+      bestProj = {
+        lon: qx / (111111 * cosLat),
+        lat: qy / 111111,
+        brg: _mapBearingDeg(a[1], a[0], b[1], b[0])
+      };
+    }
+  }
+  return { distM: bestDistM, proj: bestProj };
 }
 
 function filterAndOffsetGlobalSpeedGeoJson(speedGeo, zoom = 13) {
@@ -2000,53 +2107,153 @@ function filterAndOffsetGlobalSpeedGeoJson(speedGeo, zoom = 13) {
     return { type: 'FeatureCollection', features: [] };
   }
   const offsetM = getGlobalTrafficLaneOffsetMeters(zoom);
-  const colorFn = (spd, fallback) => {
-    if (typeof window.getTrafficSpeedColorHex === 'function') return window.getTrafficSpeedColorHex(spd, fallback || '#3b82f6');
-    if (spd === null || spd === undefined || !Number.isFinite(Number(spd))) return fallback || '#3b82f6';
-    const n = Number(spd);
-    return n < 20 ? '#dc2626' : (n <= 40 ? '#f59e0b' : '#16a34a');
-  };
+  const roadCoreOf = (s) => String(s || '').split(/\s+near\s+|\s+-\s+|\s*\/\s*|\s*\(/i)[0].trim().toLowerCase();
 
-  const out = [];
+  const staged = [];
   for (let i = 0; i < speedGeo.features.length; i++) {
     const feat = speedGeo.features[i];
     const coords = feat?.geometry?.coordinates;
     if (!Array.isArray(coords) || coords.length < 2) continue;
     const p = feat.properties || {};
+    const refCoords = (Array.isArray(p.rawCoords) && p.rawCoords.length >= 2) ? p.rawCoords : coords;
 
     // Filter out short/curved 2-point interchange ramp stubs (< 350 m straight-line distance)
-    if (coords.length === 2) {
-      const refCoords = (Array.isArray(p.rawCoords) && p.rawCoords.length === 2) ? p.rawCoords : coords;
-      const straightM = _distanceMetersFast(refCoords[0][1], refCoords[0][0], refCoords[1][1], refCoords[1][0]);
+    let straightM = Infinity;
+    if (refCoords.length === 2) {
+      straightM = _distanceMetersFast(refCoords[0][1], refCoords[0][0], refCoords[1][1], refCoords[1][0]);
       if (!Number.isFinite(straightM) || straightM < 350) continue;
     }
 
-    let finalCoords = coords;
-    const rot = Number(p.rot);
-    if (Array.isArray(p.rawCoords) && p.rawCoords.length >= 2 && Number.isFinite(rot)) {
-      const leftBrg = ((rot % 360) + 360 + 270) % 360;
-      finalCoords = p.rawCoords.map(([lon, lat]) => {
-        const [oLat, oLon] = projectPointMeters(lat, lon, leftBrg, offsetM);
-        return [oLon, oLat];
-      });
-    } else if (coords.length === 2 && Number.isFinite(rot) && zoom >= 15) {
-      // Shift pre-offset legacy 12m links back toward carriageway centerline at high zoom (z >= 15)
-      const pullBackM = Math.max(0, 12 - offsetM);
-      if (pullBackM > 0) {
-        const rightBrg = ((rot % 360) + 360 + 90) % 360;
-        finalCoords = coords.map(([lon, lat]) => {
-          const [oLat, oLon] = projectPointMeters(lat, lon, rightBrg, pullBackM);
-          return [oLon, oLat];
-        });
+    const rotA = Number.isFinite(Number(p.rotA)) ? Number(p.rotA) : Number(p.rot);
+    const rotB = Number.isFinite(Number(p.rotB)) ? Number(p.rotB) : NaN;
+    let baseCoords = refCoords;
+    let curveDevM = 0;
+
+    if (refCoords.length === 2 && Number.isFinite(rotA)) {
+      const linkBrg = _mapBearingDeg(refCoords[0][1], refCoords[0][0], refCoords[1][1], refCoords[1][0]);
+      const angA = _mapAngDiffDeg(rotA, linkBrg);
+      if (Number.isFinite(rotB)) {
+        const angB = _mapAngDiffDeg(rotB, linkBrg);
+        const turnDeg = _mapAngDiffDeg(rotA, rotB);
+        // Reject raw chords whose endpoint headings severely disagree with the chord (sharp flyover/interchange cuts)
+        if (angA > 24 || angB > 24 || turnDeg > 36) continue;
+        if (turnDeg >= 3) {
+          baseCoords = _buildHermiteSpeedCurveCoords(refCoords[0][0], refCoords[0][1], rotA, refCoords[1][0], refCoords[1][1], rotB, 6);
+          const midRawLat = (refCoords[0][1] + refCoords[1][1]) * 0.5;
+          const midRawLon = (refCoords[0][0] + refCoords[1][0]) * 0.5;
+          const midCurve = baseCoords[Math.floor(baseCoords.length / 2)];
+          curveDevM = _distanceMetersFast(midRawLat, midRawLon, midCurve[1], midCurve[0]);
+        }
+      } else {
+        // Without endpoint tangent rotB, filter out long straight 2-point chords whose heading deviates across curved roads
+        if (straightM > 650 && angA > 18) continue;
+        if (angA > 26) continue;
       }
     }
 
+    let finalCoords = baseCoords;
+    if (Array.isArray(p.rawCoords) && p.rawCoords.length >= 2) {
+      finalCoords = _applyKeepLeftOffsetAlongCoords(baseCoords, offsetM);
+    } else if (baseCoords.length >= 2 && Number.isFinite(rotA)) {
+      // Shift legacy pre-offset 6m links cleanly to tight keep-left offset while preserving Hermite curve points
+      const pullBackM = Math.max(0, 6 - offsetM);
+      if (pullBackM > 0) {
+        finalCoords = _applyKeepLeftOffsetAlongCoords(baseCoords, -pullBackM);
+      }
+    }
+
+    let minLat = 90, maxLat = -90, minLon = 180, maxLon = -180;
+    for (let k = 0; k < finalCoords.length; k++) {
+      const lo = finalCoords[k][0], la = finalCoords[k][1];
+      if (la < minLat) minLat = la;
+      if (la > maxLat) maxLat = la;
+      if (lo < minLon) minLon = lo;
+      if (lo > maxLon) maxLon = lo;
+    }
+
+    staged.push({
+      feat,
+      p,
+      roadCore: roadCoreOf(p.roadEn),
+      rot: Number.isFinite(rotA) ? rotA : null,
+      straightM,
+      curveDevM,
+      isUncurvedTwoPt: finalCoords.length === 2,
+      coords: finalCoords,
+      bbox: { minLat, maxLat, minLon, maxLon },
+      dropped: false
+    });
+  }
+
+  // Opposite-carriageway crossing guard:
+  // Prevent opposite-direction speed links on the same highway from ever crisscrossing on gentle curves
+  // (e.g., North Lantau Highway at Tung Chung Eastern Interchange where TD detector pins have ~10m cross-median jitter).
+  const minSepM = Math.max(2.2, offsetM * 1.4);
+  for (let i = 0; i < staged.length; i++) {
+    const a = staged[i];
+    if (a.dropped || !a.roadCore || a.rot === null) continue;
+    for (let j = i + 1; j < staged.length; j++) {
+      const b = staged[j];
+      if (b.dropped || b.roadCore !== a.roadCore || b.rot === null) continue;
+      if (_mapAngDiffDeg(a.rot, b.rot) < 135) continue;
+      // Fast bbox overlap check (~35m pad)
+      const pad = 0.00035;
+      if (a.bbox.maxLat + pad < b.bbox.minLat || b.bbox.maxLat + pad < a.bbox.minLat) continue;
+      if (a.bbox.maxLon + pad < b.bbox.minLon || b.bbox.maxLon + pad < a.bbox.minLon) continue;
+
+      if (!_polylinesIntersect2D(a.coords, b.coords)) continue;
+
+      // If both are raw un-curved 2-point chords intersecting each other, filter out the longer/more deviating chord
+      if (a.isUncurvedTwoPt && b.isUncurvedTwoPt) {
+        if (a.straightM >= b.straightM) a.dropped = true;
+        else b.dropped = true;
+        if (a.dropped) break;
+        continue;
+      }
+
+      // Otherwise enforce simultaneous symmetric HK keep-left carriageway separation around the shared centerline
+      const origA = a.coords.slice();
+      const origB = b.coords.slice();
+      const halfSepM = Math.max(1.8, minSepM * 0.6);
+      const projectToKeepLeft = (srcCoords, oppCoords) => {
+        const last = srcCoords.length - 1;
+        return srcCoords.map((pt, idx) => {
+          const near = _nearestPointOnPolylineMeters(pt[0], pt[1], oppCoords);
+          if (!near.proj || near.distM > 65) return pt;
+          const pPrev = srcCoords[Math.max(0, idx - 1)];
+          const pNext = srcCoords[Math.min(last, idx + 1)];
+          const hdg = _mapBearingDeg(pPrev[1], pPrev[0], pNext[1], pNext[0]);
+          const leftBrg = (hdg + 270) % 360;
+          const leftRad = leftBrg * Math.PI / 180;
+          const cosLat = Math.max(0.2, Math.cos(pt[1] * Math.PI / 180));
+          const dxM = (pt[0] - near.proj.lon) * 111111 * cosLat;
+          const dyM = (pt[1] - near.proj.lat) * 111111;
+          // Signed meters to the LEFT of travel direction relative to opposite carriageway
+          const signedLeftM = dxM * Math.sin(leftRad) + dyM * Math.cos(leftRad);
+          if (signedLeftM < minSepM) {
+            const midLat = (pt[1] + near.proj.lat) * 0.5;
+            const midLon = (pt[0] + near.proj.lon) * 0.5;
+            const [sLat, sLon] = projectPointMeters(midLat, midLon, leftBrg, halfSepM);
+            return [Number(sLon.toFixed(6)), Number(sLat.toFixed(6))];
+          }
+          return pt;
+        });
+      };
+      a.coords = projectToKeepLeft(origA, origB);
+      b.coords = projectToKeepLeft(origB, origA);
+    }
+  }
+
+  const out = [];
+  for (let i = 0; i < staged.length; i++) {
+    const item = staged[i];
+    if (item.dropped) continue;
     out.push({
-      ...feat,
-      geometry: { ...feat.geometry, coordinates: finalCoords },
+      ...item.feat,
+      geometry: { ...item.feat.geometry, coordinates: item.coords },
       properties: {
-        ...p,
-        color: colorFn(p.spd, p.color),
+        ...item.p,
+        color: getGlobalTrafficSpeedColorHex(item.p.spd, item.p.color),
         appliedOffsetM: offsetM
       }
     });
@@ -2059,12 +2266,6 @@ function buildGlobalSpeedMapGeoJsonFallback(detectors = []) {
   if (!Array.isArray(detectors) || !detectors.length) {
     return { type: 'FeatureCollection', features };
   }
-  const colorFn = (spd) => {
-    if (typeof window.getTrafficSpeedColorHex === 'function') return window.getTrafficSpeedColorHex(spd, '#3b82f6');
-    if (spd === null || spd === undefined || !Number.isFinite(Number(spd))) return '#3b82f6';
-    const n = Number(spd);
-    return n < 20 ? '#dc2626' : (n <= 40 ? '#f59e0b' : '#16a34a');
-  };
   const roadCoreOf = (s) => String(s || '').split(/\s+near\s+|\s+-\s+|\s*\/\s*|\s*\(/i)[0].trim().toLowerCase();
   const byRoad = new Map();
   for (let i = 0; i < detectors.length; i++) {
@@ -2077,31 +2278,53 @@ function buildGlobalSpeedMapGeoJsonFallback(detectors = []) {
   for (const list of byRoad.values()) {
     for (let i = 0; i < list.length; i++) {
       const a = list[i];
+      const aLat = Number(a.lat), aLon = Number(a.lon);
       const aRot = Number(a.rot) || 0;
       let bestNext = null;
+      let bestNextIdx = -1;
       let bestDistM = Infinity;
       for (let j = 0; j < list.length; j++) {
         if (i === j) continue;
         const b = list[j];
         const bRot = Number(b.rot) || 0;
-        if (_mapAngDiffDeg(aRot, bRot) > 30) continue;
-        const dM = _distanceMetersFast(Number(a.lat), Number(a.lon), Number(b.lat), Number(b.lon));
+        if (_mapAngDiffDeg(aRot, bRot) > 32) continue;
+        const dM = _distanceMetersFast(aLat, aLon, Number(b.lat), Number(b.lon));
         if (dM < 350 || dM > 2200) continue;
-        const linkBrg = _mapBearingDeg(Number(a.lat), Number(a.lon), Number(b.lat), Number(b.lon));
-        const maxLinkAng = dM > 1000 ? 16 : 22;
+        const linkBrg = _mapBearingDeg(aLat, aLon, Number(b.lat), Number(b.lon));
+        const maxLinkAng = dM > 1000 ? 16 : 24;
         if (_mapAngDiffDeg(aRot, linkBrg) > maxLinkAng) continue;
         if (_mapAngDiffDeg(bRot, linkBrg) > maxLinkAng) continue;
         if (dM < bestDistM) {
           bestDistM = dM;
           bestNext = b;
+          bestNextIdx = j;
         }
       }
       if (!bestNext) continue;
+      // Skip duplicate chords that leapfrog over an intermediate same-direction detector
+      const bLat = Number(bestNext.lat), bLon = Number(bestNext.lon);
+      let hasMid = false;
+      for (let k = 0; k < list.length; k++) {
+        if (k === i || k === bestNextIdx) continue;
+        const c = list[k];
+        if (!c || _mapAngDiffDeg(aRot, Number(c.rot) || 0) > 32) continue;
+        const cLat = Number(c.lat), cLon = Number(c.lon);
+        const dAC = _distanceMetersFast(aLat, aLon, cLat, cLon);
+        const dCB = _distanceMetersFast(cLat, cLon, bLat, bLon);
+        if (dAC >= 80 && dCB >= 80 && dAC < bestDistM - 50 && dCB < bestDistM - 50) {
+          if (_mapPointToSegDistKm(cLat, cLon, aLat, aLon, bLat, bLon) <= 0.11) {
+            hasMid = true;
+            break;
+          }
+        }
+      }
+      if (hasMid) continue;
+
       features.push({
         type: 'Feature',
         geometry: {
           type: 'LineString',
-          coordinates: [[Number(a.lon), Number(a.lat)], [Number(bestNext.lon), Number(bestNext.lat)]]
+          coordinates: [[aLon, aLat], [bLon, bLat]]
         },
         properties: {
           id: a.id || '',
@@ -2109,13 +2332,15 @@ function buildGlobalSpeedMapGeoJsonFallback(detectors = []) {
           roadTc: a.roadTc || a.roadEn || '',
           dir: a.dir || '',
           rot: aRot,
+          rotA: aRot,
+          rotB: Number(bestNext.rot) || aRot,
           spd: a.spd ?? null,
           occ: a.occ || 0,
           tier: a.tier || 'SMOOTH',
-          color: colorFn(a.spd),
+          color: getGlobalTrafficSpeedColorHex(a.spd),
           camKey: a.camKey || '',
           lenM: Math.round(bestDistM),
-          rawCoords: [[Number(a.lon), Number(a.lat)], [Number(bestNext.lon), Number(bestNext.lat)]]
+          rawCoords: [[aLon, aLat], [bLon, bLat]]
         }
       });
     }
@@ -2164,29 +2389,31 @@ function renderGlobalTrafficDashboard(targetMap = window.browseMapInstance) {
   const speedGeo = filterAndOffsetGlobalSpeedGeoJson(rawSpeedGeo, zoom);
   window.__LAST_GLOBAL_SPEED_GEOJSON__ = speedGeo;
 
-  const casingWeight = zoom >= 15 ? 6.8 : 7.8;
-  const flowWeight = zoom >= 15 ? 4.6 : 5.4;
+  const casingWeight = 5;
+  const flowWeight = 3;
 
   if (speedGeo && Array.isArray(speedGeo.features) && speedGeo.features.length > 0) {
     if (typeof L.geoJSON === 'function') {
-      // Thin dark casing outline directly underneath
+      // Crisp 5px dark casing (#0f172a, opacity 0.6) underneath vivid 3px top stroke
       L.geoJSON(speedGeo, {
         interactive: false,
         style: () => ({
-          color: '#1e293b',
+          color: '#0f172a',
           weight: casingWeight,
-          opacity: 0.76,
+          opacity: 0.6,
+          smoothFactor: 1.5,
           lineCap: 'round',
           lineJoin: 'round'
         })
       }).addTo(_globalTrafficLayerGroup);
 
-      // Colored live speed GeoJSON segments on top
+      // Vivid Google-Maps-style live speed GeoJSON segments on top (#22c55e / #f59e0b / #ef4444)
       L.geoJSON(speedGeo, {
         style: (feat) => ({
           color: feat?.properties?.color || '#3b82f6',
           weight: flowWeight,
-          opacity: 0.94,
+          opacity: 0.95,
+          smoothFactor: 1.5,
           lineCap: 'round',
           lineJoin: 'round'
         }),
@@ -2217,8 +2444,8 @@ function renderGlobalTrafficDashboard(targetMap = window.browseMapInstance) {
         const coords = feat?.geometry?.coordinates || [];
         if (coords.length < 2) return;
         const latlngs = coords.map(c => [c[1], c[0]]);
-        L.polyline(latlngs, { color: '#1e293b', weight: casingWeight, opacity: 0.76, lineCap: 'round', lineJoin: 'round', interactive: false }).addTo(_globalTrafficLayerGroup);
-        L.polyline(latlngs, { color: feat?.properties?.color || '#3b82f6', weight: flowWeight, opacity: 0.94, lineCap: 'round', lineJoin: 'round' }).addTo(_globalTrafficLayerGroup);
+        L.polyline(latlngs, { color: '#0f172a', weight: casingWeight, opacity: 0.6, smoothFactor: 1.5, lineCap: 'round', lineJoin: 'round', interactive: false }).addTo(_globalTrafficLayerGroup);
+        L.polyline(latlngs, { color: feat?.properties?.color || '#3b82f6', weight: flowWeight, opacity: 0.95, smoothFactor: 1.5, lineCap: 'round', lineJoin: 'round' }).addTo(_globalTrafficLayerGroup);
       });
     }
   }
@@ -2356,24 +2583,32 @@ function _minPointToPolylineDistKm(lat, lon, coords) {
   return best;
 }
 
+const _CLIENT_VERIFIED_CAMERA_AZIMUTHS = {
+  TC003F: 175, // TM-CLK Tunnel Northern Portal (looking south into tunnel portal)
+  TC002F: 225, // Lung Mun Rd Roundabout near TM-CLKL (looking southwest along Lung Fu Rd tunnel approach)
+  TC001F: 20,  // TM-CLK Tunnel Southern Portal (looking north into southern portal)
+  NL128F: 75,  // North Lantau Highway near Tung Chung
+  NL126F: 255, // North Lantau Highway near Pak Mong
+  NL206F: 205  // Shun Long Road near North Lantau Highway
+};
+
 function resolveCameraBearingDeg(cam, detectors = [], routeCoords = null) {
   if (!cam) return 0;
+  const camKeyUpper = String(cam.key || '').trim().toUpperCase();
+  // 0. Explicit verified camera viewing azimuths (take precedence over XML/heuristic fallbacks)
+  if (camKeyUpper && Object.prototype.hasOwnProperty.call(_CLIENT_VERIFIED_CAMERA_AZIMUTHS, camKeyUpper)) {
+    return _CLIENT_VERIFIED_CAMERA_AZIMUTHS[camKeyUpper];
+  }
   if (cam.bearingDeg !== undefined && cam.bearingDeg !== null && Number.isFinite(Number(cam.bearingDeg))) {
     return ((Math.round(Number(cam.bearingDeg)) % 360) + 360) % 360;
   }
   const cLat = Number(cam.lat), cLon = Number(cam.lon);
   const desc = String(cam.desc || '');
   const detList = Array.isArray(detectors) ? detectors : [];
+  const cRoad = desc.split(/\s+near\s+|\s+-\s+|\s*\/\s*|\s*\(/i)[0].trim().toLowerCase();
 
-  // 1. Paired detector rot
-  for (let i = 0; i < detList.length; i++) {
-    const d = detList[i];
-    if (d && (d.id === cam.key || d.camKey === cam.key) && Number.isFinite(Number(d.rot))) {
-      return ((Math.round(Number(d.rot)) % 360) + 360) % 360;
-    }
-  }
-
-  // 2. Explicit cardinal / intercardinal bound from camera description
+  // 1. Explicit cardinal / intercardinal bound from camera description:
+  //    align to nearest matching TD speed-link tangent in that bound first, then compatible detector rot, then cardinal
   const dirTxt = `${cam.dir || ''} ${desc}`;
   let cardinalDeg = null;
   if (/\bnorth[\s-]*east(?:bound)?\b/i.test(dirTxt)) cardinalDeg = 45;
@@ -2386,21 +2621,64 @@ function resolveCameraBearingDeg(cam, detectors = [], routeCoords = null) {
   else if (/\b(?:westbound|west[\s-]*bound|\(wb\)|wb)\b|西行/i.test(dirTxt)) cardinalDeg = 270;
 
   if (cardinalDeg !== null) {
-    if (Number.isFinite(cLat) && Number.isFinite(cLon) && detList.length) {
-      let bestRot = null, bestDist = Infinity;
-      for (let i = 0; i < detList.length; i++) {
-        const d = detList[i];
-        if (!d || !Number.isFinite(Number(d.rot)) || !Number.isFinite(Number(d.lat)) || !Number.isFinite(Number(d.lon))) continue;
-        const dKm = _camHaversineKm(cLat, cLon, d.lat, d.lon);
-        if (dKm > 0.65 || _mapAngDiffDeg(cardinalDeg, Number(d.rot)) > 55) continue;
-        if (dKm < bestDist) {
-          bestDist = dKm;
-          bestRot = Number(d.rot);
+    if (Number.isFinite(cLat) && Number.isFinite(cLon)) {
+      const speedFeats = window?.__LIVE_TRAFFIC_SPEED_GEOJSON__?.features;
+      if (Array.isArray(speedFeats) && speedFeats.length) {
+        let bestTangent = null;
+        let bestScore = Infinity;
+        for (let i = 0; i < speedFeats.length; i++) {
+          const f = speedFeats[i];
+          const rc = Array.isArray(f?.properties?.rawCoords) && f.properties.rawCoords.length >= 2
+            ? f.properties.rawCoords
+            : f?.geometry?.coordinates;
+          if (!Array.isArray(rc) || rc.length < 2) continue;
+          const a = rc[0], b = rc[rc.length - 1];
+          const midLat = (a[1] + b[1]) * 0.5, midLon = (a[0] + b[0]) * 0.5;
+          if (Math.abs(midLat - cLat) > 0.015 || Math.abs(midLon - cLon) > 0.015) continue;
+          const linkTangent = _camBearingDeg(a[1], a[0], b[1], b[0]);
+          const dAng = _mapAngDiffDeg(cardinalDeg, linkTangent);
+          if (dAng > 55) continue;
+          const dKm = _mapPointToSegDistKm(cLat, cLon, a[1], a[0], b[1], b[0]);
+          if (dKm > 0.85) continue;
+          const fRoad = String(f?.properties?.roadEn || '').split(/\s+near\s+|\s+-\s+|\s*\/\s*|\s*\(/i)[0].trim().toLowerCase();
+          const sameRoad = Boolean(cRoad && fRoad && (cRoad === fRoad || cRoad.includes(fRoad) || fRoad.includes(cRoad)));
+          const score = dKm + (sameRoad ? 0 : 0.28) + dAng * 0.0015;
+          if (score < bestScore) {
+            bestScore = score;
+            bestTangent = linkTangent;
+          }
         }
+        if (bestTangent !== null) return ((Math.round(bestTangent) % 360) + 360) % 360;
       }
-      if (bestRot !== null) return ((Math.round(bestRot) % 360) + 360) % 360;
+
+      if (detList.length) {
+        let bestRot = null, bestScore = Infinity;
+        for (let i = 0; i < detList.length; i++) {
+          const d = detList[i];
+          if (!d || !Number.isFinite(Number(d.rot)) || !Number.isFinite(Number(d.lat)) || !Number.isFinite(Number(d.lon))) continue;
+          const dKm = _camHaversineKm(cLat, cLon, d.lat, d.lon);
+          const dAng = _mapAngDiffDeg(cardinalDeg, Number(d.rot));
+          if (dKm > 0.65 || dAng > 55) continue;
+          const dRoad = String(d.roadEn || '').split(/\s+near\s+|\s+-\s+|\s*\/\s*|\s*\(/i)[0].trim().toLowerCase();
+          const sameRoad = Boolean(cRoad && dRoad && (cRoad === dRoad || cRoad.includes(dRoad) || dRoad.includes(cRoad)));
+          const score = dKm + (sameRoad ? 0 : 0.25) + dAng * 0.002;
+          if (score < bestScore) {
+            bestScore = score;
+            bestRot = Number(d.rot);
+          }
+        }
+        if (bestRot !== null) return ((Math.round(bestRot) % 360) + 360) % 360;
+      }
     }
     return cardinalDeg;
+  }
+
+  // 2. Paired detector rot (for cameras without an explicit bound in description)
+  for (let i = 0; i < detList.length; i++) {
+    const d = detList[i];
+    if (d && (d.id === cam.key || d.camKey === cam.key) && Number.isFinite(Number(d.rot))) {
+      return ((Math.round(Number(d.rot)) % 360) + 360) % 360;
+    }
   }
 
   // 3. Landmark / cross-road vector for standalone intersection, roundabout & portal cameras
@@ -2468,28 +2746,27 @@ function formatCompassFromBearingDeg(deg, isZh = false) {
 
 function buildDirectionalCameraDivIcon(cam, bearingDeg, isZh = false, isRouteView = false) {
   const deg = ((Math.round(Number(bearingDeg) || 0) % 360) + 360) % 360;
-  const coneFill = isRouteView ? 'rgba(37, 99, 235, 0.28)' : 'rgba(14, 165, 233, 0.28)';
-  const coneStroke = isRouteView ? 'rgba(37, 99, 235, 0.72)' : 'rgba(2, 132, 199, 0.72)';
-  const arrowFill = isRouteView ? '#1D4ED8' : '#0284C7';
   const badgeBg = isRouteView ? 'rgba(15, 23, 42, 0.94)' : 'rgba(15, 23, 42, 0.92)';
   const titleTxt = escapeHtml(cam?.desc || cam?.key || (isZh ? '運輸署實時鏡頭' : 'TD Live Traffic Camera'));
+  // High-contrast 45° radar FOV sector (36px radius wedge centered at 40,40) rotated clockwise by bearingDeg
   const html = `
     <div class="cam-fov-marker-wrap${isRouteView ? ' is-route-cam' : ''}" data-cam-key="${escapeHtml(cam?.key || '')}" data-bearing="${deg}" title="${titleTxt}">
-      <svg class="cam-fov-svg" width="46" height="46" viewBox="0 0 46 46" aria-hidden="true" style="transform:rotate(${deg}deg);">
-        <path d="M23 23 L10.5 4.2 A22 22 0 0 1 35.5 4.2 Z" fill="${coneFill}" stroke="${coneStroke}" stroke-width="1"/>
-        <path d="M23 1.4 L27.2 8.2 L23 6.5 L18.8 8.2 Z" fill="${arrowFill}" stroke="#FFFFFF" stroke-width="0.9" stroke-linejoin="round"/>
+      <svg class="cam-fov-svg" width="80" height="80" viewBox="0 0 80 80" aria-hidden="true" style="transform:rotate(${deg}deg);">
+        <path d="M40 40 L26.22 6.74 A36 36 0 0 1 53.78 6.74 Z" fill="rgba(37, 99, 235, 0.28)" stroke="#2563eb" stroke-width="1.5" stroke-linejoin="round"/>
+        <path d="M40 2.6 L43.4 9.2 L40 7.6 L36.6 9.2 Z" fill="#2563eb" stroke="#FFFFFF" stroke-width="0.9" stroke-linejoin="round"/>
       </svg>
       <div class="global-traffic-cam-marker" style="background:${badgeBg};">📷</div>
     </div>`;
   return L.divIcon({
     className: 'global-traffic-cam-icon',
     html,
-    iconSize: [46, 46],
-    iconAnchor: [23, 23]
+    iconSize: [80, 80],
+    iconAnchor: [40, 40]
   });
 }
 
 if (typeof window !== 'undefined') {
+  window.getGlobalTrafficSpeedColorHex = getGlobalTrafficSpeedColorHex;
   window.resolveCameraBearingDeg = resolveCameraBearingDeg;
   window.formatCompassFromBearingDeg = formatCompassFromBearingDeg;
   window.buildDirectionalCameraDivIcon = buildDirectionalCameraDivIcon;

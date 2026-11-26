@@ -381,8 +381,8 @@ function matchDetectorToRouteCorridor(det, routeCoords, isRoadSnapped = true, pr
   if (!det || !Number.isFinite(det.lat) || !Number.isFinite(det.lon) || !Array.isArray(routeCoords) || routeCoords.length < 2) {
     return { matched: false, relation: 'none', distKm: Infinity };
   }
-  // Strictly <= 150m corridor radius on active bus routes so off-route regional districts (Sha Tin, Ma On Shan, Tsuen Wan, parallel arterials) never leak onto the route map.
-  const maxRadiusKm = isRoadSnapped ? 0.12 : 0.15;
+  // Strictly <= 150m corridor radius on active bus routes so off-route districts and parallel arterials never leak onto the route map.
+  const maxRadiusKm = 0.15;
   const sameTolDeg = isRoadSnapped ? 42 : 48;
   const oppMinDeg = isRoadSnapped ? 138 : 132;
 
@@ -411,7 +411,7 @@ function matchDetectorToRouteCorridor(det, routeCoords, isRoadSnapped = true, pr
     if (!Number.isFinite(aLat) || !Number.isFinite(aLon) || !Number.isFinite(bLat) || !Number.isFinite(bLon)) continue;
 
     // Fast segment bounding-box reject before computing perpendicular distance
-    const segPad = 0.0018;
+    const segPad = 0.0020;
     if (det.lat < Math.min(aLat, bLat) - segPad || det.lat > Math.max(aLat, bLat) + segPad) continue;
     if (det.lon < Math.min(aLon, bLon) - segPad || det.lon > Math.max(aLon, bLon) + segPad) continue;
 
@@ -421,6 +421,11 @@ function matchDetectorToRouteCorridor(det, routeCoords, isRoadSnapped = true, pr
     if (segLenM < 5) continue;
 
     if (isLocalArterial && segLenM >= 1200) continue;
+
+    if (i === 0 && typeof pointToSegmentDistanceKm === 'function') {
+      const proj = pointToSegmentDistanceKm(det.lat, det.lon, aLat, aLon, bLat, bLon);
+      if (proj && typeof proj === 'object' && proj.t < -0.02) continue;
+    }
 
     const distKm = _mapPointToSegDistKm(det.lat, det.lon, aLat, aLon, bLat, bLon);
     if (distKm > maxRadiusKm) continue;
@@ -454,14 +459,17 @@ function filterTrafficDetectorsForMap(detectors, targetMap, corridorMeta = null,
   if (!bounds || (typeof bounds.isValid === 'function' && !bounds.isValid())) return [];
   const padded = typeof bounds.pad === 'function' ? bounds.pad(0.22) : bounds;
 
+  const hasExplicitForward = Boolean(corridorMeta && Array.isArray(corridorMeta.forwardCoords));
+  const activeRouteCoords = hasExplicitForward ? corridorMeta.forwardCoords : corridorMeta?.coords;
   const isDetailBusScoped = Boolean(
     corridorMeta &&
     corridorMeta.isBusRoute &&
     Array.isArray(corridorMeta.coords) &&
     corridorMeta.coords.length >= 2
   );
-  const corridorBbox = isDetailBusScoped
-    ? _computeCorridorBbox(corridorMeta.coords, 0.0022)
+  const hasForwardSegment = Array.isArray(activeRouteCoords) && activeRouteCoords.length >= 2;
+  const corridorBbox = (isDetailBusScoped && hasForwardSegment)
+    ? _computeCorridorBbox(activeRouteCoords, 0.0022)
     : null;
 
   const kept = [];
@@ -472,16 +480,19 @@ function filterTrafficDetectorsForMap(detectors, targetMap, corridorMeta = null,
     if (!isFocused && !padded.contains([d.lat, d.lon])) continue;
 
     if (isDetailBusScoped) {
+      if (!hasForwardSegment) {
+        if (isFocused) kept.push({ det: d, relation: 'focused', isFocused: true });
+        continue;
+      }
       const m = matchDetectorToRouteCorridor(
         d,
-        corridorMeta.coords,
+        activeRouteCoords,
         corridorMeta.isRoadSnapped,
         corridorBbox,
         Boolean(corridorMeta.hasHighwaySpan)
       );
       if (!m.matched && !isFocused) continue;
-      // On active bus route view, keep ONLY the bus's travel direction so opposite-bound icons never clutter the route
-      // (opposite-bound jam callouts remain surfaced in the Verdict & Cam modal).
+      // On active bus route view, keep ONLY the bus's forward travel direction within 12 km ahead
       if (!isFocused && m.relation !== 'same') continue;
       kept.push({ det: d, relation: m.matched ? m.relation : 'focused', isFocused });
     } else {
@@ -595,9 +606,9 @@ function renderTrafficOverlayOnMap(targetMap, forceRedraw = false) {
     ? 180
     : (zoom <= 11 ? 140 : (zoom <= 13 ? 220 : 320));
   const segHalfMeters = zoom <= 12 ? 155 : (zoom <= 14 ? 105 : 75);
-  // Hong Kong drives on the LEFT: offset each carriageway slightly to the left of its heading
-  // so Northbound vs Southbound (and Eastbound vs Westbound) physically separate instead of overlapping.
-  const laneOffsetMeters = zoom >= 15 ? 14 : (zoom >= 13 ? 26 : 42);
+  // Hong Kong drives on the LEFT: offset each carriageway slightly to the left of its heading,
+  // tightening significantly at high zoom (z >= 15) so lines stay centered over the actual carriageway.
+  const laneOffsetMeters = zoom >= 15 ? 5 : (zoom >= 13 ? 24 : 40);
   const MIN_ARROW_SPACING_PX = 52;
   const MIN_OPP_BOTTLENECK_SPACING_PX = 36;
   const MAX_ROUTE_BOTTLENECK_MARKERS = 2;
@@ -609,7 +620,7 @@ function renderTrafficOverlayOnMap(targetMap, forceRedraw = false) {
     const isJam = d.tier === 'JAMMED';
     const isSlow = d.tier === 'SLOW';
     const isBottleneck = isJam || isSlow;
-    const col = isJam ? '#DC2626' : (isSlow ? '#F59E0B' : '#16A34A');
+    const col = isJam ? '#dc2626' : (isSlow ? '#f59e0b' : '#16a34a');
     const boundMeta = classifyTrafficBoundMeta(d.rot, d.dir, isZh);
 
     // Offset center left-hand relative to travel bearing (rot - 90 deg)
@@ -617,22 +628,6 @@ function renderTrafficOverlayOnMap(targetMap, forceRedraw = false) {
     const [cLat, cLon] = projectPointMeters(d.lat, d.lon, leftBearing, laneOffsetMeters);
     const pStart = projectPointMeters(cLat, cLon, (d.rot + 180) % 360, segHalfMeters);
     const pEnd = projectPointMeters(cLat, cLon, d.rot, segHalfMeters);
-
-    // Clean left-hand offset road stripe (subtle for smooth flow, prominent for bottlenecks)
-    L.polyline([pStart, pEnd], {
-      color: '#FFFFFF',
-      weight: isJam ? 8.6 : (isSlow ? 7.4 : (isDetailBusScoped ? 4.2 : 4.8)),
-      opacity: isBottleneck ? 0.88 : (isDetailBusScoped ? 0.50 : 0.62),
-      lineCap: 'round',
-      interactive: false
-    }).addTo(layerGroup);
-
-    const flowLine = L.polyline([pStart, pEnd], {
-      color: col,
-      weight: isJam ? 5.2 : (isSlow ? 4.2 : (isDetailBusScoped ? 2.6 : 3.0)),
-      opacity: isJam ? 0.94 : (isSlow ? 0.88 : (isDetailBusScoped ? 0.58 : 0.70)),
-      lineCap: 'round'
-    }).addTo(layerGroup);
 
     const cleanRoadName = sanitizeBottleneckLabel(isZh ? (d.roadTc || d.roadEn) : (d.roadEn || d.roadTc)) || (isZh ? '主要幹道' : 'Major Road');
     const tipTxt = sanitizeBottleneckLabel(`${cleanRoadName} · ${boundMeta.arrowGlyph} ${boundMeta.fullLabel} · ${d.spd} km/h${d.camKey ? ' 📷' : ''}`);
@@ -643,13 +638,35 @@ function renderTrafficOverlayOnMap(targetMap, forceRedraw = false) {
         window.openTrafficDecisionModal(d.id, _findOppositeTrafficDetectorId(d), '', false);
       }
     };
-    flowLine.bindTooltip(tipTxt, { sticky: true, className: 'kmb-map-stop-label' });
-    if (openVerdictDirect) {
-      if (typeof flowLine.on === 'function') flowLine.on('click', onDirectBottleneckClick);
-    } else {
-      flowLine.bindPopup(() => buildTrafficDetectorPopupHtml(d, isZh), { closeButton: true, maxWidth: 270 });
+
+    // In Detail Bus View when the live speed-colored corridor GeoJSON is active, skip redundant smooth stripes
+    // so the route's own green/amber/red speed corridor remains crisp and unobstructed.
+    const hasActiveDetailSpeedCorridor = Boolean(isDetailBusScoped && window.__LAST_DETAIL_SPEED_GEOJSON__?.features?.length);
+    const drawOverlayStripe = !hasActiveDetailSpeedCorridor || isBottleneck || isFocused;
+    if (drawOverlayStripe) {
+      L.polyline([pStart, pEnd], {
+        color: '#FFFFFF',
+        weight: isJam ? 7.6 : (isSlow ? 6.6 : 4.4),
+        opacity: isBottleneck ? 0.85 : 0.56,
+        lineCap: 'round',
+        interactive: false
+      }).addTo(layerGroup);
+
+      const flowLine = L.polyline([pStart, pEnd], {
+        color: col,
+        weight: isJam ? 4.8 : (isSlow ? 4.0 : 2.8),
+        opacity: isJam ? 0.94 : (isSlow ? 0.88 : 0.72),
+        lineCap: 'round'
+      }).addTo(layerGroup);
+
+      flowLine.bindTooltip(tipTxt, { sticky: true, className: 'kmb-map-stop-label' });
+      if (openVerdictDirect) {
+        if (typeof flowLine.on === 'function') flowLine.on('click', onDirectBottleneckClick);
+      } else {
+        flowLine.bindPopup(() => buildTrafficDetectorPopupHtml(d, isZh), { closeButton: true, maxWidth: 270 });
+      }
+      detMarkerMap.set(d.id, flowLine);
     }
-    detMarkerMap.set(d.id, flowLine);
 
     // Minimalist route-view markers vs general browse map markers:
     // - On active bus route view (drawRouteOnMap): NEVER render smooth-flow detector circles/badges at any zoom level,
@@ -1455,9 +1472,10 @@ function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) 
   if (!Array.isArray(coords) || coords.length < 2) return null;
   const layers = [];
   const liveDetectors = Array.isArray(window.__LIVE_TRAFFIC_DETECTORS__) ? window.__LIVE_TRAFFIC_DETECTORS__ : [];
+  const localStreetFallback = '#3b82f6';
+  const thinCasingColor = '#1e293b';
   const hasGeoJsonTwin = Boolean(
     window.trafficLayerEnabled &&
-    liveDetectors.length > 0 &&
     typeof window.buildRouteSpeedGeoJson === 'function' &&
     typeof L !== 'undefined' &&
     typeof L.geoJSON === 'function'
@@ -1469,17 +1487,17 @@ function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) 
     const speedGeoJson = window.buildRouteSpeedGeoJson(coords, liveDetectors, {
       isRoadSnapped,
       hasHighwaySpan,
-      noDataColor: '#8E8E93'
+      noDataColor: localStreetFallback
     });
     window.__LAST_DETAIL_SPEED_GEOJSON__ = speedGeoJson;
 
     if (speedGeoJson && Array.isArray(speedGeoJson.features) && speedGeoJson.features.length > 0) {
-      // Google Maps drive-line style: dark grey casing (weight 10) underneath + colored rounded GeoJSON (weight 6)
+      // Thin dark casing outline underneath live green (#16a34a), amber (#f59e0b), red (#dc2626), or slate-blue (#3b82f6) local segments
       layers.push(
         L.polyline(coords, {
-          color: '#2C2C2E',
-          weight: 10,
-          opacity: 0.9,
+          color: thinCasingColor,
+          weight: 7.5,
+          opacity: 0.72,
           lineJoin: 'round',
           lineCap: 'round',
           interactive: false
@@ -1488,9 +1506,9 @@ function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) 
       const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
       const geoLayer = L.geoJSON(speedGeoJson, {
         style: (feat) => ({
-          color: feat?.properties?.color || '#8E8E93',
-          weight: 6,
-          opacity: 0.9,
+          color: feat?.properties?.color || localStreetFallback,
+          weight: 5,
+          opacity: 0.96,
           lineJoin: 'round',
           lineCap: 'round'
         }),
@@ -1524,20 +1542,21 @@ function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) 
   const splitIdx = (activeStopIdx > 0 && Number.isFinite(actLat) && Number.isFinite(actLon))
     ? findNearestPolylineIndex(coords, actLat, actLon, 0)
     : 0;
+  const fallbackColor = routeAccent || localStreetFallback;
 
   if (splitIdx > 1 && splitIdx < coords.length - 1) {
     const upstreamCoords = coords.slice(0, splitIdx + 1);
     const activeCoords = coords.slice(splitIdx);
     layers.push(
-      L.polyline(upstreamCoords, { color: '#2C2C2E', weight: 8, opacity: 0.48, lineJoin: 'round', lineCap: 'round', interactive: false }),
-      L.polyline(upstreamCoords, { color: routeAccent, weight: 4.5, opacity: 0.45, lineJoin: 'round', lineCap: 'round', interactive: false }),
-      L.polyline(activeCoords, { color: '#2C2C2E', weight: 10, opacity: 0.88, lineJoin: 'round', lineCap: 'round', interactive: false }),
-      L.polyline(activeCoords, { color: routeAccent, weight: 6, opacity: 0.92, lineJoin: 'round', lineCap: 'round' })
+      L.polyline(upstreamCoords, { color: thinCasingColor, weight: 6, opacity: 0.40, lineJoin: 'round', lineCap: 'round', interactive: false }),
+      L.polyline(upstreamCoords, { color: fallbackColor, weight: 3.8, opacity: 0.48, lineJoin: 'round', lineCap: 'round', interactive: false }),
+      L.polyline(activeCoords, { color: thinCasingColor, weight: 7.5, opacity: 0.72, lineJoin: 'round', lineCap: 'round', interactive: false }),
+      L.polyline(activeCoords, { color: fallbackColor, weight: 5, opacity: 0.94, lineJoin: 'round', lineCap: 'round' })
     );
   } else {
     layers.push(
-      L.polyline(coords, { color: '#2C2C2E', weight: 10, opacity: 0.88, lineJoin: 'round', lineCap: 'round', interactive: false }),
-      L.polyline(coords, { color: routeAccent, weight: 6, opacity: 0.92, lineJoin: 'round', lineCap: 'round' })
+      L.polyline(coords, { color: thinCasingColor, weight: 7.5, opacity: 0.72, lineJoin: 'round', lineCap: 'round', interactive: false }),
+      L.polyline(coords, { color: fallbackColor, weight: 5, opacity: 0.94, lineJoin: 'round', lineCap: 'round' })
     );
   }
   return L.layerGroup(layers);
@@ -1594,13 +1613,18 @@ function drawRouteOnMap(group, activeStopIdx = 0) {
     window.__FOCUSED_TRAFFIC_DET_ID__ = '';
   }
   const hasHighwaySpan = isBusRoute && _stopsHaveHighwaySpan(stops);
+  const initialForwardCoords = (isBusRoute && typeof window.sliceForwardPolylineFromStop === 'function')
+    ? window.sliceForwardPolylineFromStop(currentDetailRoadCoords, stops, activeStopIdx, 12.0)
+    : currentDetailRoadCoords;
   currentDetailCorridorMeta = {
     groupKey: group?.key || '',
     mode: group?.mode || 'BUS',
     isBusRoute,
     hasHighwaySpan,
     isRoadSnapped: Boolean(cachedRoadCoords && cachedRoadCoords.length >= 2),
-    coords: currentDetailRoadCoords
+    activeStopIdx,
+    coords: currentDetailRoadCoords,
+    forwardCoords: initialForwardCoords
   };
 
   const lineStyle = { color: routeAccent, weight: 5, opacity: 0.92, lineJoin: 'round', lineCap: 'round' };
@@ -1631,7 +1655,9 @@ function drawRouteOnMap(group, activeStopIdx = 0) {
   } else if (cachedRoadCoords && cachedRoadCoords.length >= 2) {
     detailPolylineLayer = buildDetailBusPolylineLayer(cachedRoadCoords, stops, activeStopIdx, routeAccent).addTo(window.mapInstance);
   } else if (polyPts.length >= 2) {
-    detailPolylineLayer = L.polyline(polyPts, isBusRoute ? { ...lineStyle, opacity: 0.45, dashArray: '6, 6' } : lineStyle).addTo(window.mapInstance);
+    detailPolylineLayer = isBusRoute
+      ? buildDetailBusPolylineLayer(polyPts, stops, activeStopIdx, routeAccent).addTo(window.mapInstance)
+      : L.polyline(polyPts, lineStyle).addTo(window.mapInstance);
     if (isBusRoute) {
       fetchRoadSnappedBusPolyline(group, stops).then((roadCoords) => {
         if (!roadCoords || myGeomToken !== _detailGeomToken || !window.mapInstance) return;
@@ -1641,16 +1667,21 @@ function drawRouteOnMap(group, activeStopIdx = 0) {
           try { window.mapInstance.removeLayer(detailPolylineLayer); } catch (e) {}
         }
         currentDetailRoadCoords = roadCoords;
+        const snappedForward = (typeof window.sliceForwardPolylineFromStop === 'function')
+          ? window.sliceForwardPolylineFromStop(roadCoords, stops, curActive, 12.0)
+          : roadCoords;
         currentDetailCorridorMeta = {
           groupKey: group?.key || '',
           mode: group?.mode || 'BUS',
           isBusRoute: true,
           hasHighwaySpan,
           isRoadSnapped: true,
-          coords: roadCoords
+          activeStopIdx: curActive,
+          coords: roadCoords,
+          forwardCoords: snappedForward
         };
         detailPolylineLayer = buildDetailBusPolylineLayer(roadCoords, stops, curActive, routeAccent).addTo(window.mapInstance);
-        // Re-run route-scoped traffic filtering against the exact road-snapped highway corridor
+        // Re-run strict forward-only route traffic filtering against the exact road-snapped polyline
         renderTrafficOverlayOnMap(window.mapInstance, true);
         if (typeof window.onBusRouteGeometryReady === 'function') {
           window.onBusRouteGeometryReady(group.key);
@@ -1699,10 +1730,22 @@ function highlightActiveStopMarkerOnMap(activeIdx) {
   const isLight = document.documentElement.classList.contains('light-mode');
   const routeAccent = detailRouteGroup?.colorHex || window.__GET_ROUTE_COLOR_HEX__(detailRouteGroup?.mode, detailRouteGroup?.company, detailRouteGroup?.routeNo);
   const isBusRoute = !detailRouteGroup?.mode || detailRouteGroup.mode === 'BUS';
-  if (isBusRoute && Array.isArray(currentDetailRoadCoords) && currentDetailRoadCoords.length > stops.length && detailPolylineLayer) {
-    try { window.mapInstance.removeLayer(detailPolylineLayer); } catch (e) {}
+  if (isBusRoute && Array.isArray(currentDetailRoadCoords) && currentDetailRoadCoords.length >= 2) {
+    if (currentDetailCorridorMeta) {
+      currentDetailCorridorMeta = {
+        ...currentDetailCorridorMeta,
+        activeStopIdx: activeIdx,
+        forwardCoords: (typeof window.sliceForwardPolylineFromStop === 'function')
+          ? window.sliceForwardPolylineFromStop(currentDetailRoadCoords, stops, activeIdx, 12.0)
+          : currentDetailRoadCoords
+      };
+    }
+    if (detailPolylineLayer) {
+      try { window.mapInstance.removeLayer(detailPolylineLayer); } catch (e) {}
+    }
     detailPolylineLayer = buildDetailBusPolylineLayer(currentDetailRoadCoords, stops, activeIdx, routeAccent).addTo(window.mapInstance);
     _bringLayerGroupToFront(detailPolylineLayer);
+    renderTrafficOverlayOnMap(window.mapInstance, true);
   }
   Object.entries(mapMarkers).forEach(([idxStr, m]) => {
     const idx = Number(idxStr);
@@ -1814,44 +1857,138 @@ function clearAllActiveBrowseMarkers() {
   activeBrowseMarkersByKey.clear();
 }
 
+function getGlobalTrafficLaneOffsetMeters(zoom = 13) {
+  const z = Number.isFinite(Number(zoom)) ? Number(zoom) : 13;
+  if (z >= 15) return 4;
+  if (z >= 14) return 8;
+  if (z >= 13) return 12;
+  return 18;
+}
+
+function filterAndOffsetGlobalSpeedGeoJson(speedGeo, zoom = 13) {
+  if (!speedGeo || speedGeo.type !== 'FeatureCollection' || !Array.isArray(speedGeo.features)) {
+    return { type: 'FeatureCollection', features: [] };
+  }
+  const offsetM = getGlobalTrafficLaneOffsetMeters(zoom);
+  const colorFn = (spd, fallback) => {
+    if (typeof window.getTrafficSpeedColorHex === 'function') return window.getTrafficSpeedColorHex(spd, fallback || '#3b82f6');
+    if (spd === null || spd === undefined || !Number.isFinite(Number(spd))) return fallback || '#3b82f6';
+    const n = Number(spd);
+    return n < 20 ? '#dc2626' : (n <= 40 ? '#f59e0b' : '#16a34a');
+  };
+
+  const out = [];
+  for (let i = 0; i < speedGeo.features.length; i++) {
+    const feat = speedGeo.features[i];
+    const coords = feat?.geometry?.coordinates;
+    if (!Array.isArray(coords) || coords.length < 2) continue;
+    const p = feat.properties || {};
+
+    // Filter out short/curved 2-point interchange ramp stubs (< 350 m straight-line distance)
+    if (coords.length === 2) {
+      const refCoords = (Array.isArray(p.rawCoords) && p.rawCoords.length === 2) ? p.rawCoords : coords;
+      const straightM = _distanceMetersFast(refCoords[0][1], refCoords[0][0], refCoords[1][1], refCoords[1][0]);
+      if (!Number.isFinite(straightM) || straightM < 350) continue;
+    }
+
+    let finalCoords = coords;
+    const rot = Number(p.rot);
+    if (Array.isArray(p.rawCoords) && p.rawCoords.length >= 2 && Number.isFinite(rot)) {
+      const leftBrg = ((rot % 360) + 360 + 270) % 360;
+      finalCoords = p.rawCoords.map(([lon, lat]) => {
+        const [oLat, oLon] = projectPointMeters(lat, lon, leftBrg, offsetM);
+        return [oLon, oLat];
+      });
+    } else if (coords.length === 2 && Number.isFinite(rot) && zoom >= 15) {
+      // Shift pre-offset legacy 12m links back toward carriageway centerline at high zoom (z >= 15)
+      const pullBackM = Math.max(0, 12 - offsetM);
+      if (pullBackM > 0) {
+        const rightBrg = ((rot % 360) + 360 + 90) % 360;
+        finalCoords = coords.map(([lon, lat]) => {
+          const [oLat, oLon] = projectPointMeters(lat, lon, rightBrg, pullBackM);
+          return [oLon, oLat];
+        });
+      }
+    }
+
+    out.push({
+      ...feat,
+      geometry: { ...feat.geometry, coordinates: finalCoords },
+      properties: {
+        ...p,
+        color: colorFn(p.spd, p.color),
+        appliedOffsetM: offsetM
+      }
+    });
+  }
+  return { type: 'FeatureCollection', features: out };
+}
+
 function buildGlobalSpeedMapGeoJsonFallback(detectors = []) {
   const features = [];
   if (!Array.isArray(detectors) || !detectors.length) {
     return { type: 'FeatureCollection', features };
   }
   const colorFn = (spd) => {
-    if (typeof window.getTrafficSpeedColorHex === 'function') return window.getTrafficSpeedColorHex(spd, '#8E8E93');
-    if (spd === null || spd === undefined || !Number.isFinite(Number(spd))) return '#8E8E93';
+    if (typeof window.getTrafficSpeedColorHex === 'function') return window.getTrafficSpeedColorHex(spd, '#3b82f6');
+    if (spd === null || spd === undefined || !Number.isFinite(Number(spd))) return '#3b82f6';
     const n = Number(spd);
-    return n < 20 ? '#FF3B30' : (n <= 40 ? '#FFCC00' : '#34C759');
+    return n < 20 ? '#dc2626' : (n <= 40 ? '#f59e0b' : '#16a34a');
   };
+  const roadCoreOf = (s) => String(s || '').split(/\s+near\s+|\s+-\s+|\s*\/\s*|\s*\(/i)[0].trim().toLowerCase();
+  const byRoad = new Map();
   for (let i = 0; i < detectors.length; i++) {
     const d = detectors[i];
     if (!d || !Number.isFinite(Number(d.lat)) || !Number.isFinite(Number(d.lon))) continue;
-    const rot = Number(d.rot) || 0;
-    const leftBrg = (rot + 270) % 360;
-    const [cLat, cLon] = projectPointMeters(Number(d.lat), Number(d.lon), leftBrg, 12);
-    const pStart = projectPointMeters(cLat, cLon, (rot + 180) % 360, 125);
-    const pEnd = projectPointMeters(cLat, cLon, rot, 125);
-    features.push({
-      type: 'Feature',
-      geometry: {
-        type: 'LineString',
-        coordinates: [[pStart[1], pStart[0]], [pEnd[1], pEnd[0]]]
-      },
-      properties: {
-        id: d.id || '',
-        roadEn: d.roadEn || '',
-        roadTc: d.roadTc || d.roadEn || '',
-        dir: d.dir || '',
-        rot,
-        spd: d.spd ?? null,
-        occ: d.occ || 0,
-        tier: d.tier || 'SMOOTH',
-        color: d.color || colorFn(d.spd),
-        camKey: d.camKey || ''
+    const rk = roadCoreOf(d.roadEn) || d.id;
+    if (!byRoad.has(rk)) byRoad.set(rk, []);
+    byRoad.get(rk).push(d);
+  }
+  for (const list of byRoad.values()) {
+    for (let i = 0; i < list.length; i++) {
+      const a = list[i];
+      const aRot = Number(a.rot) || 0;
+      let bestNext = null;
+      let bestDistM = Infinity;
+      for (let j = 0; j < list.length; j++) {
+        if (i === j) continue;
+        const b = list[j];
+        const bRot = Number(b.rot) || 0;
+        if (_mapAngDiffDeg(aRot, bRot) > 30) continue;
+        const dM = _distanceMetersFast(Number(a.lat), Number(a.lon), Number(b.lat), Number(b.lon));
+        if (dM < 350 || dM > 2200) continue;
+        const linkBrg = _mapBearingDeg(Number(a.lat), Number(a.lon), Number(b.lat), Number(b.lon));
+        const maxLinkAng = dM > 1000 ? 16 : 22;
+        if (_mapAngDiffDeg(aRot, linkBrg) > maxLinkAng) continue;
+        if (_mapAngDiffDeg(bRot, linkBrg) > maxLinkAng) continue;
+        if (dM < bestDistM) {
+          bestDistM = dM;
+          bestNext = b;
+        }
       }
-    });
+      if (!bestNext) continue;
+      features.push({
+        type: 'Feature',
+        geometry: {
+          type: 'LineString',
+          coordinates: [[Number(a.lon), Number(a.lat)], [Number(bestNext.lon), Number(bestNext.lat)]]
+        },
+        properties: {
+          id: a.id || '',
+          roadEn: a.roadEn || '',
+          roadTc: a.roadTc || a.roadEn || '',
+          dir: a.dir || '',
+          rot: aRot,
+          spd: a.spd ?? null,
+          occ: a.occ || 0,
+          tier: a.tier || 'SMOOTH',
+          color: colorFn(a.spd),
+          camKey: a.camKey || '',
+          lenM: Math.round(bestDistM),
+          rawCoords: [[Number(a.lon), Number(a.lat)], [Number(bestNext.lon), Number(bestNext.lat)]]
+        }
+      });
+    }
   }
   return { type: 'FeatureCollection', features };
 }
@@ -1887,22 +2024,28 @@ function renderGlobalTrafficDashboard(targetMap = window.browseMapInstance) {
 
   _globalTrafficLayerGroup = L.layerGroup().addTo(targetMap);
   const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
+  const zoom = targetMap.getZoom ? (targetMap.getZoom() || 13) : 13;
 
   const detectors = Array.isArray(window.__LIVE_TRAFFIC_DETECTORS__) ? window.__LIVE_TRAFFIC_DETECTORS__ : [];
   const workerGeo = window.__LIVE_TRAFFIC_SPEED_GEOJSON__;
-  const speedGeo = (workerGeo && workerGeo.type === 'FeatureCollection' && Array.isArray(workerGeo.features) && workerGeo.features.length > 0)
+  const rawSpeedGeo = (workerGeo && workerGeo.type === 'FeatureCollection' && Array.isArray(workerGeo.features) && workerGeo.features.length > 0)
     ? workerGeo
     : buildGlobalSpeedMapGeoJsonFallback(detectors);
+  const speedGeo = filterAndOffsetGlobalSpeedGeoJson(rawSpeedGeo, zoom);
+  window.__LAST_GLOBAL_SPEED_GEOJSON__ = speedGeo;
+
+  const casingWeight = zoom >= 15 ? 6.8 : 7.8;
+  const flowWeight = zoom >= 15 ? 4.6 : 5.4;
 
   if (speedGeo && Array.isArray(speedGeo.features) && speedGeo.features.length > 0) {
     if (typeof L.geoJSON === 'function') {
-      // Dark grey casing polyline directly underneath
+      // Thin dark casing outline directly underneath
       L.geoJSON(speedGeo, {
         interactive: false,
         style: () => ({
-          color: '#2C2C2E',
-          weight: 10,
-          opacity: 0.88,
+          color: '#1e293b',
+          weight: casingWeight,
+          opacity: 0.76,
           lineCap: 'round',
           lineJoin: 'round'
         })
@@ -1911,9 +2054,9 @@ function renderGlobalTrafficDashboard(targetMap = window.browseMapInstance) {
       // Colored live speed GeoJSON segments on top
       L.geoJSON(speedGeo, {
         style: (feat) => ({
-          color: feat?.properties?.color || '#8E8E93',
-          weight: 6,
-          opacity: 0.9,
+          color: feat?.properties?.color || '#3b82f6',
+          weight: flowWeight,
+          opacity: 0.94,
           lineCap: 'round',
           lineJoin: 'round'
         }),
@@ -1944,8 +2087,8 @@ function renderGlobalTrafficDashboard(targetMap = window.browseMapInstance) {
         const coords = feat?.geometry?.coordinates || [];
         if (coords.length < 2) return;
         const latlngs = coords.map(c => [c[1], c[0]]);
-        L.polyline(latlngs, { color: '#2C2C2E', weight: 10, opacity: 0.88, lineCap: 'round', lineJoin: 'round', interactive: false }).addTo(_globalTrafficLayerGroup);
-        L.polyline(latlngs, { color: feat?.properties?.color || '#8E8E93', weight: 6, opacity: 0.9, lineCap: 'round', lineJoin: 'round' }).addTo(_globalTrafficLayerGroup);
+        L.polyline(latlngs, { color: '#1e293b', weight: casingWeight, opacity: 0.76, lineCap: 'round', lineJoin: 'round', interactive: false }).addTo(_globalTrafficLayerGroup);
+        L.polyline(latlngs, { color: feat?.properties?.color || '#3b82f6', weight: flowWeight, opacity: 0.94, lineCap: 'round', lineJoin: 'round' }).addTo(_globalTrafficLayerGroup);
       });
     }
   }
@@ -2001,9 +2144,11 @@ function renderGlobalTrafficDashboard(targetMap = window.browseMapInstance) {
       if (typeof m.on === 'function') {
         m.on('click', (ev) => {
           if (ev?.originalEvent?.stopPropagation) ev.originalEvent.stopPropagation();
-          const matchedDet = detectors.find(x => x.camKey === cam.key) || null;
+          const matchedDet = (typeof window.findNearestMatchingDetectorForCamera === 'function')
+            ? window.findNearestMatchingDetectorForCamera(cam, detectors)
+            : (detectors.find(x => x.camKey === cam.key) || null);
           if (matchedDet && typeof window.openTrafficDecisionModal === 'function') {
-            window.openTrafficDecisionModal(matchedDet.id, _findOppositeTrafficDetectorId(matchedDet), '', false);
+            window.openTrafficDecisionModal(matchedDet.id, _findOppositeTrafficDetectorId(matchedDet), '', false, cam);
           } else if (typeof window.openTrafficCameraModal === 'function') {
             window.openTrafficCameraModal(cam);
           }
@@ -2058,7 +2203,7 @@ function toggleGlobalTrafficLayer(forceState = null) {
 function attachGlobalTrafficControlToBrowseMap(mapInst) {
   if (!mapInst || typeof L === 'undefined' || typeof L.Control === 'undefined' || _globalTrafficControl) return;
   const GlobalTrafficControl = L.Control.extend({
-    options: { position: 'bottomleft' },
+    options: { position: 'bottomright' },
     onAdd: function() {
       const container = L.DomUtil.create('div', 'leaflet-control-global-traffic');
       const btn = L.DomUtil.create('button', 'map-traffic-chip-btn map-traffic-toggle global-traffic-btn', container);
@@ -2083,6 +2228,8 @@ function attachGlobalTrafficControlToBrowseMap(mapInst) {
   _globalTrafficControl.addTo(mapInst);
 }
 
+window.getGlobalTrafficLaneOffsetMeters = getGlobalTrafficLaneOffsetMeters;
+window.filterAndOffsetGlobalSpeedGeoJson = filterAndOffsetGlobalSpeedGeoJson;
 window.buildGlobalSpeedMapGeoJsonFallback = buildGlobalSpeedMapGeoJsonFallback;
 window.renderGlobalTrafficDashboard = renderGlobalTrafficDashboard;
 window.clearGlobalTrafficDashboard = clearGlobalTrafficDashboard;
@@ -2106,6 +2253,11 @@ function initAndRenderBrowseMap() {
     window.attachStandardMapLayers(window.browseMapInstance);
     attachGlobalTrafficControlToBrowseMap(window.browseMapInstance);
     window.browseMapInstance.on('moveend', scheduleBrowseMapPinDiff);
+    window.browseMapInstance.on('zoomend', () => {
+      if (window.globalTrafficLayerEnabled) {
+        renderGlobalTrafficDashboard(window.browseMapInstance);
+      }
+    });
     attachMapResizeObserver('browse-map-canvas', window.browseMapInstance, () => {
       if (window.globalTrafficLayerEnabled) renderGlobalTrafficDashboard(window.browseMapInstance);
       else renderBrowseMapVisiblePins();

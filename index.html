@@ -648,7 +648,7 @@
       box-shadow: 0 3px 10px rgba(0, 0, 0, 0.16);
     }
     .map-traffic-chip-btn.active { border-color: rgba(22, 163, 74, 0.55); color: var(--ios-green); }
-    .leaflet-control-global-traffic { margin: 0 0 12px 10px !important; }
+    .leaflet-control-global-traffic { margin: 0 12px 138px 0 !important; }
     .leaflet-control-global-traffic .global-traffic-btn {
       position: static;
       padding: 6px 12px;
@@ -717,6 +717,21 @@
       background: var(--bg-white); border-radius: 20px; border: 1px solid var(--border-color);
       box-shadow: 0 22px 54px rgba(0, 0, 0, 0.34); padding: 14px 16px 16px 16px;
       display: flex; flex-direction: column; gap: 11px;
+    }
+    .traffic-modal-title {
+      font-weight: 800; font-size: 0.93rem; line-height: 1.28; color: var(--text-main);
+      white-space: normal; word-break: break-word;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    }
+    .traffic-modal-sub {
+      display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+      font-size: 0.72rem; color: var(--text-sub); margin-top: 4px;
+    }
+    .traffic-dir-badge {
+      display: inline-flex; align-items: center; gap: 3px;
+      padding: 1px 7px; border-radius: 999px;
+      color: #FFFFFF; font-size: 0.67rem; font-weight: 800; letter-spacing: 0.02em;
+      line-height: 1.35; flex-shrink: 0;
     }
     .traffic-verdict-banner {
       border-radius: 13px; padding: 11px 13px; border: 1px solid var(--border-color);
@@ -2134,12 +2149,12 @@
 <!-- TRAFFIC DECISION & FULL UNCROPPED ROAD CAM MODAL -->
 <div id="trafficDecisionModal" style="display:none; position:fixed; inset:0; z-index:5200; background:rgba(0,0,0,0.62); backdrop-filter:blur(6px); align-items:center; justify-content:center; padding:14px;" onclick="if(event.target===this)closeTrafficDecisionModal()">
   <div class="traffic-modal-card" role="dialog" aria-modal="true" aria-labelledby="trafficModalTitle">
-    <div class="settings-top-bar" style="margin-bottom:0;">
+    <div class="settings-top-bar" style="margin-bottom:0; align-items:flex-start; gap:10px;">
       <div style="min-width:0; flex:1;">
-        <div style="font-weight:800; font-size:0.93rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" id="trafficModalTitle">Live Road Traffic</div>
-        <div style="font-size:0.72rem; color:var(--text-sub); margin-top:2px;" id="trafficModalSub"></div>
+        <div class="traffic-modal-title" id="trafficModalTitle">Live Road Traffic</div>
+        <div class="traffic-modal-sub" id="trafficModalSub"></div>
       </div>
-      <button type="button" class="settings-close-btn" id="trafficModalCloseBtn" onclick="closeTrafficDecisionModal()">✕ Close</button>
+      <button type="button" class="settings-close-btn" id="trafficModalCloseBtn" style="flex-shrink:0;" onclick="closeTrafficDecisionModal()">✕ Close</button>
     </div>
     <div id="trafficModalBody" style="display:flex; flex-direction:column; gap:10px;"></div>
   </div>
@@ -4143,12 +4158,12 @@ function generateExpandedETAsHtml(arrs, group, stopKey, stopIdx) {
   let roadTrafficBannerHtml = '';
   if ((!group?.mode || group?.mode === 'BUS') && Array.isArray(window.__LIVE_TRAFFIC_DETECTORS__) && window.__LIVE_TRAFFIC_DETECTORS__.length && typeof getDirectionalRoadSummary === 'function') {
     const roadPoly = (window.__ROUTE_GEOM_CACHE__ && group?.key) ? window.__ROUTE_GEOM_CACHE__[group.key] : null;
-    const roadSum = getDirectionalRoadSummary(stops, stopIdx, window.__LIVE_TRAFFIC_DETECTORS__, isZh, 8, roadPoly);
+    const roadSum = getDirectionalRoadSummary(stops, stopIdx, window.__LIVE_TRAFFIC_DETECTORS__, isZh, 40, roadPoly, 12000, window.__LIVE_TRAFFIC_CAMERAS__);
     if (roadSum && roadSum.headline) {
       const fDet = roadSum.focusDet;
       const oppDet = roadSum.oppDet;
       const segNote = roadSum.betweenLabel || '';
-      const isApp = roadSum.isApproaching ? 'true' : 'false';
+      const isApp = 'false';
       const openCall = fDet
         ? `event.stopPropagation(); openTrafficDecisionModal('${escapeJsAttr(fDet.id)}', '${escapeJsAttr(oppDet?.id || '')}', '${escapeJsAttr(segNote)}', ${isApp});`
         : 'event.stopPropagation();';
@@ -5651,7 +5666,23 @@ function showGpsCoordinateOnMap(lat, lon) {
   }, 120);
 }
 
-window.openTrafficDecisionModal = function(detId, oppDetId = '', segmentNote = '', isApproaching = false) {
+function _buildTrafficModalSubHtml(dirSource, isZh, segmentNote = '', camKeyFallback = '') {
+  const dirMeta = (typeof extractCardinalDirectionMeta === 'function')
+    ? extractCardinalDirectionMeta(dirSource, isZh)
+    : null;
+  const badgeText = dirMeta?.code
+    ? (isZh ? `${dirMeta.arrowGlyph} ${dirMeta.code} ${dirMeta.labelTc}` : `${dirMeta.arrowGlyph} ${dirMeta.code}`)
+    : '';
+  const badgeHtml = badgeText
+    ? `<span class="traffic-dir-badge" data-dir-code="${escapeHtml(dirMeta.code)}" style="background:${dirMeta.badgeBg};">${escapeHtml(badgeText)}</span>`
+    : '';
+  const capAt = window.__LIVE_TRAFFIC_CAPTURED_AT__ || '';
+  const textParts = [capAt, segmentNote || (!dirMeta?.code ? camKeyFallback : '')].filter(Boolean);
+  const textHtml = textParts.length ? `<span>${escapeHtml(textParts.join(' · '))}</span>` : '';
+  return `${badgeHtml}${textHtml}`;
+}
+
+window.openTrafficDecisionModal = function(detId, oppDetId = '', segmentNote = '', isApproaching = false, camOverride = null) {
   triggerHaptic(10);
   const modal = document.getElementById('trafficDecisionModal');
   const bodyEl = document.getElementById('trafficModalBody');
@@ -5663,7 +5694,8 @@ window.openTrafficDecisionModal = function(detId, oppDetId = '', segmentNote = '
   if (!det) return;
 
   const _cleanRoadText = (s) => (typeof sanitizeBottleneckLabel === 'function') ? sanitizeBottleneckLabel(s) : String(s || '').replace(/\s*[·•]?\s*\b\d{1,3}\s*(?:°|deg|["″”]|'')\s*$/gi, '').trim();
-  const roadName = _cleanRoadText(isZh ? (det.roadTc || det.roadEn || '主要幹道') : (det.roadEn || det.roadTc || 'Major Road')) || (isZh ? '主要幹道' : 'Major Road');
+  const baseRoadName = _cleanRoadText(isZh ? (det.roadTc || det.roadEn || '主要幹道') : (det.roadEn || det.roadTc || 'Major Road')) || (isZh ? '主要幹道' : 'Major Road');
+  const roadName = (camOverride && camOverride.desc) ? (_cleanRoadText(camOverride.desc) || baseRoadName) : baseRoadName;
   segmentNote = _cleanRoadText(segmentNote);
   const sameGrp = {
     status: det.tier || 'SMOOTH',
@@ -5695,36 +5727,13 @@ window.openTrafficDecisionModal = function(detId, oppDetId = '', segmentNote = '
     densityLabel: isZh ? `佔用率 ${Math.round(det.occ || 0)}%` : `${Math.round(det.occ || 0)}% load`,
     actionTip: ''
   };
-  if (isApproaching && (dec.tone === 'jammed' || dec.tone === 'slow')) {
-    const modeRec = rawDec?.modeRec || (dec.tone === 'jammed' ? 'SWITCH_MTR' : 'TAKE_BUS');
-    const shortRoad = roadName.replace(/\s*[-–—]\s*(North|South|East|West)bound.*$/i, '').replace(/\s+near\s+.*$/i, '').trim() || roadName;
-    if (modeRec === 'SWITCH_MTR') {
-      dec.verdict = isZh
-        ? `改乘港鐵 · 來車於${shortRoad}嚴重擠塞 (${dec.delayLabel})`
-        : `Switch to MTR · Incoming bus in jam on ${shortRoad} (${dec.delayLabel})`;
-    } else if (modeRec === 'MTR_FASTER') {
-      dec.verdict = isZh
-        ? `來車延誤 (${dec.delayLabel}) · 港鐵或較快`
-        : `Incoming bus delayed (${dec.delayLabel}) · MTR may be faster`;
-    } else {
-      dec.verdict = isZh
-        ? `可乘巴士 · 來車稍慢 (${dec.delayLabel})`
-        : `Take Bus · Incoming bus moving (${dec.delayLabel})`;
-    }
-    dec.actionTip = isZh
-      ? '班次正途經擠塞路段前來，候車時間或會延長'
-      : 'Incoming bus is passing through congestion before your stop — expect longer wait';
-  }
 
   const titleEl = document.getElementById('trafficModalTitle');
   const subEl = document.getElementById('trafficModalSub');
   const closeEl = document.getElementById('trafficModalCloseBtn');
   if (titleEl) titleEl.innerText = roadName;
-  const cleanDir = _cleanRoadText(det.dir || '');
-  const boundFallback = (typeof classifyTrafficBoundMeta === 'function') ? classifyTrafficBoundMeta(det.rot, det.dir, isZh).fullLabel : '';
-  const dirLabel = cleanDir || boundFallback;
-  const capAt = window.__LIVE_TRAFFIC_CAPTURED_AT__ || '';
-  if (subEl) subEl.innerText = [segmentNote, dirLabel, capAt].filter(Boolean).join(' · ');
+  const dirSource = camOverride ? { desc: camOverride.desc, dir: camOverride.dir || det.dir, roadEn: det.roadEn, roadTc: det.roadTc, rot: det.rot } : det;
+  if (subEl) subEl.innerHTML = _buildTrafficModalSubHtml(dirSource, isZh, segmentNote, camOverride?.key || det.camKey || '');
   if (closeEl) closeEl.innerText = isZh ? '✕ 關閉' : '✕ Close';
 
   const toneDot = dec.tone === 'jammed' ? '🔴' : (dec.tone === 'slow' ? '🟠' : '🟢');
@@ -5736,14 +5745,15 @@ window.openTrafficDecisionModal = function(detId, oppDetId = '', segmentNote = '
        </div>`
     : '';
 
-  const camUrl = det.camKey ? `https://tdcctv.data.one.gov.hk/${encodeURIComponent(det.camKey)}.JPG?t=${Math.floor(Date.now() / 60000)}` : '';
+  const effectiveCamKey = (camOverride && camOverride.key) ? camOverride.key : (det.camKey || '');
+  const camUrl = effectiveCamKey ? `https://tdcctv.data.one.gov.hk/${encodeURIComponent(effectiveCamKey)}.JPG?t=${Math.floor(Date.now() / 60000)}` : '';
   const camHtml = camUrl
     ? `<div class="traffic-cam-frame">
          <img id="trafficDecisionCamImg" src="${camUrl}" alt="${escapeHtml(roadName)} TD live camera snapshot" loading="eager" onerror="this.parentElement.innerHTML='<div style=&quot;color:#CBD5E1;font-size:0.78rem;padding:16px;text-align:center;&quot;>${isZh ? '運輸署實拍圖暫時未能載入' : 'TD road snapshot temporarily unavailable'}</div>'">
        </div>
        <div class="traffic-cam-caption">
-         <span>📷 ${isZh ? '運輸署實時路況快拍' : 'HKSAR TD Live Road Snapshot'} (${escapeHtml(det.camKey)})</span>
-         <button type="button" style="border:none; background:none; color:var(--ios-blue); font-weight:700; font-size:0.72rem; cursor:pointer; padding:2px 4px;" onclick="refreshTrafficDecisionCam('${escapeJsAttr(det.camKey)}')">↻ ${isZh ? '更新圖片' : 'Refresh'}</button>
+         <span>📷 ${isZh ? '運輸署實時路況快拍' : 'HKSAR TD Live Road Snapshot'} (${escapeHtml(effectiveCamKey)})</span>
+         <button type="button" style="border:none; background:none; color:var(--ios-blue); font-weight:700; font-size:0.72rem; cursor:pointer; padding:2px 4px;" onclick="refreshTrafficDecisionCam('${escapeJsAttr(effectiveCamKey)}')">↻ ${isZh ? '更新圖片' : 'Refresh'}</button>
        </div>`
     : `<div style="font-size:0.76rem; color:var(--text-sub); text-align:center; padding:12px; border-radius:11px; background:var(--bg-surface);">
          ${isZh ? '此路段感應器未配對運輸署鏡頭，以上為實時車速及佔用率數據。' : 'No TD camera paired at this sensor — verdict uses live road speed & occupancy telemetry.'}
@@ -5792,6 +5802,16 @@ window.refreshTrafficDecisionCam = function(camKey) {
 
 window.openTrafficCameraModal = function(cam) {
   if (!cam || !cam.key) return;
+  const list = Array.isArray(window.__LIVE_TRAFFIC_DETECTORS__) ? window.__LIVE_TRAFFIC_DETECTORS__ : [];
+  const matchedDet = (typeof window.findNearestMatchingDetectorForCamera === 'function')
+    ? window.findNearestMatchingDetectorForCamera(cam, list)
+    : (list.find(d => d.camKey === cam.key || d.id === cam.key) || null);
+  if (matchedDet && typeof window.openTrafficDecisionModal === 'function') {
+    const oppId = (typeof _findOppositeTrafficDetectorId === 'function') ? _findOppositeTrafficDetectorId(matchedDet) : '';
+    window.openTrafficDecisionModal(matchedDet.id, oppId, '', false, cam);
+    return;
+  }
+
   const modal = document.getElementById('trafficDecisionModal');
   const bodyEl = document.getElementById('trafficModalBody');
   if (!modal || !bodyEl) return;
@@ -5801,7 +5821,7 @@ window.openTrafficCameraModal = function(cam) {
   const closeEl = document.getElementById('trafficModalCloseBtn');
   const cleanTitle = (typeof sanitizeBottleneckLabel === 'function' ? sanitizeBottleneckLabel(cam.desc || cam.key) : (cam.desc || cam.key));
   if (titleEl) titleEl.innerText = cleanTitle || (isZh ? '運輸署實時路況鏡頭' : 'HKSAR TD Traffic Camera');
-  if (subEl) subEl.innerText = [cam.key, window.__LIVE_TRAFFIC_CAPTURED_AT__ || ''].filter(Boolean).join(' · ');
+  if (subEl) subEl.innerHTML = _buildTrafficModalSubHtml(cam, isZh, '', cam.key);
   if (closeEl) closeEl.innerText = isZh ? '✕ 關閉' : '✕ Close';
   const camUrl = `https://tdcctv.data.one.gov.hk/${encodeURIComponent(cam.key)}.JPG?t=${Math.floor(Date.now() / 60000)}`;
   bodyEl.innerHTML = `

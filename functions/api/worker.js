@@ -833,6 +833,38 @@ function parseTrafficCameraCsv(tsvOrCsvText) {
 let _cachedTrafficStaticMeta = null;
 let _cachedTrafficStaticMetaTs = 0;
 
+function _extractRoadCoreWorker(text) {
+  return String(text || '')
+    .split(/\s+near\s+|\s+-\s+|\s*\/\s*|\s*\(/i)[0]
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+function _extractCardinalDirWorker(text, rot = null) {
+  const s = String(text || '');
+  if (/\b(?:eastbound|east[\s-]*bound|\(eb\)|eb)\b|東行/i.test(s)) return 'EB';
+  if (/\b(?:westbound|west[\s-]*bound|\(wb\)|wb)\b|西行/i.test(s)) return 'WB';
+  if (/\b(?:northbound|north[\s-]*bound|\(nb\)|nb)\b|北行/i.test(s)) return 'NB';
+  if (/\b(?:southbound|south[\s-]*bound|\(sb\)|sb)\b|南行/i.test(s)) return 'SB';
+  if (/^\s*east\s*$/i.test(s)) return 'EB';
+  if (/^\s*west\s*$/i.test(s)) return 'WB';
+  if (/^\s*north\s*$/i.test(s)) return 'NB';
+  if (/^\s*south\s*$/i.test(s)) return 'SB';
+  if (rot !== null && rot !== undefined && Number.isFinite(Number(rot))) {
+    const deg = ((Number(rot) % 360) + 360) % 360;
+    if (deg >= 45 && deg < 135) return 'EB';
+    if (deg >= 135 && deg < 225) return 'SB';
+    if (deg >= 225 && deg < 315) return 'WB';
+    return 'NB';
+  }
+  return '';
+}
+
+function _isOppositeCardinalWorker(a, b) {
+  return (a === 'EB' && b === 'WB') || (a === 'WB' && b === 'EB') || (a === 'NB' && b === 'SB') || (a === 'SB' && b === 'NB');
+}
+
 async function getTrafficStaticMetadata() {
   const now = Date.now();
   if (_cachedTrafficStaticMeta && (now - _cachedTrafficStaticMetaTs) < 6 * 3600 * 1000) {
@@ -855,20 +887,44 @@ async function getTrafficStaticMetadata() {
   let cameras = [];
   if (camRes?.ok) {
     const camBuf = await camRes.arrayBuffer();
-    cameras = parseTrafficCameraCsv(decodeTextBufferAuto(camBuf));
+    cameras = parseTrafficCameraCsv(decodeTextBufferAuto(camBuf)).map((c) => ({
+      ...c,
+      dir: _extractCardinalDirWorker(c.desc, null)
+    }));
   }
 
-  // Pre-bind closest official TD road snapshot camera within 0.85 km for instant preview
+  // Pre-bind official TD road snapshot camera using exact ID first, then same-road/direction proximity (<= 0.35 km)
   if (cameras.length && detectorMeta.size) {
+    const camByKey = new Map();
+    for (let i = 0; i < cameras.length; i++) {
+      camByKey.set(cameras[i].key, cameras[i]);
+    }
     for (const det of detectorMeta.values()) {
+      const exactCam = camByKey.get(det.id);
+      if (exactCam) {
+        det.camKey = exactCam.key;
+        det.camDesc = exactCam.desc;
+        continue;
+      }
+      const detRoad = _extractRoadCoreWorker(det.roadEn);
+      const detDir = _extractCardinalDirWorker(`${det.roadEn || ''} ${det.dir || ''}`, det.rot);
       let bestCam = null;
-      let bestKm = 0.85;
+      let bestScore = Infinity;
       for (let i = 0; i < cameras.length; i++) {
         const c = cameras[i];
-        if (Math.abs(c.lat - det.lat) > 0.009 || Math.abs(c.lon - det.lon) > 0.010) continue;
+        if (Math.abs(c.lat - det.lat) > 0.004 || Math.abs(c.lon - det.lon) > 0.0045) continue;
         const dKm = haversineKmWorker(det.lat, det.lon, c.lat, c.lon);
-        if (dKm < bestKm) {
-          bestKm = dKm;
+        if (dKm > 0.35) continue;
+        const cDir = c.dir || '';
+        if (detDir && cDir && _isOppositeCardinalWorker(detDir, cDir)) continue;
+        const cRoad = _extractRoadCoreWorker(c.desc);
+        const sameRoad = Boolean(detRoad && cRoad && (cRoad === detRoad || cRoad.includes(detRoad) || detRoad.includes(cRoad)));
+        if (!sameRoad && dKm > 0.15) continue;
+        const dirBonus = (detDir && cDir && detDir === cDir) ? 0 : (cDir ? 0.08 : 0.04);
+        const roadPenalty = sameRoad ? 0 : 0.12;
+        const score = dKm + dirBonus + roadPenalty;
+        if (score < bestScore) {
+          bestScore = score;
           bestCam = c;
         }
       }
@@ -887,12 +943,12 @@ async function getTrafficStaticMetadata() {
 }
 
 function getTrafficSpeedColorHexWorker(speedKmh) {
-  if (speedKmh === null || speedKmh === undefined) return '#8E8E93';
+  if (speedKmh === null || speedKmh === undefined) return '#3b82f6';
   const s = Number(speedKmh);
-  if (!Number.isFinite(s)) return '#8E8E93';
-  if (s < 20) return '#FF3B30';
-  if (s <= 40) return '#FFCC00';
-  return '#34C759';
+  if (!Number.isFinite(s)) return '#3b82f6';
+  if (s < 20) return '#dc2626';
+  if (s <= 40) return '#f59e0b';
+  return '#16a34a';
 }
 
 function projectPointMetersWorker(lat, lon, bearingDeg, meters) {
@@ -920,13 +976,14 @@ function buildWorkerSpeedMapGeoJson(detectorMeta, combinedLive) {
   const allEntries = [];
   for (const [id, det] of detectorMeta.entries()) {
     const reading = combinedLive.get(id);
-    const spd = reading ? reading.speed : null;
-    const occ = reading ? reading.occ : 0;
-    const tier = reading ? classifyDetectorCongestion(reading.speed, reading.occ) : 'NO_DATA';
+    if (!reading) continue;
+    const spd = reading.speed;
+    const occ = reading.occ;
+    const tier = classifyDetectorCongestion(reading.speed, reading.occ);
     const color = getTrafficSpeedColorHexWorker(spd);
-    // Offset slightly left-hand (12m) for HK left-hand traffic separation
+    // Light default left-hand offset (6m) for HK left-hand traffic; client refines dynamically by zoom
     const leftBrg = ((Number(det.rot) || 0) + 270) % 360;
-    const [cLat, cLon] = projectPointMetersWorker(det.lat, det.lon, leftBrg, 12);
+    const [cLat, cLon] = projectPointMetersWorker(det.lat, det.lon, leftBrg, 6);
     allEntries.push({
       id,
       lat: det.lat,
@@ -939,14 +996,14 @@ function buildWorkerSpeedMapGeoJson(detectorMeta, combinedLive) {
       dir: det.dir || '',
       roadEn: det.roadEn || '',
       roadTc: det.roadTc || det.roadEn || '',
-      roadCore: String(det.roadEn || '').split(/\s+near\s+|\s+-\s+|\s*\/\s*/i)[0].trim().toLowerCase(),
+      roadCore: _extractRoadCoreWorker(det.roadEn),
       tier,
       color,
       camKey: det.camKey || ''
     });
   }
 
-  // Group by road core name to stitch adjacent same-direction strategic detectors into continuous road links
+  // Group by road core name to stitch adjacent same-direction strategic detectors into clean arterial links (>= 350 m)
   const byRoad = new Map();
   for (let i = 0; i < allEntries.length; i++) {
     const e = allEntries[i];
@@ -963,29 +1020,25 @@ function buildWorkerSpeedMapGeoJson(detectorMeta, combinedLive) {
       for (let j = 0; j < list.length; j++) {
         if (i === j) continue;
         const b = list[j];
-        if (angDiffDegWorker(a.rot, b.rot) > 42) continue;
+        if (angDiffDegWorker(a.rot, b.rot) > 30) continue;
         const dKm = haversineKmWorker(a.lat, a.lon, b.lat, b.lon);
-        if (dKm < 0.06 || dKm > 2.0) continue;
+        // Filter out short/curved interchange ramp stubs (< 350 m straight-line distance)
+        if (dKm < 0.35 || dKm > 2.2) continue;
         const linkBrg = bearingDegWorker(a.lat, a.lon, b.lat, b.lon);
-        if (angDiffDegWorker(a.rot, linkBrg) > 38) continue;
+        const maxLinkAng = dKm > 1.0 ? 16 : 22;
+        if (angDiffDegWorker(a.rot, linkBrg) > maxLinkAng) continue;
+        if (angDiffDegWorker(b.rot, linkBrg) > maxLinkAng) continue;
         if (dKm < bestDistKm) {
           bestDistKm = dKm;
           bestNext = b;
         }
       }
 
-      let coords;
-      if (bestNext) {
-        coords = [[a.cLon, a.cLat], [bestNext.cLon, bestNext.cLat]];
-      } else {
-        const pStart = projectPointMetersWorker(a.cLat, a.cLon, (a.rot + 180) % 360, 120);
-        const pEnd = projectPointMetersWorker(a.cLat, a.cLon, a.rot, 120);
-        coords = [[pStart[1], pStart[0]], [pEnd[1], pEnd[0]]];
-      }
+      if (!bestNext) continue;
 
       features.push({
         type: 'Feature',
-        geometry: { type: 'LineString', coordinates: coords },
+        geometry: { type: 'LineString', coordinates: [[a.cLon, a.cLat], [bestNext.cLon, bestNext.cLat]] },
         properties: {
           id: a.id,
           roadEn: a.roadEn,
@@ -996,7 +1049,9 @@ function buildWorkerSpeedMapGeoJson(detectorMeta, combinedLive) {
           occ: a.occ,
           tier: a.tier,
           color: a.color,
-          camKey: a.camKey
+          camKey: a.camKey,
+          lenM: Math.round(bestDistKm * 1000),
+          rawCoords: [[a.lon, a.lat], [bestNext.lon, bestNext.lat]]
         }
       });
     }

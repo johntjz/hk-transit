@@ -2930,6 +2930,136 @@ function synthesizeTrafficDecision(same, opp = null, isZh = false) {
   };
 }
 
+function _extractRoadCoreHardcode(text) {
+  return String(text || '')
+    .split(/\s+near\s+|\s+-\s+|\s*\/\s*|\s*\(/i)[0]
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+function _isOppositeCardinalHardcode(a, b) {
+  return (a === 'EB' && b === 'WB') || (a === 'WB' && b === 'EB') || (a === 'NB' && b === 'SB') || (a === 'SB' && b === 'NB');
+}
+
+function extractCardinalDirectionMeta(source, isZh = false) {
+  const obj = (source && typeof source === 'object') ? source : { desc: String(source || '') };
+  const primaryText = `${obj.desc || ''} ${obj.roadEn || ''} ${obj.roadTc || ''}`;
+  const dirText = String(obj.dir || '');
+  let code = '';
+
+  const parseExplicit = (txt) => {
+    if (!txt) return '';
+    if (/\b(?:eastbound|east[\s-]*bound|\(eb\)|eb)\b|東行/i.test(txt)) return 'EB';
+    if (/\b(?:westbound|west[\s-]*bound|\(wb\)|wb)\b|西行/i.test(txt)) return 'WB';
+    if (/\b(?:northbound|north[\s-]*bound|\(nb\)|nb)\b|北行/i.test(txt)) return 'NB';
+    if (/\b(?:southbound|south[\s-]*bound|\(sb\)|sb)\b|南行/i.test(txt)) return 'SB';
+    return '';
+  };
+
+  code = parseExplicit(primaryText) || parseExplicit(dirText);
+  if (!code && dirText) {
+    if (/^\s*east\s*$/i.test(dirText)) code = 'EB';
+    else if (/^\s*west\s*$/i.test(dirText)) code = 'WB';
+    else if (/^\s*north\s*$/i.test(dirText)) code = 'NB';
+    else if (/^\s*south\s*$/i.test(dirText)) code = 'SB';
+  }
+  if (!code && obj.rot !== null && obj.rot !== undefined && Number.isFinite(Number(obj.rot))) {
+    const deg = ((Number(obj.rot) % 360) + 360) % 360;
+    if (deg >= 45 && deg < 135) code = 'EB';
+    else if (deg >= 135 && deg < 225) code = 'SB';
+    else if (deg >= 225 && deg < 315) code = 'WB';
+    else code = 'NB';
+  }
+  if (!code && dirText) {
+    if (/\beast\b/i.test(dirText)) code = 'EB';
+    else if (/\bwest\b/i.test(dirText)) code = 'WB';
+    else if (/\bnorth\b/i.test(dirText)) code = 'NB';
+    else if (/\bsouth\b/i.test(dirText)) code = 'SB';
+  }
+
+  const MAP = {
+    EB: { code: 'EB', labelEn: 'Eastbound', labelTc: '東行', arrowGlyph: '→', badgeBg: '#0EA5E9' },
+    WB: { code: 'WB', labelEn: 'Westbound', labelTc: '西行', arrowGlyph: '←', badgeBg: '#8B5CF6' },
+    NB: { code: 'NB', labelEn: 'Northbound', labelTc: '北行', arrowGlyph: '↑', badgeBg: '#2563EB' },
+    SB: { code: 'SB', labelEn: 'Southbound', labelTc: '南行', arrowGlyph: '↓', badgeBg: '#EA580C' }
+  };
+  const info = MAP[code];
+  if (!info) {
+    return { code: '', labelEn: '', labelTc: '', fullLabel: '', arrowGlyph: '', badgeBg: '#475569' };
+  }
+  return {
+    ...info,
+    fullLabel: isZh ? info.labelTc : info.labelEn
+  };
+}
+
+function findNearestMatchingDetectorForCamera(cam, detectors = []) {
+  if (!cam || !Array.isArray(detectors) || !detectors.length) return null;
+  const camKey = String(cam.key || '').trim();
+  const cLat = Number(cam.lat);
+  const cLon = Number(cam.lon);
+  const hasCoords = Number.isFinite(cLat) && Number.isFinite(cLon);
+
+  // 1. Exact ID or pre-bound camKey match with live speed reading
+  if (camKey) {
+    const exact = detectors.find(d =>
+      d && (d.id === camKey || d.camKey === camKey) &&
+      d.spd !== null && d.spd !== undefined && Number.isFinite(Number(d.spd))
+    );
+    if (exact) return exact;
+  }
+  if (!hasCoords) return null;
+
+  const camDir = extractCardinalDirectionMeta(cam, false).code;
+  const camRoad = _extractRoadCoreHardcode(cam.desc || '');
+
+  // 2. Same road core + same/compatible direction within 1.25 km (ensures EB cameras like TDS90061 match EB highway sensors)
+  let bestSameRoad = null;
+  let bestSameRoadScore = Infinity;
+  // 3. Fallback: nearest same-direction detector within 0.45 km
+  let bestSameDir = null;
+  let bestSameDirDist = Infinity;
+  // 4. Fallback when camera has no direction text: nearest live detector within 0.30 km
+  let bestAny = null;
+  let bestAnyDist = Infinity;
+
+  for (let i = 0; i < detectors.length; i++) {
+    const d = detectors[i];
+    if (!d || !Number.isFinite(Number(d.lat)) || !Number.isFinite(Number(d.lon))) continue;
+    if (d.spd === null || d.spd === undefined || !Number.isFinite(Number(d.spd))) continue;
+    const dKm = _haversineKm(cLat, cLon, Number(d.lat), Number(d.lon));
+    if (dKm > 1.25) continue;
+
+    const detDir = extractCardinalDirectionMeta(d, false).code;
+    if (camDir && detDir && _isOppositeCardinalHardcode(camDir, detDir)) continue;
+
+    const detRoad = _extractRoadCoreHardcode(d.roadEn || d.roadTc || '');
+    const sameRoad = Boolean(camRoad && detRoad && (camRoad === detRoad || camRoad.includes(detRoad) || detRoad.includes(camRoad)));
+
+    if (sameRoad) {
+      const dirPenalty = (camDir && detDir && camDir === detDir) ? 0 : (camDir ? 0.18 : 0.05);
+      const score = dKm + dirPenalty;
+      if (score < bestSameRoadScore) {
+        bestSameRoadScore = score;
+        bestSameRoad = d;
+      }
+    }
+
+    if (dKm <= 0.45 && camDir && detDir && camDir === detDir && dKm < bestSameDirDist) {
+      bestSameDirDist = dKm;
+      bestSameDir = d;
+    }
+
+    if (!camDir && dKm <= 0.30 && dKm < bestAnyDist) {
+      bestAnyDist = dKm;
+      bestAny = d;
+    }
+  }
+
+  return bestSameRoad || bestSameDir || bestAny || null;
+}
+
 function _matchDetectorsAlongSegments(segments, detectors) {
   if (!segments.length || !Array.isArray(detectors) || !detectors.length) {
     return { sameHits: [], oppHits: [] };
@@ -2949,9 +3079,9 @@ function _matchDetectorsAlongSegments(segments, detectors) {
   }
 
   const hasHighwaySpan = segments.some(s => (Number(s.parentHopKm || s.hopKm || 0) >= 1.25) || s.isBbiSeg);
-  // When road-snapped polyline geometry is available, enforce a tight 60m corridor lock instead of wide straight-chord fallbacks.
-  const latPad = isRoadSnapped ? 0.0014 : (maxSegHopKm >= 2.0 ? 0.024 : 0.0045);
-  const lonPad = isRoadSnapped ? 0.0016 : (maxSegHopKm >= 2.0 ? 0.026 : 0.0055);
+  // Strict ~150m corridor lock when road-snapped polyline geometry is available.
+  const latPad = isRoadSnapped ? 0.0022 : (maxSegHopKm >= 2.0 ? 0.018 : 0.0035);
+  const lonPad = isRoadSnapped ? 0.0025 : (maxSegHopKm >= 2.0 ? 0.020 : 0.0040);
   const sameHits = [];
   const oppHits = [];
 
@@ -2972,24 +3102,26 @@ function _matchDetectorsAlongSegments(segments, detectors) {
     for (let j = 0; j < segments.length; j++) {
       const seg = segments[j];
       const spanKm = Number(seg.parentHopKm || seg.hopKm || 0);
-      // Expressway/tunnel detectors may ONLY match actual long highway spans or BBI/tunnel stops — never local short town hops (e.g. NLB 3M)
+      // Expressway/tunnel detectors may ONLY match highway spans or BBI/tunnel stops — never local town routes (e.g. S1 / NLB 3M)
       if (isExpDet && spanKm < 1.25 && !seg.isBbiSeg) continue;
-      // Road-corridor consistency: never snap parallel local/LRT arterial detectors (e.g. Castle Peak Rd / CPR-HSK) onto a long highway/BBI span
+      // Road-corridor consistency: never snap parallel local/LRT arterial detectors onto a highway/BBI span
       if (isLocalArterial && (spanKm >= 2.0 || seg.isBbiSeg)) continue;
 
       const proj = pointToSegmentDistanceKm(det.lat, det.lon, seg.la1, seg.lo1, seg.la2, seg.lo2);
-      const tMargin = seg.isRoadSnapped ? 0.18 : (seg.hopKm >= 2.0 ? 0.06 : 0.12);
-      if (proj.t < -tMargin || proj.t > 1 + tMargin) continue;
+      // Strictly reject any detector behind the selected boarding stop (segIdx === 0 && t < -0.02)
+      const minT = seg.segIdx === 0 ? -0.02 : (seg.isRoadSnapped ? -0.15 : -0.08);
+      const maxT = seg.isRoadSnapped ? 1.15 : (seg.hopKm >= 2.0 ? 1.04 : 1.10);
+      if (proj.t < minT || proj.t > maxT) continue;
 
       let maxCorridorRadius;
       if (seg.isRoadSnapped) {
-        // Strict corridor lock: <= 60m perpendicular distance to fixed road-snapped polyline
-        maxCorridorRadius = 0.06;
+        // Strict forward-polyline corridor: <= 150m perpendicular distance
+        maxCorridorRadius = 0.15;
       } else if (seg.hopKm >= 2.0) {
-        // Fallback before async road polyline loads: gently curved highway chord, still guarded against local arterials above
-        maxCorridorRadius = Math.min(2.0, Math.max(0.45, seg.hopKm * 0.22));
+        // Fallback before async road polyline loads
+        maxCorridorRadius = Math.min(1.6, Math.max(0.35, seg.hopKm * 0.18));
       } else {
-        maxCorridorRadius = isExpDet ? 0.20 : (seg.hopKm > 1.0 ? 0.22 : 0.14);
+        maxCorridorRadius = 0.15;
       }
 
       if (proj.distKm <= maxCorridorRadius && proj.distKm < bestDistKm) {
@@ -3001,10 +3133,9 @@ function _matchDetectorsAlongSegments(segments, detectors) {
 
     if (!bestSeg) continue;
     const ang = angularDiffDeg(bestSeg.brg, det.rot);
-    // Road-snapped polyline enforces tight ±30 deg heading alignment (opposite bound >= 150 deg).
     const sameMaxAng = bestSeg.isRoadSnapped
-      ? 30
-      : (bestSeg.hopKm >= 3.0 ? 65 : (isExpDet ? 42 : 48));
+      ? 42
+      : (bestSeg.hopKm >= 3.0 ? 60 : 45);
     const oppMinAng = 180 - sameMaxAng;
     const hitObj = {
       det,
@@ -3024,6 +3155,54 @@ function _matchDetectorsAlongSegments(segments, detectors) {
   sameHits.sort(sortHits);
   oppHits.sort(sortHits);
   return { sameHits, oppHits };
+}
+
+function _matchCamerasAlongForwardSegments(segments, cameras) {
+  if (!segments.length || !Array.isArray(cameras) || !cameras.length) return [];
+  const isRoadSnapped = segments.some(s => Boolean(s.isRoadSnapped));
+  let minLat = 90, maxLat = -90, minLon = 180, maxLon = -180;
+  for (let i = 0; i < segments.length; i++) {
+    const s = segments[i];
+    minLat = Math.min(minLat, s.la1, s.la2);
+    maxLat = Math.max(maxLat, s.la1, s.la2);
+    minLon = Math.min(minLon, s.lo1, s.lo2);
+    maxLon = Math.max(maxLon, s.lo1, s.lo2);
+  }
+  const pad = isRoadSnapped ? 0.0022 : 0.0035;
+  const matched = [];
+  for (let i = 0; i < cameras.length; i++) {
+    const cam = cameras[i];
+    const cLat = Number(cam?.lat), cLon = Number(cam?.lon);
+    if (!Number.isFinite(cLat) || !Number.isFinite(cLon)) continue;
+    if (cLat < minLat - pad || cLat > maxLat + pad || cLon < minLon - pad || cLon > maxLon + pad) continue;
+    const camDir = extractCardinalDirectionMeta(cam, false).code;
+
+    let bestDistKm = Infinity;
+    let bestAheadKm = 0;
+    let bestSeg = null;
+    for (let j = 0; j < segments.length; j++) {
+      const seg = segments[j];
+      const proj = pointToSegmentDistanceKm(cLat, cLon, seg.la1, seg.lo1, seg.la2, seg.lo2);
+      const minT = seg.segIdx === 0 ? -0.02 : -0.15;
+      if (proj.t < minT || proj.t > 1.15) continue;
+      const maxCamRadius = seg.isRoadSnapped
+        ? 0.15
+        : (seg.hopKm >= 2.0 ? Math.min(1.6, Math.max(0.35, seg.hopKm * 0.18)) : 0.15);
+      if (proj.distKm > maxCamRadius) continue;
+      const segDir = extractCardinalDirectionMeta({ rot: seg.brg }, false).code;
+      if (camDir && segDir && _isOppositeCardinalHardcode(camDir, segDir)) continue;
+      if (proj.distKm < bestDistKm) {
+        bestDistKm = proj.distKm;
+        bestAheadKm = seg.cumKm + Math.max(0, Math.min(1, proj.t)) * seg.hopKm;
+        bestSeg = seg;
+      }
+    }
+    if (bestSeg) {
+      matched.push({ cam, distKm: bestDistKm, aheadKm: bestAheadKm, betweenStops: bestSeg.betweenStops });
+    }
+  }
+  matched.sort((a, b) => (a.aheadKm + a.distKm * 2.0) - (b.aheadKm + b.distKm * 2.0));
+  return matched;
 }
 
 function _crossesHkWaterBarrierHardcode(lat1, lon1, lat2, lon2) {
@@ -3069,13 +3248,13 @@ function isCrossSubseaOrMajorTunnelSpan(stopA, stopB, la1, lo1, la2, lo2, spanKm
   return false;
 }
 
-function _buildStopPairSegments(stops, startIdx, endIdxExclusive, maxCumKm = 5.0, allowLongHighwayUpToKm = 12.0, opts = {}) {
+function _buildStopPairSegments(stops, startIdx, endIdxExclusive, maxCumKm = 12.0, allowLongHighwayUpToKm = 12.0, opts = {}) {
   const bbiStopRe = /tunnel|toll\s*plaza|\bbbi\b|highway|interchange|tsing\s*ma|lantau\s*link|轉車站|隧道|收費廣場|公路/i;
-  const isSelectedTunnelBbi = Boolean(opts.isSelectedTunnelBbi);
-  const breakOnTunnelCross = opts.breakOnTunnelCross !== false;
+  const limitKm = Math.max(0.5, Number(maxCumKm) || 12.0);
   const segments = [];
   let cumKm = 0;
   for (let idx = startIdx; idx < endIdxExclusive - 1; idx++) {
+    if (cumKm >= limitKm) break;
     const a = stops[idx], b = stops[idx + 1];
     const la1 = parseFloat(a?.latitude ?? a?.lat), lo1 = parseFloat(a?.longitude ?? a?.lon);
     const la2 = parseFloat(b?.latitude ?? b?.lat), lo2 = parseFloat(b?.longitude ?? b?.lon);
@@ -3083,24 +3262,22 @@ function _buildStopPairSegments(stops, startIdx, endIdxExclusive, maxCumKm = 5.0
     const hopKm = _haversineKm(la1, lo1, la2, lo2);
     if (hopKm < 0.04) continue;
 
-    // Immediately stop lookahead before crossing a subsea/cross-harbor/major tunnel span
-    // unless the user's selected boarding stop IS the tunnel BBI itself.
-    if (breakOnTunnelCross && !isSelectedTunnelBbi && isCrossSubseaOrMajorTunnelSpan(a, b, la1, lo1, la2, lo2, hopKm)) {
-      break;
-    }
-
     const aName = `${a?.stopName_e || ''} ${a?.name_tc || ''}`;
     const bName = `${b?.stopName_e || ''} ${b?.name_tc || ''}`;
     const isBbiSeg = bbiStopRe.test(aName) || bbiStopRe.test(bName);
-    const allowImmediateHighwayLeg = idx === startIdx && (isSelectedTunnelBbi || isBbiSeg);
-    const effLimit = allowImmediateHighwayLeg ? Math.max(maxCumKm, Math.min(allowLongHighwayUpToKm, hopKm + 0.5)) : maxCumKm;
-    if (cumKm >= effLimit) break;
-    if (!allowImmediateHighwayLeg && segments.length > 0 && (cumKm + hopKm) > effLimit + 0.75) break;
+
+    let endLat = la2, endLon = lo2, effHopKm = hopKm;
+    if (cumKm + hopKm > limitKm) {
+      const frac = Math.max(0, Math.min(1, (limitKm - cumKm) / hopKm));
+      endLat = la1 + (la2 - la1) * frac;
+      endLon = lo1 + (lo2 - lo1) * frac;
+      effHopKm = limitKm - cumKm;
+    }
 
     segments.push({
-      segIdx: idx - startIdx,
-      la1, lo1, la2, lo2,
-      hopKm,
+      segIdx: segments.length,
+      la1, lo1, la2: endLat, lo2: endLon,
+      hopKm: effHopKm,
       parentHopKm: hopKm,
       cumKm,
       isBbiSeg,
@@ -3116,31 +3293,23 @@ function _buildStopPairSegments(stops, startIdx, endIdxExclusive, maxCumKm = 5.0
         hopKm: Number(hopKm.toFixed(1))
       }
     });
-    cumKm += hopKm;
+    cumKm += effHopKm;
   }
   return segments;
 }
 
-// Project ordered stops onto a road-snapped polyline (CSDI ROUTE_BUS / deterministic OSRM)
-// and emit dense micro-segments tagged with their enclosing (fromStop -> toStop) span.
-function _buildRoadSnappedSegments(stops, startIdx, endIdxExclusive, roadPolylinePoints, maxCumKm = 5.0, opts = {}) {
-  if (!Array.isArray(roadPolylinePoints) || roadPolylinePoints.length < 3) return null;
-  const bbiStopRe = /tunnel|toll\s*plaza|\bbbi\b|highway|interchange|tsing\s*ma|lantau\s*link|轉車站|隧道|收費廣場|公路/i;
-  const isSelectedTunnelBbi = Boolean(opts.isSelectedTunnelBbi);
-  const breakOnTunnelCross = opts.breakOnTunnelCross !== false;
-  const allowLongHighwayUpToKm = Number(opts.allowLongHighwayUpToKm) || 12.0;
-
+// Match ordered stops monotonically onto a road-snapped polyline so shared two-way corridors bind to the right pass
+function _mapStopsToRoadPolylineIndices(stops, roadPolylinePoints) {
   const stopPolyIdx = new Map();
+  if (!Array.isArray(stops) || !Array.isArray(roadPolylinePoints) || roadPolylinePoints.length < 2) {
+    return stopPolyIdx;
+  }
   let searchFrom = 0;
-  let matchedCount = 0;
-  let totalChecked = 0;
-
-  for (let idx = startIdx; idx < endIdxExclusive; idx++) {
+  for (let idx = 0; idx < stops.length; idx++) {
     const s = stops[idx];
     const sLat = parseFloat(s?.latitude ?? s?.lat);
     const sLon = parseFloat(s?.longitude ?? s?.lon);
     if (!Number.isFinite(sLat) || !Number.isFinite(sLon)) continue;
-    totalChecked++;
 
     let bestI = -1;
     let bestKm = Infinity;
@@ -3153,26 +3322,105 @@ function _buildRoadSnappedSegments(stops, startIdx, endIdxExclusive, roadPolylin
         bestI = p;
       }
     }
-    if (bestI >= 0 && bestKm <= 0.55) {
+    if (bestI >= 0 && bestKm <= 0.65) {
       stopPolyIdx.set(idx, bestI);
       searchFrom = bestI;
-      matchedCount++;
+    }
+  }
+  return stopPolyIdx;
+}
+
+// Slice the active route's road polyline strictly forward starting AT activeStopIdx up to maxLookaheadKm (default 12 km).
+function sliceForwardPolylineFromStop(coords, stops = [], activeStopIdx = 0, maxLookaheadKm = 12.0) {
+  if (!Array.isArray(coords) || coords.length < 2) return [];
+  const limitKm = Math.max(0.5, Number(maxLookaheadKm) || 12.0);
+  const idx = Math.max(0, Number(activeStopIdx) || 0);
+  if (Array.isArray(stops) && stops.length >= 2 && idx >= stops.length - 1) {
+    return [];
+  }
+
+  let startPolyIdx = 0;
+  if (Array.isArray(stops) && stops.length >= 2 && idx > 0) {
+    const mapped = _mapStopsToRoadPolylineIndices(stops, coords);
+    if (mapped.has(idx)) {
+      startPolyIdx = mapped.get(idx);
+    } else {
+      const st = stops[idx];
+      const sLat = parseFloat(st?.latitude ?? st?.lat);
+      const sLon = parseFloat(st?.longitude ?? st?.lon);
+      if (Number.isFinite(sLat) && Number.isFinite(sLon)) {
+        let bestI = 0, bestKm = Infinity;
+        for (let p = 0; p < coords.length; p++) {
+          const dKm = _haversineKm(sLat, sLon, coords[p][0], coords[p][1]);
+          if (dKm < bestKm) { bestKm = dKm; bestI = p; }
+        }
+        startPolyIdx = bestI;
+      }
     }
   }
 
-  if (totalChecked < 2 || matchedCount < Math.max(2, Math.ceil(totalChecked * 0.6))) {
+  const sliced = [];
+  let cumKm = 0;
+  for (let p = startPolyIdx; p < coords.length; p++) {
+    const pt = coords[p];
+    if (!Array.isArray(pt) || pt.length < 2) continue;
+    if (!sliced.length) {
+      sliced.push([pt[0], pt[1]]);
+      continue;
+    }
+    const prev = sliced[sliced.length - 1];
+    const segKm = _haversineKm(prev[0], prev[1], pt[0], pt[1]);
+    if (segKm < 0.002) continue;
+    if (cumKm + segKm >= limitKm) {
+      const frac = Math.max(0, Math.min(1, (limitKm - cumKm) / segKm));
+      sliced.push([
+        prev[0] + (pt[0] - prev[0]) * frac,
+        prev[1] + (pt[1] - prev[1]) * frac
+      ]);
+      break;
+    }
+    sliced.push([pt[0], pt[1]]);
+    cumKm += segKm;
+  }
+  return sliced.length >= 2 ? sliced : [];
+}
+
+// Project ordered stops onto a road-snapped polyline (CSDI ROUTE_BUS / deterministic OSRM)
+// and emit dense micro-segments strictly forward starting AT startIdx up to maxCumKm (default 12 km).
+function _buildRoadSnappedSegments(stops, startIdx, endIdxExclusive, roadPolylinePoints, maxCumKm = 12.0, opts = {}) {
+  if (!Array.isArray(roadPolylinePoints) || roadPolylinePoints.length < 3) return null;
+  const bbiStopRe = /tunnel|toll\s*plaza|\bbbi\b|highway|interchange|tsing\s*ma|lantau\s*link|轉車站|隧道|收費廣場|公路/i;
+  const limitKm = Math.max(0.5, Number(maxCumKm) || 12.0);
+
+  const stopPolyIdx = _mapStopsToRoadPolylineIndices(stops, roadPolylinePoints);
+  let matchedCount = 0;
+  let totalChecked = 0;
+  for (let idx = startIdx; idx < endIdxExclusive; idx++) {
+    const s = stops[idx];
+    const sLat = parseFloat(s?.latitude ?? s?.lat);
+    const sLon = parseFloat(s?.longitude ?? s?.lon);
+    if (!Number.isFinite(sLat) || !Number.isFinite(sLon)) continue;
+    totalChecked++;
+    if (stopPolyIdx.has(idx)) matchedCount++;
+  }
+
+  if (totalChecked < 2 || matchedCount < Math.max(2, Math.ceil(totalChecked * 0.55))) {
     return null;
   }
 
   const segments = [];
   let cumKm = 0;
-  let stoppedAtBarrier = false;
   for (let idx = startIdx; idx < endIdxExclusive - 1; idx++) {
+    if (cumKm >= limitKm) break;
     const pStart = stopPolyIdx.get(idx);
-    const pEnd = stopPolyIdx.get(idx + 1);
+    // Find next mapped stop index >= idx + 1 in case an intermediate stop had an off-road coordinate
+    let nextIdx = idx + 1;
+    while (nextIdx < endIdxExclusive && !stopPolyIdx.has(nextIdx)) nextIdx++;
+    if (nextIdx >= endIdxExclusive) break;
+    const pEnd = stopPolyIdx.get(nextIdx);
     if (pStart === undefined || pEnd === undefined || pEnd <= pStart) continue;
 
-    const a = stops[idx], b = stops[idx + 1];
+    const a = stops[idx], b = stops[nextIdx];
     const laA = parseFloat(a?.latitude ?? a?.lat), loA = parseFloat(a?.longitude ?? a?.lon);
     const laB = parseFloat(b?.latitude ?? b?.lat), loB = parseFloat(b?.longitude ?? b?.lon);
     const chordKm = (Number.isFinite(laA) && Number.isFinite(laB)) ? _haversineKm(laA, loA, laB, loB) : 0;
@@ -3184,23 +3432,13 @@ function _buildRoadSnappedSegments(stops, startIdx, endIdxExclusive, roadPolylin
     }
     const parentHopKm = Math.max(chordKm, spanRoadKm);
 
-    // Immediately break lookahead scan before crossing a subsea/cross-harbor/major tunnel span
-    // unless the selected boarding stop IS the tunnel BBI itself.
-    if (breakOnTunnelCross && !isSelectedTunnelBbi && isCrossSubseaOrMajorTunnelSpan(a, b, laA, loA, laB, loB, parentHopKm)) {
-      stoppedAtBarrier = true;
-      break;
-    }
-
     const aName = `${a?.stopName_e || ''} ${a?.name_tc || ''}`;
     const bName = `${b?.stopName_e || ''} ${b?.name_tc || ''}`;
     const isBbiSeg = bbiStopRe.test(aName) || bbiStopRe.test(bName);
-    const allowImmediateHighwayLeg = idx === startIdx && (isSelectedTunnelBbi || isBbiSeg);
-    const effLimit = allowImmediateHighwayLeg ? Math.max(maxCumKm, Math.min(allowLongHighwayUpToKm, parentHopKm + 0.5)) : maxCumKm;
-    if (cumKm >= effLimit) break;
 
     const betweenStops = {
       fromSeq: idx + 1,
-      toSeq: idx + 2,
+      toSeq: nextIdx + 1,
       fromNameEn: _stripStopPlatformSuffix(a?.stopName_e || a?.name_tc || ''),
       fromNameTc: _stripStopPlatformSuffix(a?.name_tc || a?.stopName_e || ''),
       toNameEn: _stripStopPlatformSuffix(b?.stopName_e || b?.name_tc || ''),
@@ -3209,19 +3447,24 @@ function _buildRoadSnappedSegments(stops, startIdx, endIdxExclusive, roadPolylin
     };
 
     for (let p = pStart; p < pEnd; p++) {
-      if (cumKm >= effLimit) break;
+      if (cumKm >= limitKm) break;
       const c1 = roadPolylinePoints[p], c2 = roadPolylinePoints[p + 1];
       const segKm = _haversineKm(c1[0], c1[1], c2[0], c2[1]);
       if (segKm < 0.008) continue;
-      if (breakOnTunnelCross && !isSelectedTunnelBbi && _crossesHkWaterBarrierHardcode(c1[0], c1[1], c2[0], c2[1])) {
-        stoppedAtBarrier = true;
-        break;
+
+      let endLat = c2[0], endLon = c2[1], effSegKm = segKm;
+      if (cumKm + segKm > limitKm) {
+        const frac = Math.max(0, Math.min(1, (limitKm - cumKm) / segKm));
+        endLat = c1[0] + (c2[0] - c1[0]) * frac;
+        endLon = c1[1] + (c2[1] - c1[1]) * frac;
+        effSegKm = limitKm - cumKm;
       }
+
       segments.push({
         segIdx: segments.length,
         la1: c1[0], lo1: c1[1],
-        la2: c2[0], lo2: c2[1],
-        hopKm: segKm,
+        la2: endLat, lo2: endLon,
+        hopKm: effSegKm,
         parentHopKm,
         cumKm,
         isBbiSeg,
@@ -3229,72 +3472,85 @@ function _buildRoadSnappedSegments(stops, startIdx, endIdxExclusive, roadPolylin
         brg: computeBearingDeg(c1[0], c1[1], c2[0], c2[1]),
         betweenStops
       });
-      cumKm += segKm;
+      cumKm += effSegKm;
     }
-    if (stoppedAtBarrier) break;
+    if (nextIdx > idx + 1) idx = nextIdx - 1;
   }
 
-  return segments.length >= 1 ? segments : (stoppedAtBarrier ? [] : null);
+  return segments.length >= 1 ? segments : null;
 }
 
-// Compare bus route forward stop sequence against HKSAR live traffic detectors' compass Rotation.
-// Uses road-snapped fixed bus polyline (<=60m, ±30deg) when available, enforces a 5km lookahead cap,
-// breaks before crossing subsea/cross-harbor/major tunnels (unless boarding at the tunnel BBI itself),
-// and applies expressway + parallel-arterial guards.
-function inferDirectionalRoadTrafficForStops(stops, startIdx = 0, detectors = [], lookaheadStops = 8, roadPolylinePoints = null, maxLookaheadMeters = 5000) {
+// Strict downstream-only route-polyline lookahead starting AT the selected stop and extending up to 12 km AHEAD toward the terminus.
+// Matches ONLY TD speed segments and TD traffic cameras within ~150m of the forward polyline aligned with route travel bearing.
+// Never matches cameras or congestion located behind/upstream of the selected stop.
+function inferDirectionalRoadTrafficForStops(stops, startIdx = 0, detectors = [], lookaheadStops = 40, roadPolylinePoints = null, maxLookaheadMeters = 12000, cameras = null) {
   if (!Array.isArray(stops) || stops.length < 2 || !Array.isArray(detectors) || !detectors.length) {
-    return { sameSide: null, oppSide: null, approaching: null, hasLive: false, capturedAt: '', usedRoadPolyline: false };
+    return { sameSide: null, oppSide: null, approaching: null, forwardCameras: [], hasLive: false, capturedAt: '', usedRoadPolyline: false };
   }
 
-  const fromIdx = Math.max(0, Math.min(stops.length - 2, Number(startIdx) || 0));
-  const effLookahead = Math.max(2, Math.min(14, Number(lookaheadStops) || 8));
+  const rawStart = Number(startIdx) || 0;
+  // At or past terminus: strictly nothing ahead
+  if (rawStart >= stops.length - 1) {
+    return { sameSide: null, oppSide: null, approaching: null, forwardCameras: [], hasLive: false, capturedAt: '', usedRoadPolyline: false };
+  }
+
+  const fromIdx = Math.max(0, rawStart);
+  const effLookahead = Math.max(2, Number(lookaheadStops) || 40);
   const endIdx = Math.min(stops.length, fromIdx + effLookahead + 1);
-  const maxLookaheadKm = Math.max(0.5, (Number(maxLookaheadMeters) || 5000) / 1000);
-  const isSelectedTunnelBbi = isMajorTunnelBbiStop(stops[fromIdx]);
-  const scanOpts = { isSelectedTunnelBbi, breakOnTunnelCross: true, allowLongHighwayUpToKm: 12.0 };
+  const maxLookaheadKm = Math.max(0.5, (Number(maxLookaheadMeters) || 12000) / 1000);
 
   const snappedAhead = roadPolylinePoints
-    ? _buildRoadSnappedSegments(stops, fromIdx, endIdx, roadPolylinePoints, maxLookaheadKm, scanOpts)
+    ? _buildRoadSnappedSegments(stops, fromIdx, endIdx, roadPolylinePoints, maxLookaheadKm)
     : null;
   const aheadSegs = Array.isArray(snappedAhead)
     ? snappedAhead
-    : _buildStopPairSegments(stops, fromIdx, endIdx, maxLookaheadKm, 12.0, scanOpts);
-  const { sameHits: rawSameHits, oppHits: rawOppHits } = _matchDetectorsAlongSegments(aheadSegs, detectors);
+    : _buildStopPairSegments(stops, fromIdx, endIdx, maxLookaheadKm, maxLookaheadKm);
 
-  const hasImmediateNonTunnelHighwayHop = aheadSegs.length > 0 && aheadSegs[0].isBbiSeg;
-  const effectiveHitMaxKm = (isSelectedTunnelBbi || hasImmediateNonTunnelHighwayHop) ? 12.0 : maxLookaheadKm;
-  const sameHits = rawSameHits.filter(h => (Number(h.aheadKm) || 0) <= effectiveHitMaxKm);
-  const oppHits = rawOppHits.filter(h => (Number(h.aheadKm) || 0) <= effectiveHitMaxKm);
+  const { sameHits: rawSameHits, oppHits: rawOppHits } = _matchDetectorsAlongSegments(aheadSegs, detectors);
+  const sameHits = rawSameHits.filter(h => (Number(h.aheadKm) || 0) <= maxLookaheadKm + 0.05);
+  const oppHits = rawOppHits.filter(h => (Number(h.aheadKm) || 0) <= maxLookaheadKm + 0.05);
+
+  const camList = Array.isArray(cameras)
+    ? cameras
+    : (typeof window !== 'undefined' && Array.isArray(window.__LIVE_TRAFFIC_CAMERAS__) ? window.__LIVE_TRAFFIC_CAMERAS__ : []);
+  const forwardCameras = camList.length ? _matchCamerasAlongForwardSegments(aheadSegs, camList) : [];
+
   const sameSide = summarizeDetectorBucket(sameHits);
   const oppSide = summarizeDetectorBucket(oppHits);
 
-  // Also check immediately upstream approaching segment(s) (e.g. passenger waiting at Stop 16 TM-CLK BBI
-  // while incoming bus is stuck in Tuen Mun Road / Wong Chu Road jam between Stop 15 and Stop 16).
-  // Only retain upstream alerts when actively JAMMED or SLOW (never show upstream SMOOTH noise).
-  let approaching = null;
-  if (fromIdx > 0) {
-    const upStart = Math.max(0, fromIdx - 2);
-    const upOpts = { isSelectedTunnelBbi, breakOnTunnelCross: !isSelectedTunnelBbi, allowLongHighwayUpToKm: 14.0 };
-    const snappedUp = roadPolylinePoints
-      ? _buildRoadSnappedSegments(stops, upStart, fromIdx + 1, roadPolylinePoints, isSelectedTunnelBbi ? 14.0 : maxLookaheadKm, upOpts)
-      : null;
-    const upSegs = Array.isArray(snappedUp)
-      ? snappedUp
-      : _buildStopPairSegments(stops, upStart, fromIdx + 1, isSelectedTunnelBbi ? 14.0 : maxLookaheadKm, 14.0, upOpts);
-    if (upSegs.length) {
-      const upMatched = _matchDetectorsAlongSegments(upSegs, detectors);
-      const upSummary = summarizeDetectorBucket(upMatched.sameHits);
-      if (upSummary && (upSummary.status === 'JAMMED' || upSummary.status === 'SLOW')) {
-        approaching = upSummary;
+  // Ensure any paired camera on the primary forward detector is also located along the forward polyline (never behind the stop)
+  if (sameSide && camList.length) {
+    const forwardCamKeySet = new Set(forwardCameras.map(fc => fc.cam.key));
+    const attachSafeForwardCam = (detObj) => {
+      if (!detObj) return detObj;
+      // Detector's own co-located camera is already validated strictly forward by _matchDetectorsAlongSegments
+      if (detObj.camKey && detObj.id && detObj.camKey === detObj.id) {
+        return detObj;
       }
-    }
+      if (detObj.camKey && !forwardCamKeySet.has(detObj.camKey)) {
+        const camInfo = camList.find(c => c.key === detObj.camKey);
+        // Only keep camKey if camera is not upstream/far off-corridor; otherwise replace with nearest forward camera if close
+        if (camInfo && forwardCameras.length) {
+          const nearFwd = forwardCameras.find(fc => _haversineKm(detObj.lat, detObj.lon, fc.cam.lat, fc.cam.lon) <= 0.65);
+          return { ...detObj, camKey: nearFwd ? nearFwd.cam.key : '' };
+        }
+        if (camInfo) return { ...detObj, camKey: '' };
+      } else if (!detObj.camKey && forwardCameras.length) {
+        const nearFwd = forwardCameras.find(fc => _haversineKm(detObj.lat, detObj.lon, fc.cam.lat, fc.cam.lon) <= 0.65);
+        if (nearFwd) return { ...detObj, camKey: nearFwd.cam.key };
+      }
+      return detObj;
+    };
+    sameSide.worstDet = attachSafeForwardCam(sameSide.worstDet);
+    sameSide.representativeDet = attachSafeForwardCam(sameSide.representativeDet);
   }
 
   return {
     sameSide,
     oppSide,
-    approaching,
-    hasLive: Boolean(sameSide || oppSide || approaching),
+    approaching: null,
+    forwardCameras,
+    hasLive: Boolean(sameSide || oppSide),
     capturedAt: '',
     usedRoadPolyline: Boolean(Array.isArray(snappedAhead) && snappedAhead.length > 0)
   };
@@ -3310,59 +3566,13 @@ function _formatBetweenStopsLabel(betweenStops, isZh = false) {
   return `Between ${betweenStops.fromNameEn} → ${betweenStops.toNameEn}`;
 }
 
-function getDirectionalRoadSummary(stops, startIdx, detectors, isZh = false, lookaheadStops = 8, roadPolylinePoints = null, maxLookaheadMeters = 5000) {
-  const res = inferDirectionalRoadTrafficForStops(stops, startIdx, detectors, lookaheadStops, roadPolylinePoints, maxLookaheadMeters);
-  if (!res.hasLive || (!res.sameSide && !res.oppSide && !res.approaching)) return null;
+function getDirectionalRoadSummary(stops, startIdx, detectors, isZh = false, lookaheadStops = 40, roadPolylinePoints = null, maxLookaheadMeters = 12000, cameras = null) {
+  const res = inferDirectionalRoadTrafficForStops(stops, startIdx, detectors, lookaheadStops, roadPolylinePoints, maxLookaheadMeters, cameras);
+  if (!res.hasLive || (!res.sameSide && !res.oppSide)) return null;
 
   const same = res.sameSide;
   const opp = res.oppSide;
-  const approaching = res.approaching;
-
-  // If the road ahead is clear (or no ahead detector) BUT the incoming bus segment approaching the user's stop
-  // is actively JAMMED or SLOW (e.g. Tuen Mun jam between Stop 15 & Stop 16 while waiting at Stop 16), surface it!
-  const aheadConstrained = same && (same.status === 'JAMMED' || same.status === 'SLOW');
-  const useApproaching = Boolean(approaching && !aheadConstrained);
-
   const oppDet = opp?.worstDet || opp?.representativeDet || null;
-
-  if (useApproaching) {
-    const appDecision = synthesizeTrafficDecision(approaching, null, isZh);
-    const focusDet = approaching.worstDet || approaching.representativeDet || null;
-    const roadLabel = focusDet ? (isZh ? (focusDet.roadTc || focusDet.roadEn) : (focusDet.roadEn || focusDet.roadTc)) : '';
-    const roadShort = _shortRoadNameForVerdict(focusDet, isZh);
-    const betweenLabel = _formatBetweenStopsLabel(approaching.betweenStops, isZh);
-    const headline = appDecision.modeRec === 'SWITCH_MTR'
-      ? (isZh ? `改乘港鐵 · 來車於${roadShort}嚴重擠塞 (${appDecision.delayLabelTc})` : `Switch to MTR · Incoming bus in jam on ${roadShort} (${appDecision.delayLabelEn})`)
-      : (appDecision.modeRec === 'MTR_FASTER'
-        ? (isZh ? `來車延誤 (${appDecision.delayLabelTc}) · 港鐵或較快` : `Incoming bus delayed (${appDecision.delayLabelEn}) · MTR may be faster`)
-        : (isZh ? `可乘巴士 · 來車稍慢 (${appDecision.delayLabelTc})` : `Take Bus · Incoming bus moving (${appDecision.delayLabelEn})`));
-
-    const detailParts = [`${approaching.minSpd} km/h`];
-    if (focusDet?.occ > 0) {
-      detailParts.push(isZh ? `佔用率 ${focusDet.occ}%` : `${focusDet.occ}% occ`);
-    }
-    if (roadLabel) detailParts.push(roadLabel);
-    if (betweenLabel) detailParts.push(betweenLabel);
-    if (same && same.status === 'SMOOTH') {
-      detailParts.push(isZh ? `前路暢順 (~${same.avgSpd} km/h)` : `Ahead clear (~${same.avgSpd} km/h)`);
-    }
-
-    return {
-      ...res,
-      tone: appDecision.tone,
-      modeRec: appDecision.modeRec,
-      headline,
-      detail: detailParts.join(' · '),
-      actionTip: isZh ? '班次正途經擠塞路段前來，候車時間或會延長' : 'Incoming bus is passing through congestion before your stop — expect longer wait',
-      delayLabel: isZh ? appDecision.delayLabelTc : appDecision.delayLabelEn,
-      densityLabel: isZh ? appDecision.densityTc : appDecision.densityEn,
-      aheadKm: 0,
-      betweenLabel,
-      isApproaching: true,
-      focusDet,
-      oppDet
-    };
-  }
 
   const primary = same || opp;
   const focusDet = (same?.status === 'JAMMED' || same?.status === 'SLOW')
@@ -3415,25 +3625,25 @@ function getDirectionalRoadSummary(stops, startIdx, detectors, isZh = false, loo
 // ============================================================================
 // ROUTE-LEVEL SPEED DIGITAL TWIN (GeoJSON FeatureCollection Builder)
 // ============================================================================
-function getTrafficSpeedColorHex(speedKmh, noDataColor = '#8E8E93') {
+function getTrafficSpeedColorHex(speedKmh, noDataColor = '#3b82f6') {
   if (speedKmh === null || speedKmh === undefined) return noDataColor;
   const s = Number(speedKmh);
   if (!Number.isFinite(s)) return noDataColor;
-  if (s < 20) return '#FF3B30';
-  if (s <= 40) return '#FFCC00';
-  return '#34C759';
+  if (s < 20) return '#dc2626';
+  if (s <= 40) return '#f59e0b';
+  return '#16a34a';
 }
 
 function buildRouteSpeedGeoJson(coords, detectors = [], opts = {}) {
   if (!Array.isArray(coords) || coords.length < 2) {
     return { type: 'FeatureCollection', features: [] };
   }
-  const noDataColor = opts.noDataColor || '#8E8E93';
+  const noDataColor = opts.noDataColor || '#3b82f6';
   const isRoadSnapped = opts.isRoadSnapped !== false;
   const hasHighwaySpan = Boolean(opts.hasHighwaySpan);
-  const maxMatchKm = Number(opts.maxMatchKm) || (isRoadSnapped ? 0.12 : 0.16);
+  const maxMatchKm = Number(opts.maxMatchKm) || (isRoadSnapped ? 0.15 : 0.16);
   const maxAngleDeg = Number(opts.maxAngleDeg) || (isRoadSnapped ? 42 : 52);
-  const influenceRadiusKm = Number(opts.influenceRadiusKm) || 0.65;
+  const influenceRadiusKm = Number(opts.influenceRadiusKm) || 0.70;
   const maxMicroStepKm = Number(opts.maxMicroStepKm) || 0.25;
 
   // 1. Densify long segments so speed color transitions localize cleanly around each TD detector
@@ -3680,6 +3890,9 @@ if (typeof window !== 'undefined') {
   window.synthesizeTrafficDecision = synthesizeTrafficDecision;
   window.inferDirectionalRoadTrafficForStops = inferDirectionalRoadTrafficForStops;
   window.getDirectionalRoadSummary = getDirectionalRoadSummary;
+  window.sliceForwardPolylineFromStop = sliceForwardPolylineFromStop;
+  window.extractCardinalDirectionMeta = extractCardinalDirectionMeta;
+  window.findNearestMatchingDetectorForCamera = findNearestMatchingDetectorForCamera;
   window.getTrafficSpeedColorHex = getTrafficSpeedColorHex;
   window.buildRouteSpeedGeoJson = buildRouteSpeedGeoJson;
   window.normalizePairedStopNameKey = normalizePairedStopNameKey;
@@ -3741,6 +3954,9 @@ if (typeof module !== 'undefined' && module.exports) {
     synthesizeTrafficDecision,
     inferDirectionalRoadTrafficForStops,
     getDirectionalRoadSummary,
+    sliceForwardPolylineFromStop,
+    extractCardinalDirectionMeta,
+    findNearestMatchingDetectorForCamera,
     getTrafficSpeedColorHex,
     buildRouteSpeedGeoJson,
     normalizePairedStopNameKey,

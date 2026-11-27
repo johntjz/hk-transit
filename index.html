@@ -4415,11 +4415,33 @@ function generateExpandedETAsHtml(arrs, group, stopKey, stopIdx) {
     ? window.__DETAIL_BUS_SPEED_SEGMENTS__
     : [];
   if ((!group?.mode || group?.mode === 'BUS') && (hasLiveTdDets || activeBusSegs.length > 0) && typeof getDirectionalRoadSummary === 'function') {
-    const roadPoly = (window.__ROUTE_GEOM_CACHE__ && group?.key) ? window.__ROUTE_GEOM_CACHE__[group.key] : null;
+    const roadPoly = (typeof window.getCurrentDetailRoadPolyline === 'function' && group?.key)
+      ? (window.getCurrentDetailRoadPolyline(group.key) || window.__ROUTE_GEOM_CACHE__?.[group.key] || null)
+      : ((window.__ROUTE_GEOM_CACHE__ && group?.key) ? window.__ROUTE_GEOM_CACHE__[group.key] : null);
     const exitIdxRaw = detailTargetStopKey
       ? stops.findIndex(s => s && (s.stopKey === detailTargetStopKey || s.stopId === detailTargetStopKey))
       : -1;
     const exitStopIdx = (exitIdxRaw > stopIdx) ? exitIdxRaw : null;
+
+    // Single Source of Truth: build/reuse the exact same unified stop-by-stop segment array
+    // (after TD ground-truth suppression) that drives stop-row pills so pills & expanded cards NEVER contradict.
+    let unifiedSegs = null;
+    if (typeof window.buildStopByStopSegmentTraffic === 'function' && Array.isArray(stops) && stops.length >= 2) {
+      unifiedSegs = window.buildStopByStopSegmentTraffic(
+        stops,
+        roadPoly,
+        window.__LIVE_TRAFFIC_DETECTORS__ || [],
+        window.__LIVE_TRAFFIC_CAMERAS__ || [],
+        activeBusSegs,
+        { tdSpeedGeoJson: window.__LIVE_TRAFFIC_SPEED_GEOJSON__ || null }
+      );
+      if (typeof detailRouteGroup !== 'undefined' && detailRouteGroup?.key === group?.key) {
+        window.__DETAIL_STOP_SEGMENTS__ = unifiedSegs;
+      }
+    } else if (Array.isArray(window.__DETAIL_STOP_SEGMENTS__) && window.__DETAIL_STOP_SEGMENTS__.length === Math.max(0, stops.length - 1)) {
+      unifiedSegs = window.__DETAIL_STOP_SEGMENTS__;
+    }
+
     const roadSum = getDirectionalRoadSummary(
       stops,
       stopIdx,
@@ -4429,26 +4451,40 @@ function generateExpandedETAsHtml(arrs, group, stopKey, stopIdx) {
       roadPoly,
       12000,
       window.__LIVE_TRAFFIC_CAMERAS__,
-      { exitStopIdx, busSpeedSegments: activeBusSegs }
+      {
+        exitStopIdx,
+        busSpeedSegments: activeBusSegs,
+        unifiedSegments: unifiedSegs,
+        tdSpeedGeoJson: window.__LIVE_TRAFFIC_SPEED_GEOJSON__ || null
+      }
     );
     if (roadSum && roadSum.headline) {
       const fDet = roadSum.focusDet;
       const oppDet = roadSum.oppDet;
       const segNote = roadSum.betweenLabel || '';
-      const openCall = fDet
-        ? `event.stopPropagation(); openTrafficDecisionModal('${escapeJsAttr(fDet.id)}', '${escapeJsAttr(oppDet?.id || '')}', '${escapeJsAttr(segNote)}', false);`
-        : (roadSum.aheadCam?.key
-          ? `event.stopPropagation(); openTrafficCameraByKey('${escapeJsAttr(roadSum.aheadCam.key)}', '${escapeJsAttr(roadSum.aheadCam.desc || '')}');`
-          : 'event.stopPropagation();');
-      const camIcon = fDet?.camKey
+      const breakdownSegs = Array.isArray(roadSum.stopBreakdownSegments)
+        ? roadSum.stopBreakdownSegments.filter(s => s && (s.source === 'TD' || s.source === 'BUS_API'))
+        : [];
+      const hasInlineBreakdown = breakdownSegs.length > 0;
+      const breakdownId = `traffic-inline-breakdown-${stopIdx}`;
+      const barUsesInlineToggle = Boolean(hasInlineBreakdown && (!fDet || !fDet.camKey));
+
+      const openCall = barUsesInlineToggle
+        ? `event.stopPropagation(); toggleTrafficInlineBreakdown(${stopIdx}, this);`
+        : (fDet
+          ? `event.stopPropagation(); openTrafficDecisionModal('${escapeJsAttr(fDet.id)}', '${escapeJsAttr(oppDet?.id || '')}', '${escapeJsAttr(segNote)}', false);`
+          : (roadSum.aheadCam?.key
+            ? `event.stopPropagation(); openTrafficCameraByKey('${escapeJsAttr(roadSum.aheadCam.key)}', '${escapeJsAttr(roadSum.aheadCam.desc || '')}');`
+            : `event.stopPropagation(); toggleTrafficInlineBreakdown(${stopIdx}, this);`));
+      const camIcon = (!barUsesInlineToggle && fDet?.camKey)
         ? (isZh ? '📷 詳情/實拍 ›' : '📷 Verdict & Cam ›')
-        : (roadSum.aheadCam?.key ? (isZh ? '📷 鏡頭 ›' : '📷 Cam ›') : (isZh ? '詳情 ›' : 'Details ›'));
+        : ((!barUsesInlineToggle && roadSum.aheadCam?.key) ? (isZh ? '📷 鏡頭 ›' : '📷 Cam ›') : (isZh ? '詳情 ›' : 'Details ›'));
       const toneDot = roadSum.tone === 'jammed' ? '🔴' : (roadSum.tone === 'slow' ? '🟠' : '🟢');
       const _cleanLbl = (s) => (typeof sanitizeBottleneckLabel === 'function') ? sanitizeBottleneckLabel(s) : String(s || '').replace(/\s*[·•]?\s*\b\d{1,3}\s*(?:°|deg|["″”]|'')\s*$/gi, '').trim();
       const cleanHeadline = _cleanLbl(roadSum.headline);
       const cleanDetail = roadSum.detail ? _cleanLbl(roadSum.detail) : '';
 
-      // Keep ONLY 1 clean top corridor status bar + optional compact "Road Ahead · X.Xkm" camera chip
+      // Keep ONLY 1 clean top corridor status bar + optional compact "Road Ahead · X.Xkm" camera chip + toggleable Details breakdown
       const chipParts = [];
       if (roadSum.aheadCam?.key) {
         const mVal = Number(roadSum.aheadCam.aheadMeters);
@@ -4462,6 +4498,11 @@ function generateExpandedETAsHtml(arrs, group, stopKey, stopIdx) {
           `<button type="button" class="traffic-ahead-cam-chip" data-cam-key="${escapeHtml(roadSum.aheadCam.key)}" onclick="event.stopPropagation(); openTrafficCameraByKey('${escapeJsAttr(roadSum.aheadCam.key)}', '${escapeJsAttr(roadSum.aheadCam.desc || '')}');">${escapeHtml(chipLbl)}</button>`
         );
       }
+      if (!barUsesInlineToggle && hasInlineBreakdown) {
+        chipParts.push(
+          `<button type="button" class="traffic-tod-chip" aria-expanded="false" aria-controls="${breakdownId}" onclick="event.stopPropagation(); toggleTrafficInlineBreakdown(${stopIdx}, this);">${isZh ? '分段詳情 ›' : 'Details ›'}</button>`
+        );
+      }
       if (exitStopIdx !== null && stops[exitStopIdx]) {
         const exitName = getStopName(stops[exitStopIdx]);
         chipParts.push(
@@ -4472,14 +4513,40 @@ function generateExpandedETAsHtml(arrs, group, stopKey, stopIdx) {
         ? `<div class="traffic-card-extras"><div class="traffic-chip-row">${chipParts.join('')}</div></div>`
         : '';
 
+      let inlineBreakdownHtml = '';
+      if (hasInlineBreakdown) {
+        const breakdownRows = breakdownSegs.slice(0, 10).map((seg) => {
+          const sDot = seg.tier === 'CONGESTED' ? '🔴' : (seg.tier === 'MODERATE' ? '🟠' : '🟢');
+          const rawFrom = isZh ? (seg.fromNameTc || seg.fromNameEn) : (seg.fromNameEn || seg.fromNameTc);
+          const rawTo = isZh ? (seg.toNameTc || seg.toNameEn) : (seg.toNameEn || seg.toNameTc);
+          const pairLbl = (rawFrom && rawTo)
+            ? `${seg.fromSeq ? `#${seg.fromSeq} ` : ''}${_cleanLbl(rawFrom)} → ${seg.toSeq ? `#${seg.toSeq} ` : ''}${_cleanLbl(rawTo)}`
+            : (_cleanLbl(isZh ? (seg.roadTc || seg.roadEn) : (seg.roadEn || seg.roadTc)) || (isZh ? '前方路段' : 'Forward stretch'));
+          const spdVal = Number.isFinite(Number(seg.speedKmh))
+            ? (seg.source === 'TD' ? `${Math.round(Number(seg.speedKmh))} km/h` : `~${Math.round(Number(seg.speedKmh))} km/h`)
+            : '-- km/h';
+          const srcLabel = seg.source === 'TD'
+            ? (isZh ? '運輸署測速 (TD Detector)' : 'TD Detector')
+            : (isZh ? '巴士實時推算 (Bus API inferred)' : 'Bus API inferred');
+          return `<div class="traffic-inline-item" data-seg-source="${escapeHtml(seg.source)}" data-seg-tier="${escapeHtml(seg.tier)}" style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;padding:5px 0;border-bottom:1px solid rgba(148,163,184,0.18);">
+            <span style="min-width:0;flex:1;line-height:1.3;">${sDot} <strong>${escapeHtml(pairLbl)}</strong><br><span class="traffic-inline-src" style="font-size:0.68rem;color:var(--text-sub);">${escapeHtml(srcLabel)}</span></span>
+            <span style="white-space:nowrap;font-weight:700;font-variant-numeric:tabular-nums;">${escapeHtml(spdVal)}</span>
+          </div>`;
+        }).join('');
+        const modalBtnHtml = fDet
+          ? `<div style="padding-top:6px;text-align:right;"><button type="button" class="traffic-tod-chip" onclick="event.stopPropagation(); openTrafficDecisionModal('${escapeJsAttr(fDet.id)}', '${escapeJsAttr(oppDet?.id || '')}', '${escapeJsAttr(segNote)}', false);">${isZh ? '查看運輸署感應器詳情 ›' : 'Open TD Sensor Verdict ›'}</button></div>`
+          : '';
+        inlineBreakdownHtml = `<div id="${breakdownId}" class="traffic-inline-breakdown" data-stop-idx="${stopIdx}" style="display:none;margin-top:6px;padding:6px 10px;border-radius:10px;background:rgba(15,23,42,0.05);border:1px solid var(--border-color);font-size:0.75rem;text-align:left;" onclick="event.stopPropagation();">${breakdownRows}${modalBtnHtml}</div>`;
+      }
+
       roadTrafficBannerHtml = `
-        <button type="button" class="traffic-road-status-bar tone-${roadSum.tone}" onclick="${openCall}">
+        <button type="button" class="traffic-road-status-bar tone-${roadSum.tone}"${barUsesInlineToggle ? ` aria-expanded="false" aria-controls="${breakdownId}"` : ''} onclick="${openCall}">
           <span class="traffic-road-main">
             <span class="traffic-road-headline">${toneDot} ${escapeHtml(cleanHeadline)}</span>
             ${cleanDetail ? `<span class="traffic-road-sub">${escapeHtml(cleanDetail)}</span>` : ''}
           </span>
           <span class="traffic-road-cta">${camIcon}</span>
-        </button>${extrasHtml}`;
+        </button>${extrasHtml}${inlineBreakdownHtml}`;
     }
   }
 
@@ -8139,6 +8206,28 @@ window.refreshStopByStopTrafficUI = function() {
       slotEl.innerHTML = `<button type="button" class="stop-seg-speed-pill ${toneCls} ${srcCls}" data-seg-source="${escapeHtml(seg.source)}" data-seg-tier="${escapeHtml(seg.tier)}" aria-label="${escapeHtml(ariaDesc)}" onclick="event.stopPropagation(); openStopSegmentTrafficModal(${i});">${escapeHtml(labelTxt)} ›</button>`;
     }
   } catch (e) {}
+};
+
+window.toggleTrafficInlineBreakdown = function(stopIdx, triggerEl = null) {
+  try {
+    if (typeof triggerHaptic === 'function') triggerHaptic(8);
+    const panel = document.getElementById(`traffic-inline-breakdown-${stopIdx}`);
+    if (!panel) return false;
+    const isHidden = panel.style.display === 'none' || panel.style.display === '';
+    panel.style.display = isHidden ? 'block' : 'none';
+    if (triggerEl && typeof triggerEl.setAttribute === 'function') {
+      triggerEl.setAttribute('aria-expanded', isHidden ? 'true' : 'false');
+      const cta = typeof triggerEl.querySelector === 'function' ? triggerEl.querySelector('.traffic-road-cta') : null;
+      if (cta && typeof cta.textContent === 'string') {
+        cta.textContent = isHidden
+          ? cta.textContent.replace('›', '⌄')
+          : cta.textContent.replace('⌄', '›');
+      }
+    }
+    return isHidden;
+  } catch (e) {
+    return false;
+  }
 };
 
 window.openStopSegmentTrafficModal = function(fromIdx) {

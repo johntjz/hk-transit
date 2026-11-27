@@ -1455,6 +1455,7 @@ function _mapStopsToRoadPolylineIndices(stops, roadPolylinePoints) {
         bestKm = dKm;
         bestI = p;
       }
+      if (bestKm <= 0.09 && dKm > 0.35 && p > bestI + 2) break;
     }
     if (bestI >= 0 && bestKm <= 0.65) {
       stopPolyIdx.set(idx, bestI);
@@ -3075,6 +3076,291 @@ function getTrafficSpeedColorHex(speedKmh, noDataColor = '#3b82f6') {
   return '#16a34a';
 }
 
+function _appendDensifiedBridgeLeg(out, pA, pB, stepKm = 0.08) {
+  if (!Array.isArray(pA) || !Array.isArray(pB)) return;
+  const pushPt = (pt) => {
+    if (!out.length) {
+      out.push([pt[0], pt[1]]);
+      return;
+    }
+    const prev = out[out.length - 1];
+    if (_haversineKm(prev[0], prev[1], pt[0], pt[1]) >= 0.003) {
+      out.push([pt[0], pt[1]]);
+    }
+  };
+  pushPt(pA);
+  const dKm = _haversineKm(pA[0], pA[1], pB[0], pB[1]);
+  if (dKm < 0.003) return;
+  const steps = dKm > stepKm
+    ? Math.min(40, Math.max(2, Math.ceil(dKm / stepKm)))
+    : (dKm >= 0.04 ? 2 : 1);
+  for (let s = 1; s <= steps; s++) {
+    const f = s / steps;
+    pushPt([pA[0] + (pB[0] - pA[0]) * f, pA[1] + (pB[1] - pA[1]) * f]);
+  }
+}
+
+// Ensure a road-snapped bus polyline continuously connects every ordered stop:
+// - Prepends missing leading stop-to-stop segments if CSDI/OSRM starts downstream (e.g. Stops 12 -> 13 -> 14)
+// - Splices missing intermediate town detour runs bypassed by CSDI (e.g. E36 Ma Miu Rd / Ping Wui St Stops 12 & 13)
+// - Appends missing trailing stops if CSDI/OSRM ends early
+// Returns the original coords reference untouched whenever every stop is already within <= coverThresholdKm (140 m).
+function ensureRoutePolylineCoversStops(coords, stops = [], opts = {}) {
+  if (!Array.isArray(coords) || coords.length < 2 || !Array.isArray(stops) || stops.length < 2) {
+    return coords;
+  }
+  const coverThresholdKm = Number(opts.coverThresholdKm) > 0 ? Number(opts.coverThresholdKm) : 0.14;
+  const maxBridgeHopKm = Number(opts.maxBridgeHopKm) > 0 ? Number(opts.maxBridgeHopKm) : 3.5;
+  const bridgeStepKm = Number(opts.bridgeStepKm) > 0 ? Number(opts.bridgeStepKm) : 0.08;
+
+  const cleanCoords = [];
+  for (let i = 0; i < coords.length; i++) {
+    const pt = coords[i];
+    if (!Array.isArray(pt) || pt.length < 2) continue;
+    const la = Number(pt[0]), lo = Number(pt[1]);
+    if (Number.isFinite(la) && Number.isFinite(lo)) cleanCoords.push([la, lo]);
+  }
+  if (cleanCoords.length < 2) return coords;
+
+  const stopPts = [];
+  for (let i = 0; i < stops.length; i++) {
+    const s = stops[i];
+    const la = parseFloat(s?.latitude ?? s?.lat);
+    const lo = parseFloat(s?.longitude ?? s?.lon);
+    if (Number.isFinite(la) && Number.isFinite(lo)) {
+      stopPts.push({ idx: i, lat: la, lon: lo });
+    }
+  }
+  if (stopPts.length < 2) return coords;
+
+  // Monotonic orthogonal coverage check for each stop against cleanCoords
+  const coverage = new Array(stopPts.length);
+  let segCursor = 0;
+  let coveredCount = 0;
+  for (let k = 0; k < stopPts.length; k++) {
+    const sp = stopPts[k];
+    let bestP = -1;
+    let bestT = 0;
+    let bestDistKm = Infinity;
+    for (let p = segCursor; p < cleanCoords.length - 1; p++) {
+      const a = cleanCoords[p], b = cleanCoords[p + 1];
+      const proj = pointToSegmentDistanceKm(sp.lat, sp.lon, a[0], a[1], b[0], b[1]);
+      if (proj.distKm < bestDistKm) {
+        bestDistKm = proj.distKm;
+        bestP = p;
+        bestT = Math.max(0, Math.min(1, Number(proj.t) || 0));
+      }
+      if (bestDistKm <= 0.09 && proj.distKm > 0.35 && p > bestP + 2) break;
+    }
+    if (bestP >= 0 && bestDistKm <= coverThresholdKm) {
+      const nearPolyIdx = bestT >= 0.5 ? (bestP + 1) : bestP;
+      coverage[k] = { covered: true, polyIdx: nearPolyIdx, segIdx: bestP, distKm: bestDistKm };
+      segCursor = bestP;
+      coveredCount++;
+    } else {
+      coverage[k] = { covered: false, polyIdx: -1, segIdx: -1, distKm: bestDistKm };
+    }
+  }
+
+  if (coveredCount === 0 || coveredCount === stopPts.length) {
+    return coords;
+  }
+
+  const coveredOrder = [];
+  for (let k = 0; k < stopPts.length; k++) {
+    if (coverage[k].covered) coveredOrder.push(k);
+  }
+
+  const isLegSafe = (a, b) => {
+    const dKm = _haversineKm(a[0], a[1], b[0], b[1]);
+    return Number.isFinite(dKm) && dKm <= maxBridgeHopKm && !_crossesHkWaterBarrierHardcode(a[0], a[1], b[0], b[1]);
+  };
+
+  const repaired = [];
+  const pushRawPt = (pt) => {
+    if (!repaired.length) {
+      repaired.push([pt[0], pt[1]]);
+      return;
+    }
+    const prev = repaired[repaired.length - 1];
+    if (_haversineKm(prev[0], prev[1], pt[0], pt[1]) >= 0.003) {
+      repaired.push([pt[0], pt[1]]);
+    }
+  };
+
+  // 1. Prepend missing leading stops upstream of the first covered stop
+  const firstCov = coveredOrder[0];
+  let cursorPoly = 0;
+  if (firstCov > 0) {
+    const anchorIdx = coverage[firstCov].polyIdx;
+    const anchorPt = anchorIdx <= 2 ? cleanCoords[0] : cleanCoords[anchorIdx];
+    const chain = [];
+    for (let k = 0; k < firstCov; k++) chain.push([stopPts[k].lat, stopPts[k].lon]);
+    if (_haversineKm(anchorPt[0], anchorPt[1], stopPts[firstCov].lat, stopPts[firstCov].lon) > 0.08) {
+      chain.push([stopPts[firstCov].lat, stopPts[firstCov].lon]);
+    }
+    chain.push(anchorPt);
+    let chainSafe = true;
+    for (let c = 0; c < chain.length - 1; c++) {
+      if (!isLegSafe(chain[c], chain[c + 1])) { chainSafe = false; break; }
+    }
+    if (chainSafe) {
+      for (let c = 0; c < chain.length - 1; c++) {
+        _appendDensifiedBridgeLeg(repaired, chain[c], chain[c + 1], bridgeStepKm);
+      }
+      cursorPoly = anchorIdx <= 2 ? 1 : (anchorIdx + 1);
+    }
+  }
+
+  // 2. Splice missing intermediate stop runs bypassed by CSDI/OSRM while preserving highway geometry
+  for (let ci = 0; ci < coveredOrder.length - 1; ci++) {
+    const prevCov = coveredOrder[ci];
+    const nextCov = coveredOrder[ci + 1];
+    if (nextCov <= prevCov + 1) continue;
+
+    const pPrev = Math.max(cursorPoly, coverage[prevCov].polyIdx);
+    const pNext = coverage[nextCov].polyIdx;
+    if (pNext < pPrev) continue;
+
+    const firstMiss = stopPts[prevCov + 1];
+    const lastMiss = stopPts[nextCov - 1];
+    let pEntry = pPrev;
+    let bestEntryKm = Infinity;
+    for (let p = pPrev; p <= pNext; p++) {
+      const dKm = _haversineKm(cleanCoords[p][0], cleanCoords[p][1], firstMiss.lat, firstMiss.lon);
+      if (dKm < bestEntryKm) {
+        bestEntryKm = dKm;
+        pEntry = p;
+      }
+    }
+    let pExit = pNext;
+    let bestExitKm = Infinity;
+    for (let p = pEntry; p <= pNext; p++) {
+      const dKm = _haversineKm(cleanCoords[p][0], cleanCoords[p][1], lastMiss.lat, lastMiss.lon);
+      if (dKm < bestExitKm) {
+        bestExitKm = dKm;
+        pExit = p;
+      }
+    }
+    if (pExit < pNext && _haversineKm(cleanCoords[pExit][0], cleanCoords[pExit][1], cleanCoords[pNext][0], cleanCoords[pNext][1]) <= 0.45) {
+      pExit = pNext;
+    }
+
+    const detourChain = [cleanCoords[pEntry]];
+    for (let k = prevCov + 1; k < nextCov; k++) {
+      detourChain.push([stopPts[k].lat, stopPts[k].lon]);
+    }
+    detourChain.push(cleanCoords[pExit]);
+
+    let detourSafe = true;
+    for (let c = 0; c < detourChain.length - 1; c++) {
+      if (!isLegSafe(detourChain[c], detourChain[c + 1])) { detourSafe = false; break; }
+    }
+    if (detourSafe) {
+      for (let p = cursorPoly; p <= pEntry; p++) pushRawPt(cleanCoords[p]);
+      for (let c = 0; c < detourChain.length - 1; c++) {
+        _appendDensifiedBridgeLeg(repaired, detourChain[c], detourChain[c + 1], bridgeStepKm);
+      }
+      cursorPoly = pExit + 1;
+    }
+  }
+
+  // Copy remaining road-snapped polyline points
+  for (let p = cursorPoly; p < cleanCoords.length; p++) {
+    pushRawPt(cleanCoords[p]);
+  }
+
+  // 3. Append missing trailing stops past the end of CSDI/OSRM geometry
+  const lastCov = coveredOrder[coveredOrder.length - 1];
+  if (lastCov < stopPts.length - 1 && repaired.length) {
+    const tailChain = [repaired[repaired.length - 1]];
+    for (let k = lastCov + 1; k < stopPts.length; k++) {
+      tailChain.push([stopPts[k].lat, stopPts[k].lon]);
+    }
+    let tailSafe = true;
+    for (let c = 0; c < tailChain.length - 1; c++) {
+      if (!isLegSafe(tailChain[c], tailChain[c + 1])) { tailSafe = false; break; }
+    }
+    if (tailSafe) {
+      for (let c = 0; c < tailChain.length - 1; c++) {
+        _appendDensifiedBridgeLeg(repaired, tailChain[c], tailChain[c + 1], bridgeStepKm);
+      }
+    }
+  }
+
+  return repaired.length >= 2 ? repaired : coords;
+}
+
+// Monotonically project every stop orthogonally onto densePts and split segments at exact stop locations
+// so stop-span color transitions occur with 0 m along-track offset and zero off-by-one spillover.
+function _projectAndSplitPolylineAtStops(densePts, stops) {
+  const pts = densePts.map((p) => [p[0], p[1]]);
+  const stopPolyIdx = new Map();
+  if (!Array.isArray(stops) || stops.length < 2 || pts.length < 2) {
+    return { pts, stopPolyIdx };
+  }
+
+  let segCursor = 0;
+  let tCursor = 0;
+  for (let idx = 0; idx < stops.length; idx++) {
+    const s = stops[idx];
+    const sLat = parseFloat(s?.latitude ?? s?.lat);
+    const sLon = parseFloat(s?.longitude ?? s?.lon);
+    if (!Number.isFinite(sLat) || !Number.isFinite(sLon)) continue;
+
+    let bestP = -1;
+    let bestT = 0;
+    let bestDistKm = Infinity;
+    for (let p = segCursor; p < pts.length - 1; p++) {
+      const a = pts[p], b = pts[p + 1];
+      const rawProj = pointToSegmentDistanceKm(sLat, sLon, a[0], a[1], b[0], b[1]);
+      let t = Math.max(0, Math.min(1, Number(rawProj.t) || 0));
+      let dKm = rawProj.distKm;
+      if (p === segCursor && t < tCursor) {
+        t = tCursor;
+        const cLat = a[0] + (b[0] - a[0]) * t;
+        const cLon = a[1] + (b[1] - a[1]) * t;
+        dKm = _haversineKm(sLat, sLon, cLat, cLon);
+      }
+      if (dKm < bestDistKm) {
+        bestDistKm = dKm;
+        bestP = p;
+        bestT = t;
+      }
+      if (bestDistKm <= 0.09 && dKm > Math.max(0.25, bestDistKm * 3.0) && p > bestP + 2) break;
+    }
+
+    if (bestP >= 0 && bestDistKm <= 0.65) {
+      const a = pts[bestP], b = pts[bestP + 1];
+      const pLat = a[0] + (b[0] - a[0]) * bestT;
+      const pLon = a[1] + (b[1] - a[1]) * bestT;
+      const dToA = _haversineKm(pLat, pLon, a[0], a[1]);
+      const dToB = _haversineKm(pLat, pLon, b[0], b[1]);
+      if (bestT > 0.02 && bestT < 0.98 && dToA >= 0.002 && dToB >= 0.002) {
+        pts.splice(bestP + 1, 0, [pLat, pLon]);
+        stopPolyIdx.set(idx, bestP + 1);
+        segCursor = bestP + 1;
+        tCursor = 0;
+      } else if (dToA <= dToB) {
+        stopPolyIdx.set(idx, bestP);
+        segCursor = bestP;
+        tCursor = Math.min(0.99, Math.max(tCursor, bestT));
+      } else {
+        stopPolyIdx.set(idx, bestP + 1);
+        if (bestP + 1 >= pts.length - 1) {
+          segCursor = pts.length - 2;
+          tCursor = 1;
+        } else {
+          segCursor = bestP + 1;
+          tCursor = 0;
+        }
+      }
+    }
+  }
+
+  return { pts, stopPolyIdx };
+}
+
 function buildRouteSpeedGeoJson(coords, detectors = [], opts = {}) {
   if (!Array.isArray(coords) || coords.length < 2) {
     return { type: 'FeatureCollection', features: [] };
@@ -3093,6 +3379,9 @@ function buildRouteSpeedGeoJson(coords, detectors = [], opts = {}) {
   const stops = Array.isArray(optObj.stops) ? optObj.stops : [];
   const rawStopSegments = Array.isArray(optObj.stopSegments) ? optObj.stopSegments : [];
   const routeCtx = { routeNo: String(optObj.routeNo || '').trim(), stops };
+  const inputCoords = (optObj.ensureStopCoverage && stops.length >= 2)
+    ? ensureRoutePolylineCoversStops(coords, stops)
+    : coords;
 
   // Index optional unified stop-by-stop segments (TD / BUS_API / BUS_EST) for merging onto TD-blind stretches
   const stopSegByFromIdx = new Map();
@@ -3129,10 +3418,13 @@ function buildRouteSpeedGeoJson(coords, detectors = [], opts = {}) {
     }
   }
 
-  // 1. Densify long segments so speed color transitions localize cleanly around each TD detector
-  const densePts = [];
-  for (let i = 0; i < coords.length; i++) {
-    const p = coords[i];
+  // 1. Densify long segments finely (<= 50 m when stop spans are mapped) so stop & detector color boundaries are exact
+  const effMicroStepKm = (stops.length >= 2 || rawStopSegments.length > 0)
+    ? Math.min(maxMicroStepKm, 0.05)
+    : maxMicroStepKm;
+  let densePts = [];
+  for (let i = 0; i < inputCoords.length; i++) {
+    const p = inputCoords[i];
     if (!Array.isArray(p) || p.length < 2) continue;
     const lat = Number(p[0]), lon = Number(p[1]);
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
@@ -3143,8 +3435,8 @@ function buildRouteSpeedGeoJson(coords, detectors = [], opts = {}) {
     const prev = densePts[densePts.length - 1];
     const segKm = _haversineKm(prev[0], prev[1], lat, lon);
     if (segKm < 0.004) continue;
-    if (segKm > maxMicroStepKm) {
-      const steps = Math.min(48, Math.ceil(segKm / maxMicroStepKm));
+    if (segKm > effMicroStepKm) {
+      const steps = Math.min(64, Math.ceil(segKm / effMicroStepKm));
       for (let s = 1; s <= steps; s++) {
         const f = s / steps;
         densePts.push([prev[0] + (lat - prev[0]) * f, prev[1] + (lon - prev[1]) * f]);
@@ -3155,11 +3447,13 @@ function buildRouteSpeedGeoJson(coords, detectors = [], opts = {}) {
   }
   if (densePts.length < 2) return { type: 'FeatureCollection', features: [] };
 
-  // Optional stop-to-polyline attribution so non-highway side streets enforce <= 45m & road-name compatibility
-  // and uncovered stop spans can bind directly to unified BUS_API / BUS_EST telemetry.
+  // Optional stop-to-polyline orthogonal projection & split so every consecutive stop span (fromIdx -> toIdx)
+  // aligns strictly between stops[fromIdx] and stops[toIdx] with zero off-by-one shift or boundary spillover.
   const stopSpanMetaByDenseIdx = [];
   if (stops.length >= 2) {
-    const stopIdxMap = _mapStopsToRoadPolylineIndices(stops, densePts);
+    const splitRes = _projectAndSplitPolylineAtStops(densePts, stops);
+    densePts = splitRes.pts;
+    const stopIdxMap = splitRes.stopPolyIdx;
     const orderedMapped = [];
     for (let i = 0; i < stops.length; i++) {
       if (stopIdxMap.has(i)) orderedMapped.push({ stopIdx: i, polyIdx: stopIdxMap.get(i) });
@@ -3167,6 +3461,7 @@ function buildRouteSpeedGeoJson(coords, detectors = [], opts = {}) {
     for (let k = 0; k < orderedMapped.length - 1; k++) {
       const cur = orderedMapped[k];
       const nxt = orderedMapped[k + 1];
+      if (nxt.polyIdx <= cur.polyIdx) continue;
       const sA = stops[cur.stopIdx];
       const sB = stops[nxt.stopIdx];
       const hopKm = _haversineKm(
@@ -3194,7 +3489,7 @@ function buildRouteSpeedGeoJson(coords, detectors = [], opts = {}) {
       };
       spanMeta.isHighwaySpan = Boolean(isBbiSeg || (hopKm >= 1.25 && !_isLocalRoadSpanNonHighwayHardcode(spanMeta)));
       const startP = Math.max(0, cur.polyIdx);
-      const endP = Math.min(densePts.length - 2, Math.max(startP, nxt.polyIdx - 1));
+      const endP = Math.min(densePts.length - 2, nxt.polyIdx - 1);
       for (let p = startP; p <= endP; p++) {
         stopSpanMetaByDenseIdx[p] = spanMeta;
       }
@@ -3293,11 +3588,13 @@ function buildRouteSpeedGeoJson(coords, detectors = [], opts = {}) {
     if (seg.fromStopIdx !== null && seg.fromStopIdx !== undefined) {
       if (stopSegByFromIdx.has(seg.fromStopIdx)) return stopSegByFromIdx.get(seg.fromStopIdx);
       if (seg.betweenStops?.fromSeq && stopSegByFromSeq.has(Number(seg.betweenStops.fromSeq))) {
-        return stopSegByFromSeq.get(Number(seg.betweenStops.fromSeq));
+        const bySeq = stopSegByFromSeq.get(Number(seg.betweenStops.fromSeq));
+        if (!Number.isFinite(Number(bySeq?.fromIdx)) || Number(bySeq.fromIdx) === seg.fromStopIdx) {
+          return bySeq;
+        }
       }
-      // If the unified timeline explicitly marked this stop span as NONE/CAM_ONLY (e.g. final terminus span),
-      // do not borrow an adjacent span's speed via spatial proximity.
-      if (knownStopFromIdxs.has(seg.fromStopIdx)) return null;
+      // Strictly never bleed an adjacent stop's segment onto a known stop span via spatial proximity
+      if (knownStopFromIdxs.has(seg.fromStopIdx) || stopSegByFromIdx.size > 0) return null;
     }
     if (!paintableStopSegs.length) return null;
     const midLat = (seg.a[0] + seg.b[0]) * 0.5;
@@ -3311,7 +3608,7 @@ function buildRouteSpeedGeoJson(coords, detectors = [], opts = {}) {
         const p1 = cc[k], p2 = cc[k + 1];
         if (!Array.isArray(p1) || !Array.isArray(p2)) continue;
         const proj = pointToSegmentDistanceKm(midLat, midLon, Number(p1[0]), Number(p1[1]), Number(p2[0]), Number(p2[1]));
-        if (proj.distKm > 0.065) continue;
+        if (proj.distKm > 0.065 || proj.t < -0.02 || proj.t > 1.02) continue;
         if (_haversineKm(Number(p1[0]), Number(p1[1]), Number(p2[0]), Number(p2[1])) >= 0.005) {
           const cBrg = computeBearingDeg(Number(p1[0]), Number(p1[1]), Number(p2[0]), Number(p2[1]));
           if (angularDiffDeg(seg.brg, cBrg) > 55) continue;
@@ -3609,6 +3906,7 @@ if (typeof window !== 'undefined') {
   window.extractCardinalDirectionMeta = extractCardinalDirectionMeta;
   window.findNearestMatchingDetectorForCamera = findNearestMatchingDetectorForCamera;
   window.getTrafficSpeedColorHex = getTrafficSpeedColorHex;
+  window.ensureRoutePolylineCoversStops = ensureRoutePolylineCoversStops;
   window.buildRouteSpeedGeoJson = buildRouteSpeedGeoJson;
   window.normalizePairedStopNameKey = normalizePairedStopNameKey;
   window.collectDirectionClusterStops = collectDirectionClusterStops;
@@ -3699,6 +3997,7 @@ if (typeof module !== 'undefined' && module.exports) {
     extractCardinalDirectionMeta,
     findNearestMatchingDetectorForCamera,
     getTrafficSpeedColorHex,
+    ensureRoutePolylineCoversStops,
     buildRouteSpeedGeoJson,
     normalizePairedStopNameKey,
     collectDirectionClusterStops,

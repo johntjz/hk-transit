@@ -6511,7 +6511,7 @@ test('Follow-up Fix 6: Deduplicated operator prefixes in Bus-API tooltips (NLB 1
     '.kmb-map-stop-label must wrap naturally without clipping');
 });
 
-test('Tasks 1-3 Regression: Modularized domain scripts in exact 12-script order, 2026-11-27 21:00 HKT timestamp, South Lantau continuity, Wong Chu leakage block, and unified worst-ahead pill/banner', () => {
+test('Tasks 1-3 Regression: Modularized domain scripts in exact 12-script order, 2026-11-27 21:20 HKT timestamp, South Lantau continuity, Wong Chu leakage block, and unified worst-ahead pill/banner', () => {
   // 1. Task 1: External files exist, exact 12-script load order in index.html, no inline main style block, SW precaches all of them
   const rawIndex = fs.readFileSync('index.html', 'utf8');
   const swSrc = fs.readFileSync('public/sw.js', 'utf8');
@@ -6559,8 +6559,8 @@ test('Tasks 1-3 Regression: Modularized domain scripts in exact 12-script order,
     assert.ok(swSrc.includes(asset), `public/sw.js must precache ${asset}`);
   }
 
-  // 2. Task 2: Build timestamp 2026-11-27 21:00 HKT & Settings About subtitle cleanup
-  const expectedTs = '2026-11-27 21:00 HKT';
+  // 2. Task 2: Build timestamp 2026-11-27 21:20 HKT & Settings About subtitle cleanup
+  const expectedTs = '2026-11-27 21:20 HKT';
   assert.ok(rawIndex.includes(expectedTs), `index.html must contain build timestamp ${expectedTs}`);
   assert.ok(swSrc.includes(expectedTs), `public/sw.js must contain build timestamp ${expectedTs}`);
   assert.equal(JSON.parse(fs.readFileSync('version.json', 'utf8')).version, expectedTs);
@@ -7428,4 +7428,275 @@ test('Unified Traffic Consistency 4: buildRouteSpeedGeoJson & buildDetailBusPoly
   assert.ok(tips.some((t) => t.includes('Bus Est. • 56 km/h')), `Expected Bus Est. • 56 km/h tooltip, got: ${tips.join(' | ')}`);
   assert.ok(tips.some((t) => t.includes('no TD speed detector')), 'Unmonitored terminus span retains fallback tooltip');
 });
+
+test('E36 Yuen Long Polyline Continuity: upstream truncated CSDI (Stops 12 -> 13 -> 14), bypassed town detour, and 2-3 vertex consecutive stop spans stay connected', () => {
+  const sb = loadHardcodeAndPlannerSandbox();
+  const bsWindow: any = {};
+  const bsSandbox: any = { window: bsWindow, globalThis: bsWindow, Math, Date, Number, String, Array, Map, Set, Object, Uint8Array, parseFloat, isFinite };
+  vm.createContext(bsSandbox);
+  vm.runInContext(readHardcodeBundle(), bsSandbox);
+  vm.runInContext(fs.readFileSync('public/busspeed.js', 'utf8'), bsSandbox);
+  const engine: any = bsWindow.BusSpeedEngine;
+  const ensurePoly = sb.ctx.window.ensureRoutePolylineCoversStops;
+  const pointToSeg = sb.ctx.window.pointToSegmentDistanceKm;
+  assert.equal(typeof ensurePoly, 'function', 'ensureRoutePolylineCoversStops must be exported');
+
+  // Helper: minimum distance in km from a stop point to any segment of a polyline
+  const minDistToPolyKm = (poly: [number, number][], lat: number, lon: number) => {
+    let best = Infinity;
+    for (let i = 0; i < poly.length - 1; i++) {
+      const p = pointToSeg(lat, lon, poly[i][0], poly[i][1], poly[i + 1][0], poly[i + 1][1]);
+      if (p.distKm < best) best = p.distKm;
+    }
+    return best;
+  };
+
+  // Case 1: CSDI geometry starts downstream at Stop 14 (Shui Pin Wai), leaving Stops 12 (Fung Chi Tsuen) & 13 (San Shui House) upstream
+  const yuenLongStops = [
+    { seq: 12, stopName_e: 'Fung Chi Tsuen', name_tc: '鳳池村', latitude: '22.4478', longitude: '114.0176' },
+    { seq: 13, stopName_e: 'San Shui House, Shui Pin Wai Estate', name_tc: '水邊圍邨山水樓', latitude: '22.4472', longitude: '114.0209' },
+    { seq: 14, stopName_e: 'Shui Pin Wai', name_tc: '水邊圍', latitude: '22.4446', longitude: '114.0218' },
+    { seq: 15, stopName_e: 'Yuen Long Plaza', name_tc: '元朗廣場', latitude: '22.4446', longitude: '114.0246' },
+    { seq: 16, stopName_e: 'Tung Lok Street', name_tc: '同樂街', latitude: '22.4446', longitude: '114.0274' },
+  ];
+  const truncatedCsdi: [number, number][] = [
+    [22.4446, 114.0218],
+    [22.4446, 114.0232],
+    [22.4446, 114.0246],
+    [22.4446, 114.0260],
+    [22.4446, 114.0274],
+  ];
+
+  const repairedLeading = ensurePoly(truncatedCsdi, yuenLongStops);
+  assert.ok(repairedLeading.length > truncatedCsdi.length, 'Truncated upstream CSDI must prepend Stops 12 -> 13 -> 14');
+  for (const s of yuenLongStops) {
+    const dKm = minDistToPolyKm(repairedLeading, parseFloat(s.latitude), parseFloat(s.longitude));
+    assert.ok(dKm <= 0.015, `Stop ${s.seq} (${s.stopName_e}) must lie on repaired polyline (got ${(dKm * 1000).toFixed(1)}m)`);
+  }
+
+  // Case 2: CSDI runs up Long Tin Rd straight onto Castle Peak Rd at Stop 14, bypassing Stops 12 & 13 ~350 m north
+  const detourStops = [
+    { seq: 11, stopName_e: 'Long Tin Road', name_tc: '朗天路', latitude: '22.4395', longitude: '114.0185' },
+    ...yuenLongStops,
+  ];
+  const bypassedCsdi: [number, number][] = [
+    [22.4395, 114.0185],
+    [22.4420, 114.0198],
+    [22.4446, 114.0210],
+    [22.4446, 114.0218],
+    [22.4446, 114.0246],
+    [22.4446, 114.0274],
+  ];
+  const repairedDetour = ensurePoly(bypassedCsdi, detourStops);
+  for (const s of detourStops) {
+    const dKm = minDistToPolyKm(repairedDetour, parseFloat(s.latitude), parseFloat(s.longitude));
+    assert.ok(dKm <= 0.015, `Bypassed stop ${s.seq} (${s.stopName_e}) must be spliced continuously onto polyline (got ${(dKm * 1000).toFixed(1)}m)`);
+  }
+
+  // Case 3: subdividePolylineMicroSteps & aggregateBusMicroStepsToCorridors preserve valid 2-3 vertex consecutive stop spans (12 -> 13, 13 -> 14)
+  const twoPtSpan: [number, number][] = [[22.4478, 114.0176], [22.4472, 114.0209]]; // ~345 m
+  const threePtSpan: [number, number][] = [[22.4478, 114.0176], [22.4472, 114.0209], [22.4446, 114.0218]]; // ~345 m + ~300 m
+  const steps2 = engine.subdividePolylineMicroSteps(twoPtSpan, 50, { maxRawHopM: 250, allowConsecutiveStopSpans: true });
+  const steps3 = engine.subdividePolylineMicroSteps(threePtSpan, 50, { maxRawHopM: 250, allowConsecutiveStopSpans: true });
+  assert.ok(steps2.length >= 6, `2-vertex consecutive stop span 12 -> 13 must not be dropped (got ${steps2.length} micro-steps)`);
+  assert.ok(steps3.length >= 12, `3-vertex consecutive stop span 12 -> 13 -> 14 must not be dropped (got ${steps3.length} micro-steps)`);
+
+  const aggRes = engine.aggregateBusMicroStepsToCorridors(
+    [
+      {
+        fromIdx: 0, toIdx: 1, fromSeq: 12, toSeq: 13,
+        fromNameEn: 'Fung Chi Tsuen', toNameEn: 'San Shui House',
+        source: 'BUS_API', tier: 'SMOOTH', speedKmh: 24, isRoadSnapped: false,
+        coords: twoPtSpan,
+      },
+      {
+        fromIdx: 1, toIdx: 2, fromSeq: 13, toSeq: 14,
+        fromNameEn: 'San Shui House', toNameEn: 'Shui Pin Wai',
+        source: 'BUS_API', tier: 'MODERATE', speedKmh: 12, isRoadSnapped: false,
+        coords: [[22.4472, 114.0209], [22.4446, 114.0218]],
+      },
+    ],
+    [],
+    null,
+    { allowConsecutiveStopSpans: true }
+  );
+  assert.ok(aggRes.corridors.length >= 2, `Expected both 2-vertex spans 12->13 and 13->14 preserved in corridors, got ${aggRes.corridors.length}`);
+
+  // Case 4: buildDetailBusPolylineLayer renders a continuous polyline covering Stop 12 -> 13 -> 14 when given truncated CSDI geometry
+  const renderedGeoFeats: any[] = [];
+  const mapCtx: any = {
+    window: {
+      trafficLayerEnabled: true,
+      __LIVE_TRAFFIC_DETECTORS__: [],
+      __DETAIL_STOP_SEGMENTS__: [
+        { fromIdx: 0, toIdx: 1, fromSeq: 12, toSeq: 13, fromNameEn: 'Fung Chi Tsuen', toNameEn: 'San Shui House', source: 'BUS_EST', tier: 'SMOOTH', speedKmh: 28 },
+        { fromIdx: 1, toIdx: 2, fromSeq: 13, toSeq: 14, fromNameEn: 'San Shui House', toNameEn: 'Shui Pin Wai', source: 'BUS_API', tier: 'CONGESTED', speedKmh: 7, isVerifiedMultiBusStall: true },
+        { fromIdx: 2, toIdx: 3, fromSeq: 14, toSeq: 15, fromNameEn: 'Shui Pin Wai', toNameEn: 'Yuen Long Plaza', source: 'BUS_API', tier: 'CONGESTED', speedKmh: 7, isVerifiedMultiBusStall: true },
+        { fromIdx: 3, toIdx: 4, fromSeq: 15, toSeq: 16, fromNameEn: 'Yuen Long Plaza', toNameEn: 'Tung Lok Street', source: 'BUS_API', tier: 'MODERATE', speedKmh: 14 },
+      ],
+      ensureRoutePolylineCoversStops: ensurePoly,
+      capBusApiTierHardcode: sb.ctx.window.capBusApiTierHardcode,
+      buildRouteSpeedGeoJson: sb.ctx.window.buildRouteSpeedGeoJson,
+    },
+    document: { getElementById: () => null },
+    currentLang: 'en',
+    L: {
+      layerGroup: (arr: any[] = []) => ({ _arr: arr, addTo() { return this; }, clearLayers() {} }),
+      polyline: (c: any, opts: any) => ({ c, opts, addTo() { return this; }, bindTooltip() { return this; } }),
+      geoJSON: (geo: any, cfg: any) => {
+        for (const feat of geo?.features || []) {
+          renderedGeoFeats.push(feat);
+          const lyr: any = { options: {}, bindTooltip() { return this; }, on() { return this; } };
+          cfg.onEachFeature(feat, lyr);
+        }
+        return { addTo() { return this; } };
+      },
+    },
+    console, Math, Number, String, Array, Map, Set, Object,
+  };
+  vm.createContext(mapCtx);
+  vm.runInContext(readMapBundle(), mapCtx);
+  mapCtx.buildDetailBusPolylineLayer(truncatedCsdi, yuenLongStops, 0, '#FF3B30');
+
+  const renderedFromSeqs = new Set(renderedGeoFeats.map((f) => f.properties?.fromSeq));
+  assert.ok(renderedFromSeqs.has(12), 'Detail polyline must include Stop 12 -> 13 segment');
+  assert.ok(renderedFromSeqs.has(13), 'Detail polyline must include Stop 13 -> 14 segment');
+  assert.ok(renderedFromSeqs.has(14), 'Detail polyline must include Stop 14 -> 15 segment');
+});
+
+test('E36 Yuen Long Zero Off-By-One Span Projection: Stop 16 -> 17 (7 km/h Red) and Stop 17 -> 18 (19 km/h Green) align strictly to their own stop coordinates', () => {
+  const sb = loadHardcodeAndPlannerSandbox();
+
+  // Castle Peak Road (Yuen Long) eastbound stops with uneven road-snapped vertices
+  const stops = [
+    { seq: 15, stopName_e: 'Yuen Long Plaza', name_tc: '元朗廣場', latitude: '22.4446', longitude: '114.0240' },
+    { seq: 16, stopName_e: 'Tung Lok Street', name_tc: '同樂街', latitude: '22.4446', longitude: '114.0272' },
+    { seq: 17, stopName_e: 'Kuk Ting Street', name_tc: '谷亭街', latitude: '22.4446', longitude: '114.0305' },
+    { seq: 18, stopName_e: 'Yoho Mall II', name_tc: '形點 II', latitude: '22.4446', longitude: '114.0342' },
+    { seq: 19, stopName_e: 'Yoho Mall I', name_tc: '形點 I', latitude: '22.4446', longitude: '114.0378' },
+  ];
+  // Uneven CSDI polyline vertices that do NOT coincide with stop coordinates (tests orthogonal splitting!)
+  const roadPoly: [number, number][] = [
+    [22.4446, 114.0238],
+    [22.4446, 114.0258],
+    [22.4446, 114.0289],
+    [22.4446, 114.0322],
+    [22.4446, 114.0359],
+    [22.4446, 114.0381],
+  ];
+
+  const stopSegments = [
+    {
+      fromIdx: 0, toIdx: 1, fromSeq: 15, toSeq: 16,
+      fromNameEn: 'Yuen Long Plaza', toNameEn: 'Tung Lok Street',
+      source: 'BUS_API', tier: 'CONGESTED', speedKmh: 7, matchedBusCount: 2, isVerifiedMultiBusStall: true,
+    },
+    {
+      fromIdx: 1, toIdx: 2, fromSeq: 16, toSeq: 17,
+      fromNameEn: 'Tung Lok Street', toNameEn: 'Kuk Ting Street',
+      source: 'BUS_API', tier: 'CONGESTED', speedKmh: 7, matchedBusCount: 2, isVerifiedMultiBusStall: true,
+    },
+    {
+      fromIdx: 2, toIdx: 3, fromSeq: 17, toSeq: 18,
+      fromNameEn: 'Kuk Ting Street', toNameEn: 'Yoho Mall II',
+      source: 'BUS_API', tier: 'SMOOTH', speedKmh: 19, matchedBusCount: 2, isVerifiedMultiBusStall: false,
+    },
+    {
+      fromIdx: 3, toIdx: 4, fromSeq: 18, toSeq: 19,
+      fromNameEn: 'Yoho Mall II', toNameEn: 'Yoho Mall I',
+      source: 'BUS_API', tier: 'MODERATE', speedKmh: 14, matchedBusCount: 1, isVerifiedMultiBusStall: false,
+    },
+  ];
+
+  const fc = sb.ctx.window.buildRouteSpeedGeoJson(roadPoly, [], {
+    isRoadSnapped: true,
+    stops,
+    stopSegments,
+    ensureStopCoverage: true,
+    noDataColor: '#3b82f6',
+  });
+
+  const feat16To17 = fc.features.find((f: any) => f.properties?.fromIdx === 1);
+  const feat17To18 = fc.features.find((f: any) => f.properties?.fromIdx === 2);
+  const feat18To19 = fc.features.find((f: any) => f.properties?.fromIdx === 3);
+  assert.ok(feat16To17, 'Expected GeoJSON feature for Stop 16 -> 17 (Tung Lok Street -> Kuk Ting Street)');
+  assert.ok(feat17To18, 'Expected GeoJSON feature for Stop 17 -> 18 (Kuk Ting Street -> Yoho Mall II)');
+  assert.ok(feat18To19, 'Expected GeoJSON feature for Stop 18 -> 19 (Yoho Mall II -> Yoho Mall I)');
+
+  // Exact colors: Stop 16 -> 17 = Red (#dc2626), Stop 17 -> 18 = Green (#16a34a), Stop 18 -> 19 = Amber (#f59e0b)
+  assert.equal(feat16To17.properties.color, '#dc2626', 'Stop 16 -> 17 (7 km/h) must render Red #dc2626');
+  assert.equal(feat16To17.properties.speedKmh, 7);
+  assert.equal(feat17To18.properties.color, '#16a34a', 'Stop 17 -> 18 (19 km/h) must render Green #16a34a');
+  assert.equal(feat17To18.properties.speedKmh, 19);
+  assert.equal(feat18To19.properties.color, '#f59e0b', 'Stop 18 -> 19 (14 km/h) must render Amber #f59e0b');
+
+  // Exact coordinate boundaries (GeoJSON coords are [lon, lat]): ZERO off-by-one shift or spillover past Stop 17!
+  const lons16To17 = feat16To17.geometry.coordinates.map((c: number[]) => c[0]);
+  const lons17To18 = feat17To18.geometry.coordinates.map((c: number[]) => c[0]);
+  const lons18To19 = feat18To19.geometry.coordinates.map((c: number[]) => c[0]);
+
+  const stop16Lon = 114.0272;
+  const stop17Lon = 114.0305;
+  const stop18Lon = 114.0342;
+  const stop19Lon = 114.0378;
+  const tolDeg = 0.00015; // ~15 m tolerance
+
+  assert.ok(Math.abs(Math.min(...lons16To17) - stop16Lon) <= tolDeg,
+    `Stop 16 -> 17 Red line must start at Stop 16 lon ${stop16Lon}, got ${Math.min(...lons16To17)}`);
+  assert.ok(Math.abs(Math.max(...lons16To17) - stop17Lon) <= tolDeg,
+    `Stop 16 -> 17 Red line must end strictly at Stop 17 lon ${stop17Lon} without spilling onto 17->18, got ${Math.max(...lons16To17)}`);
+
+  assert.ok(Math.abs(Math.min(...lons17To18) - stop17Lon) <= tolDeg,
+    `Stop 17 -> 18 Green line must start strictly at Stop 17 lon ${stop17Lon}, got ${Math.min(...lons17To18)}`);
+  assert.ok(Math.abs(Math.max(...lons17To18) - stop18Lon) <= tolDeg,
+    `Stop 17 -> 18 Green line must end strictly at Stop 18 lon ${stop18Lon} without shifting onto 18->19, got ${Math.max(...lons17To18)}`);
+
+  assert.ok(Math.abs(Math.min(...lons18To19) - stop18Lon) <= tolDeg,
+    `Stop 18 -> 19 Amber line must start strictly at Stop 18 lon ${stop18Lon}, got ${Math.min(...lons18To19)}`);
+  assert.ok(Math.abs(Math.max(...lons18To19) - stop19Lon) <= tolDeg,
+    `Stop 18 -> 19 Amber line must end strictly at Stop 19 lon ${stop19Lon}, got ${Math.max(...lons18To19)}`);
+
+  // Verify buildDetailBusPolylineLayer renders the exact same Red (16->17) and Green (17->18) styles & tooltips
+  const styledByFromSeq = new Map<number, { color: string; tip: string }>();
+  const mapCtx: any = {
+    window: {
+      trafficLayerEnabled: true,
+      __LIVE_TRAFFIC_DETECTORS__: [],
+      __DETAIL_STOP_SEGMENTS__: stopSegments,
+      ensureRoutePolylineCoversStops: sb.ctx.window.ensureRoutePolylineCoversStops,
+      capBusApiTierHardcode: sb.ctx.window.capBusApiTierHardcode,
+      buildRouteSpeedGeoJson: sb.ctx.window.buildRouteSpeedGeoJson,
+    },
+    document: { getElementById: () => null },
+    currentLang: 'en',
+    L: {
+      layerGroup: (arr: any[] = []) => ({ _arr: arr, addTo() { return this; }, clearLayers() {} }),
+      polyline: (c: any, opts: any) => ({ c, opts, addTo() { return this; }, bindTooltip() { return this; } }),
+      geoJSON: (geo: any, cfg: any) => {
+        for (const feat of geo?.features || []) {
+          const st = cfg.style(feat);
+          let tip = '';
+          const lyr: any = { options: {}, bindTooltip(t: string) { tip = t; return this; }, on() { return this; } };
+          cfg.onEachFeature(feat, lyr);
+          if (feat.properties?.fromSeq) {
+            styledByFromSeq.set(feat.properties.fromSeq, { color: st.color, tip });
+          }
+        }
+        return { addTo() { return this; } };
+      },
+    },
+    console, Math, Number, String, Array, Map, Set, Object,
+  };
+  vm.createContext(mapCtx);
+  vm.runInContext(readMapBundle(), mapCtx);
+  mapCtx.buildDetailBusPolylineLayer(roadPoly, stops, 0, '#FF3B30');
+
+  assert.equal(styledByFromSeq.get(16)?.color, '#dc2626', 'Map layer Stop 16 -> 17 must be Red');
+  assert.ok(styledByFromSeq.get(16)?.tip.includes('Tung Lok Street → Kuk Ting Street') && styledByFromSeq.get(16)?.tip.includes('7 km/h'),
+    `Unexpected Stop 16 -> 17 tooltip: ${styledByFromSeq.get(16)?.tip}`);
+  assert.equal(styledByFromSeq.get(17)?.color, '#16a34a', 'Map layer Stop 17 -> 18 must be Green');
+  assert.ok(styledByFromSeq.get(17)?.tip.includes('Kuk Ting Street → Yoho Mall II') && styledByFromSeq.get(17)?.tip.includes('19 km/h'),
+    `Unexpected Stop 17 -> 18 tooltip: ${styledByFromSeq.get(17)?.tip}`);
+});
+
 

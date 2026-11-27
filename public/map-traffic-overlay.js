@@ -868,15 +868,22 @@ function _refreshDetailBusSpeedPolylineIfActive() {
   if (!Array.isArray(currentDetailRoadCoords) || currentDetailRoadCoords.length < 2) return;
   if (typeof detailRouteGroup === 'undefined' || !detailRouteGroup) return;
   const stops = _getDetailStopsForGroup(detailRouteGroup);
+  const effRoadCoords = (typeof window.ensureRoutePolylineCoversStops === 'function' && Array.isArray(stops) && stops.length >= 2)
+    ? window.ensureRoutePolylineCoversStops(currentDetailRoadCoords, stops)
+    : currentDetailRoadCoords;
+  if (effRoadCoords !== currentDetailRoadCoords) {
+    currentDetailRoadCoords = effRoadCoords;
+  }
   const activeIdx = (typeof detailExpandedStopIdx === 'number' && detailExpandedStopIdx >= 0) ? detailExpandedStopIdx : 0;
   const exitIdx = _resolveActiveExitStopIdx(stops, activeIdx);
   if (currentDetailCorridorMeta && typeof window.sliceForwardPolylineFromStop === 'function') {
     currentDetailCorridorMeta = {
       ...currentDetailCorridorMeta,
+      coords: effRoadCoords,
       activeStopIdx: activeIdx,
       exitStopIdx: exitIdx,
-      forwardCoords: window.sliceForwardPolylineFromStop(currentDetailRoadCoords, stops, activeIdx, 12.0, exitIdx),
-      forwardCameraCoords: window.sliceForwardPolylineFromStop(currentDetailRoadCoords, stops, activeIdx, 45.0, exitIdx)
+      forwardCoords: window.sliceForwardPolylineFromStop(effRoadCoords, stops, activeIdx, 12.0, exitIdx),
+      forwardCameraCoords: window.sliceForwardPolylineFromStop(effRoadCoords, stops, activeIdx, 45.0, exitIdx)
     };
   }
   const routeAccent = detailRouteGroup?.colorHex ||
@@ -886,7 +893,7 @@ function _refreshDetailBusSpeedPolylineIfActive() {
   if (detailPolylineLayer) {
     try { window.mapInstance.removeLayer(detailPolylineLayer); } catch (e) {}
   }
-  detailPolylineLayer = buildDetailBusPolylineLayer(currentDetailRoadCoords, stops, activeIdx, routeAccent);
+  detailPolylineLayer = buildDetailBusPolylineLayer(effRoadCoords, stops, activeIdx, routeAccent);
   if (detailPolylineLayer) {
     detailPolylineLayer.addTo(window.mapInstance);
     _bringLayerGroupToFront(detailPolylineLayer);
@@ -1071,6 +1078,10 @@ window._setDetailCorridorMetaForTest = function(meta) { currentDetailCorridorMet
 
 function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) {
   if (!Array.isArray(coords) || coords.length < 2) return null;
+  const effCoords = (typeof window.ensureRoutePolylineCoversStops === 'function' && Array.isArray(stops) && stops.length >= 2)
+    ? window.ensureRoutePolylineCoversStops(coords, stops)
+    : coords;
+  coords = effCoords;
   const layers = [];
   const liveDetectors = Array.isArray(window.__LIVE_TRAFFIC_DETECTORS__) ? window.__LIVE_TRAFFIC_DETECTORS__ : [];
   // When Traffic Overlay is ON, NEVER paint unmonitored route lines in route-brand Red (#FF3B30/#ef4444);
@@ -1106,7 +1117,8 @@ function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) 
         tdMaxDistKm: 0.10,
         tdMaxAngDeg: 45,
         allowUndividedOpposite: true,
-        allowNlbScheduledFallback: true
+        allowNlbScheduledFallback: true,
+        allowConsecutiveStopSpans: true
       });
       renderList = Array.isArray(agg?.corridors) ? agg.corridors : [];
     } else {
@@ -1214,6 +1226,7 @@ function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) 
       routeNo: activeRouteNo,
       stops: Array.isArray(stops) ? stops : [],
       stopSegments: effectiveStopSegs,
+      ensureStopCoverage: true,
       noDataColor: unmonitoredTrafficColor,
       maxMicroStepKm: 0.15
     });
@@ -3118,9 +3131,12 @@ async function syncDetailRouteBusSpeedSegments(group, stops, preloadedEtaByStopI
   const myToken = ++_detailBusSpeedSyncToken;
   const tdDetectors = Array.isArray(window.__LIVE_TRAFFIC_DETECTORS__) ? window.__LIVE_TRAFFIC_DETECTORS__ : [];
   const tdCameras = Array.isArray(window.__LIVE_TRAFFIC_CAMERAS__) ? window.__LIVE_TRAFFIC_CAMERAS__ : [];
-  const roadCoords = (Array.isArray(currentDetailRoadCoords) && currentDetailRoadCoords.length >= 2)
+  const rawRoadCoords = (Array.isArray(currentDetailRoadCoords) && currentDetailRoadCoords.length >= 2)
     ? currentDetailRoadCoords
     : stops.map(s => [parseFloat(s.latitude), parseFloat(s.longitude)]).filter(p => Number.isFinite(p[0]) && Number.isFinite(p[1]));
+  const roadCoords = (typeof window.ensureRoutePolylineCoversStops === 'function' && Array.isArray(stops) && stops.length >= 2)
+    ? window.ensureRoutePolylineCoversStops(rawRoadCoords, stops)
+    : rawRoadCoords;
 
   const rId = group.routeIds?.[0] || '';
   const parts = rId.split('_');

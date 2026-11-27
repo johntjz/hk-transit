@@ -80,17 +80,30 @@ function buildBusGeomCacheKey(group, stops = []) {
   return `${co}|${rt}|${bd}|${gid}|${gk}|${Array.isArray(stops) ? stops.length : 0}`;
 }
 
+function _ensureBusPolylineCoversStopsMap(coords, stops = []) {
+  if (!Array.isArray(coords) || coords.length < 2) return coords;
+  if (typeof window !== 'undefined' && typeof window.ensureRoutePolylineCoversStops === 'function' && Array.isArray(stops) && stops.length >= 2) {
+    return window.ensureRoutePolylineCoversStops(coords, stops);
+  }
+  return coords;
+}
+
 function getCachedBusRoutePolyline(group, stops = []) {
   if (!group || (group.mode && group.mode !== 'BUS')) return null;
   if (group.key && Array.isArray(window.__ROUTE_GEOM_CACHE__[group.key]) && window.__ROUTE_GEOM_CACHE__[group.key].length >= 2) {
-    return window.__ROUTE_GEOM_CACHE__[group.key];
+    const repaired = _ensureBusPolylineCoversStopsMap(window.__ROUTE_GEOM_CACHE__[group.key], stops);
+    if (repaired !== window.__ROUTE_GEOM_CACHE__[group.key]) {
+      window.__ROUTE_GEOM_CACHE__[group.key] = repaired;
+    }
+    return repaired;
   }
   const ck = buildBusGeomCacheKey(group, stops);
   const store = _readBusGeomStorageMap();
   const entry = store[ck];
   if (entry && Array.isArray(entry.coords) && entry.coords.length >= 2) {
-    if (group.key) window.__ROUTE_GEOM_CACHE__[group.key] = entry.coords;
-    return entry.coords;
+    const repaired = _ensureBusPolylineCoversStopsMap(entry.coords, stops);
+    if (group.key) window.__ROUTE_GEOM_CACHE__[group.key] = repaired;
+    return repaired;
   }
   return null;
 }
@@ -139,14 +152,16 @@ async function fetchRoadSnappedBusPolyline(group, stops = []) {
       clearTimeout(tid);
       if (!res.ok) return null;
       const data = await res.json().catch(() => null);
-      const coords = Array.isArray(data?.coords) ? data.coords : [];
-      if (coords.length < 2) return null;
+      const rawCoords = Array.isArray(data?.coords) ? data.coords : [];
+      if (rawCoords.length < 2) return null;
 
       // Sanity check endpoints sit within 2.5km of route origin & destination
-      const dStart = calculateDistanceKm(coords[0][0], coords[0][1], sampled[0][0], sampled[0][1]);
-      const dEnd = calculateDistanceKm(coords[coords.length - 1][0], coords[coords.length - 1][1], sampled[sampled.length - 1][0], sampled[sampled.length - 1][1]);
+      const dStart = calculateDistanceKm(rawCoords[0][0], rawCoords[0][1], sampled[0][0], sampled[0][1]);
+      const dEnd = calculateDistanceKm(rawCoords[rawCoords.length - 1][0], rawCoords[rawCoords.length - 1][1], sampled[sampled.length - 1][0], sampled[sampled.length - 1][1]);
       if (dStart > 2.5 || dEnd > 2.5) return null;
 
+      // Prepend/splice any missing consecutive stop spans (e.g. truncated CSDI upstream stops or bypassed town detours)
+      const coords = _ensureBusPolylineCoversStopsMap(rawCoords, stops);
       if (group.key) window.__ROUTE_GEOM_CACHE__[group.key] = coords;
       _writeBusGeomStorageEntry(ck, coords);
       return coords;
@@ -973,9 +988,10 @@ function drawRouteOnMap(group, activeStopIdx = 0) {
       : L.polyline(polyPts, lineStyle).addTo(window.mapInstance);
     if (isBusRoute) _bringLayerGroupToFront(detailPolylineLayer);
     if (isBusRoute) {
-      fetchRoadSnappedBusPolyline(group, stops).then((roadCoords) => {
-        if (!roadCoords || myGeomToken !== _detailGeomToken || !window.mapInstance) return;
+      fetchRoadSnappedBusPolyline(group, stops).then((rawRoadCoords) => {
+        if (!rawRoadCoords || myGeomToken !== _detailGeomToken || !window.mapInstance) return;
         if (typeof detailRouteGroup !== 'undefined' && detailRouteGroup?.key !== group.key) return;
+        const roadCoords = _ensureBusPolylineCoversStopsMap(rawRoadCoords, stops);
         const curActive = (typeof detailExpandedStopIdx === 'number' && detailExpandedStopIdx >= 0) ? detailExpandedStopIdx : activeStopIdx;
         const curExit = _resolveActiveExitStopIdx(stops, curActive);
         if (detailPolylineLayer) {

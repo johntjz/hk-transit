@@ -749,7 +749,12 @@
   function subdividePolylineMicroSteps(coords, targetStepM = 50, opts = {}) {
     if (!Array.isArray(coords) || coords.length < 2) return [];
     const stepM = Math.max(40, Math.min(60, Number(targetStepM) || 50));
-    const maxRawHopM = Number(opts?.maxRawHopM) > 0 ? Number(opts.maxRawHopM) : 0;
+    const baseMaxRawHopM = Number(opts?.maxRawHopM) > 0 ? Number(opts.maxRawHopM) : 0;
+    // Preserve valid 2–3 vertex consecutive stop spans (e.g. E36 Stops 12 → 13 → 14 bridged town legs)
+    // while keeping strict shortcut-hop rejection on longer road-snapped polylines (4+ vertices).
+    const maxRawHopM = (baseMaxRawHopM > 0 && opts?.allowConsecutiveStopSpans && coords.length <= 3)
+      ? Math.max(baseMaxRawHopM, 1200)
+      : baseMaxRawHopM;
     const microSteps = [];
     for (let i = 0; i < coords.length - 1; i++) {
       const a = coords[i], b = coords[i + 1];
@@ -1070,10 +1075,17 @@
         });
         continue;
       }
-      // Strictly reject unsnapped straight chords > 120 m lacking intermediate road shape points
+      const isConsecutiveShortSpan = Boolean(
+        seg.isBridgedStopSpan ||
+        (opts.allowConsecutiveStopSpans && seg.coords.length <= 3 &&
+          (!Number.isFinite(Number(seg.fromIdx)) || !Number.isFinite(Number(seg.toIdx)) || (Number(seg.toIdx) - Number(seg.fromIdx)) === 1))
+      );
+      // Strictly reject unsnapped straight chords > 250 m lacking intermediate road shape points,
+      // unless explicitly marked as a valid consecutive stop span (e.g. Stops 12 → 13 → 14 <= 1.2 km).
       if (!seg.isRoadSnapped && seg.coords.length === 2) {
         const chordKm = _haversineKmLocal(seg.coords[0][0], seg.coords[0][1], seg.coords[1][0], seg.coords[1][1]);
-        if (chordKm > 0.25) {
+        const maxChordKm = isConsecutiveShortSpan ? 1.2 : 0.25;
+        if (chordKm > maxChordKm) {
           _recordDebugSkip(skipReasons, {
             scope: 'span',
             routeNo: seg.routeNo || '',
@@ -1091,13 +1103,18 @@
       const isRuralCoastal = Boolean(seg.isRuralWinding || isRuralCoastalHighwaySpan(segRoadEn, segRoadTc));
       const rawHopCapM = Number(opts.maxRawHopM) > 0
         ? Number(opts.maxRawHopM)
-        : (seg.isRoadSnapped && isRuralCoastal
-          ? 450
-          : ((!seg.isRoadSnapped || seg.coords.length >= 3) ? 250 : 0));
+        : (isConsecutiveShortSpan
+          ? 1200
+          : (seg.isRoadSnapped && isRuralCoastal
+            ? 450
+            : ((!seg.isRoadSnapped || seg.coords.length >= 3) ? 250 : 0)));
       const microSteps = subdividePolylineMicroSteps(
         seg.coords,
         targetStepM,
-        rawHopCapM > 0 ? { maxRawHopM: rawHopCapM } : {}
+        {
+          ...(rawHopCapM > 0 ? { maxRawHopM: rawHopCapM } : {}),
+          ...(isConsecutiveShortSpan ? { allowConsecutiveStopSpans: true } : {})
+        }
       );
       if (!microSteps.length) {
         _recordDebugSkip(skipReasons, {
@@ -2231,6 +2248,14 @@
       return [];
     }
 
+    // Normalize truncated/bypassed CSDI polylines so early/intermediate stops (e.g. E36 Stops 12 → 13 → 14) have connected spans
+    const effRoadPolylinePoints = (Array.isArray(roadPolylinePoints) && roadPolylinePoints.length >= 2 && typeof globalScope.ensureRoutePolylineCoversStops === 'function')
+      ? globalScope.ensureRoutePolylineCoversStops(roadPolylinePoints, stops)
+      : roadPolylinePoints;
+    if (effRoadPolylinePoints !== roadPolylinePoints) {
+      roadPolylinePoints = effRoadPolylinePoints;
+    }
+
     // Pass 1: Build raw stop-to-stop geometry, TD ground truth, and dwell/quantization-corrected bus speeds
     const allowSparseBridge = Boolean(opts.allowSparseBridge || isNlb);
     const maxSparseJump = isNlb ? 6 : 3;
@@ -2804,6 +2829,13 @@
           busMap.set(fIdx, b);
         }
       }
+    }
+
+    const effRoadPolylinePoints = (Array.isArray(roadPolylinePoints) && roadPolylinePoints.length >= 2 && typeof globalScope.ensureRoutePolylineCoversStops === 'function')
+      ? globalScope.ensureRoutePolylineCoversStops(roadPolylinePoints, stops)
+      : roadPolylinePoints;
+    if (effRoadPolylinePoints !== roadPolylinePoints) {
+      roadPolylinePoints = effRoadPolylinePoints;
     }
 
     const out = [];

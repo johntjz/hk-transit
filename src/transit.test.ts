@@ -7860,5 +7860,35 @@ test('Global Zero-Blue & CSDI Direction Fix: Scheduled-only stops (E36 1-6) use 
     `Tooltips must never show "no TD speed detector", got: ${renderedTips.join(' | ')}`);
 });
 
+test('iOS PWA Journey Bar Containment: zero horizontal overflow CSS (min-width: 0, overflow: hidden) and long-route compaction preserving alerts', () => {
+  const css = fs.readFileSync('public/app.css', 'utf8');
+  const etaSrc = fs.readFileSync('public/eta-engine.js', 'utf8');
+
+  // 1. CSS guarantees zero overflow on iOS Safari PWA
+  const segRuleMatch = css.match(/\.traffic-journey-seg\s*\{[^}]+\}/);
+  assert.ok(segRuleMatch, '.traffic-journey-seg CSS rule must exist');
+  assert.ok(segRuleMatch[0].includes('min-width: 0'), '.traffic-journey-seg must use min-width: 0 so 45+ stop routes never burst out of the card');
+  assert.ok(!segRuleMatch[0].includes('min-width: 8px'), '.traffic-journey-seg must NOT hardcode min-width: 8px');
+  assert.ok(segRuleMatch[0].includes('-webkit-appearance: none'), '.traffic-journey-seg must disable iOS WebKit default button sizing');
+
+  const barRuleMatch = css.match(/\.traffic-journey-bar\s*\{[^}]+\}/);
+  assert.ok(barRuleMatch && barRuleMatch[0].includes('overflow: hidden') && barRuleMatch[0].includes('max-width: 100%'),
+    '.traffic-journey-bar must enforce max-width: 100% and overflow: hidden');
+
+  const stopListMatch = css.match(/#stop-list-container\s*\{[^}]+\}/);
+  assert.ok(stopListMatch && stopListMatch[0].includes('overflow-x: hidden'),
+    '#stop-list-container must enforce overflow-x: hidden on iOS PWA');
+
+  const hudBoxMatch = css.match(/\.last60-hud-box\s*\{[^}]+\}/);
+  assert.ok(hudBoxMatch && hudBoxMatch[0].includes('overflow: hidden') && hudBoxMatch[0].includes('min-width: 0'),
+    '.last60-hud-box must enforce min-width: 0 and overflow: hidden');
+
+  // 2. Long route (e.g. NLB 1 To Tai O with 46 legs) compacts consecutive green legs while keeping Slow/Jammed alerts distinct
+  assert.ok(etaSrc.includes('normalizedLegs.length <= 18') && etaSrc.includes('const maxChunk = Math.max(2, Math.ceil(normalizedLegs.length / 16))'),
+    'eta-engine.js must compact long-route (>18 legs) consecutive same-tone spans');
+  assert.ok(etaSrc.includes('data-density="ultra-dense"') && etaSrc.includes('data-density="dense"'),
+    'eta-engine.js must apply data-density attributes for high-density bars');
+});
+
 
 

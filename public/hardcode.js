@@ -4080,10 +4080,16 @@ function inferDirectionalRoadTrafficForStops(stops, startIdx = 0, detectors = []
     });
   }
 
-  // Optional Bus Speed Layer gap-fill segments (ONLY for stop stretches NOT covered by TD detectors)
+  // Optional Bus Speed Layer gap-fill segments (ONLY for stop stretches NOT covered by TD detectors/links)
   const busSpeedSegments = Array.isArray(opts?.busSpeedSegments) ? opts.busSpeedSegments : [];
   if (busSpeedSegments.length) {
     const tdCoveredSeqs = new Set(segments.filter(s => s.fromSeq && s.toSeq).map(s => `${s.fromSeq}_${s.toSeq}`));
+    const tdSpeedGeo = opts?.tdSpeedGeoJson !== undefined
+      ? opts.tdSpeedGeoJson
+      : (typeof window !== 'undefined' ? window.__LIVE_TRAFFIC_SPEED_GEOJSON__ : null);
+    const tdCoverFn = (typeof window !== 'undefined' && typeof window.isSegmentCoveredByTdGroundTruth === 'function')
+      ? window.isSegmentCoveredByTdGroundTruth
+      : (typeof isSegmentCoveredByTdGroundTruth === 'function' ? isSegmentCoveredByTdGroundTruth : null);
     let cumBusKm = 0;
     for (let i = 0; i < busSpeedSegments.length; i++) {
       const bs = busSpeedSegments[i];
@@ -4092,7 +4098,8 @@ function inferDirectionalRoadTrafficForStops(stops, startIdx = 0, detectors = []
       const seqKey = `${bs.fromSeq}_${bs.toSeq}`;
       const segDistKm = Number((cumBusKm + (bs.roadDistKm || 0) * 0.5).toFixed(1));
       cumBusKm += (bs.roadDistKm || 0);
-      if (tdCoveredSeqs.has(seqKey) || bs.coveredByTd || bs.source === 'TD') continue;
+      if (tdCoveredSeqs.has(seqKey) || bs.coveredByTd || bs.tdCovered || bs.source === 'TD' || bs.isScheduledOnly) continue;
+      if (tdCoverFn && Array.isArray(bs.coords) && bs.coords.length >= 2 && tdCoverFn(bs.coords, detectors, tdSpeedGeo, { maxDistKm: 0.10, maxAngDeg: 45 })) continue;
       if (segDistKm > maxLookaheadKm + 0.05) break;
       const tier = _normalizeBottleneckTier(bs.tier, bs.speedKmh);
       const etaMins = _estimateRouteArrivalMins(segDistKm, bs.speedKmh, (bs.roadDistKm || 0) >= 1.2);
@@ -4239,10 +4246,10 @@ function getDirectionalRoadSummary(stops, startIdx, detectors, isZh = false, loo
   if (!same && !opp && !approaching && topRanked && topRanked.source === 'BUS_API') {
     const busTone = topRanked.tier === 'CONGESTED' ? 'jammed' : (topRanked.tier === 'MODERATE' ? 'slow' : 'smooth');
     const busHeadline = topRanked.tier === 'CONGESTED'
-      ? (isZh ? `巴士車速緩慢 · ${topRanked.speedKmh} km/h` : `Bus Speed Bottleneck · ${topRanked.speedKmh} km/h`)
+      ? (isZh ? '巴士車流擠塞 · 緩慢行駛' : 'Heavy Bus Flow · Slow Stretch')
       : (topRanked.tier === 'MODERATE'
-        ? (isZh ? `巴士車流偏慢 · ${topRanked.speedKmh} km/h` : `Moderate Bus Flow · ${topRanked.speedKmh} km/h`)
-        : (isZh ? `巴士車速暢順 · ~${topRanked.speedKmh} km/h` : `Bus Speed Smooth · ~${topRanked.speedKmh} km/h`));
+        ? (isZh ? '巴士車流偏慢' : 'Slow Bus Flow')
+        : (isZh ? '巴士車流暢順' : 'Bus Flow Smooth'));
     const betweenLabel = topRanked.betweenStops ? _formatBetweenStopsLabel(topRanked.betweenStops, isZh) : '';
     return {
       ...res,

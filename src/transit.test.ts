@@ -939,7 +939,7 @@ test('planner.js & bus_index.min.json: MTR Exit-Level Walking Snap selects neare
   // Must snap to a real Exchange Square exit (Exit B2 from MTR_EXITS_SEED or Exit D from Overpass) rather than station centroid
   const nearEx = findNearestMtrExitForPoint(22.2836, 114.1580, 22.284667, 114.158224);
   assert.ok(nearEx, 'Expected physical MTR exit near Hong Kong Station');
-  assert.ok(['B2', 'D'].includes(nearEx.ref), `Expected Hong Kong Station Exchange Square exit B2 or D, got ${nearEx.ref}`);
+  assert.ok(['B1', 'B2', 'D'].includes(nearEx.ref), `Expected Hong Kong Station Exchange Square exit B1, B2 or D, got ${nearEx.ref}`);
 
   // Transfer from TCL (Hong Kong Station) to CTB 30X (Exchange Square) snaps to nearest physical exit
   const xferSnap = resolveMtrTransferExit(
@@ -949,7 +949,7 @@ test('planner.js & bus_index.min.json: MTR Exit-Level Walking Snap selects neare
     { lat: 22.2836, lon: 114.1580, stopName_e: 'Central (Exchange Square)' }
   );
   assert.ok(xferSnap, 'Expected BUS<->MTR transfer to snap to nearest MTR exit');
-  assert.ok(['B2', 'D'].includes(xferSnap.exitObj.ref), `Expected transfer exit B2 or D, got ${xferSnap.exitObj.ref}`);
+  assert.ok(['B1', 'B2', 'D'].includes(xferSnap.exitObj.ref), `Expected transfer exit B1, B2 or D, got ${xferSnap.exitObj.ref}`);
   assert.equal(xferSnap.side, 'alight');
 
   // Timeline row surfaces exit letter for both access ("(Exit A)") and egress ("via Exit D")
@@ -3954,8 +3954,9 @@ test('Architecture Update 2: Route-Level Speed Digital Twin GeoJSON colors (#16a
   assert.ok(polyCalls.some(p => p.opts?.color === '#0f172a' && p.opts?.weight === 7 && p.opts?.opacity === 0.85), 'Route speed polyline must render high-contrast dark casing (#0f172a, weight 7, opacity 0.85)');
   assert.equal(geoJsonCalls.length, 1, 'Route speed polyline must use L.geoJSON for speed-colored segments');
   const sampleStyle = geoJsonCalls[0].opts.style(fc.features[0]);
-  assert.equal(sampleStyle.weight, 4);
-  assert.ok(sampleStyle.opacity >= 0.9);
+  assert.equal(sampleStyle.weight, 4.5);
+  assert.equal(sampleStyle.opacity, 0.92);
+  assert.equal(sampleStyle.dashArray, null);
   assert.equal(sampleStyle.lineCap, 'round');
   assert.equal(sampleStyle.lineJoin, 'round');
 
@@ -4113,11 +4114,13 @@ test('Architecture Update 3: Global Map View Traffic Toggle at bottomright, <350
   assert.equal(geoJsonLayers[1].fc.features.length, 2, 'Long >320m 2-point chord must be filtered out while keeping valid 60-320m 2-point link and >=3-point polyline');
   assert.ok(!geoJsonLayers[1].fc.features.some((f: any) => f.properties.id === 'LONG_CHORD'), 'LONG_CHORD (>320m 2-point) must be stripped');
   const casingStyle = typeof geoJsonLayers[0].opts.style === 'function' ? geoJsonLayers[0].opts.style(geoJsonLayers[0].fc.features[0]) : geoJsonLayers[0].opts.style;
-  assert.equal(casingStyle.color, '#0f172a', 'Global Traffic casing GeoJSON must use 5px dark slate casing (#0f172a)');
-  assert.equal(casingStyle.weight, 5, 'Global Traffic casing weight must be 5px');
+  assert.equal(casingStyle.color, '#0f172a', 'Global Traffic casing GeoJSON must use dark slate casing (#0f172a)');
+  assert.equal(casingStyle.weight, 6.5, 'Global Traffic casing weight must be 6.5px');
   const topStyle = geoJsonLayers[1].opts.style(geoJsonLayers[1].fc.features[0]);
   assert.equal(topStyle.color, '#ef4444', 'Global Traffic speed GeoJSON must apply vivid congested color (#ef4444)');
-  assert.equal(topStyle.weight, 3, 'Global Traffic top stroke weight must be 3px');
+  assert.equal(topStyle.weight, 4.5, 'Global Traffic TD top stroke weight must be 4.5px');
+  assert.equal(topStyle.opacity, 0.92, 'Global Traffic TD top stroke opacity must be 0.92');
+  assert.equal(topStyle.dashArray, null, 'Global Traffic TD top stroke must be solid (dashArray null)');
   assert.equal(clusterMarkers.length, 0, 'Global Traffic must NEVER use numbered L.markerClusterGroup bubbles');
   assert.equal(directCamMarkers.length, 0, 'Overview zoom (z=12 < 14) must render ZERO camera markers');
 
@@ -4580,9 +4583,11 @@ test('Commuter Updates 2 & 3: Directional camera bearingDeg & FOV cones on Globa
   assert.equal(unmonitoredStyles[0].style.color, '#FF3B30', 'Unmonitored segment must use solid vivid routeAccent color');
   assert.equal(unmonitoredStyles[0].style.dashArray, null, 'Unmonitored segment must render as a solid line (no dashed MTR style)');
   assert.equal(unmonitoredStyles[0].style.weight, 4, 'Unmonitored route line weight must be 4');
-  assert.equal(unmonitoredStyles[0].style.opacity, 0.95, 'Unmonitored route line opacity must be 0.95');
+  assert.equal(unmonitoredStyles[0].style.opacity, 0.92, 'Unmonitored route line opacity must be 0.92');
   if (monitoredStyles.length > 0) {
     assert.equal(monitoredStyles[0].style.dashArray, null, 'Monitored live speed segment must stay solid');
+    assert.equal(monitoredStyles[0].style.weight, 4.5, 'Monitored live TD segment weight must be 4.5');
+    assert.equal(monitoredStyles[0].style.opacity, 0.92, 'Monitored live TD segment opacity must be 0.92');
   }
 
   // 6. Verify Route Map renders clickable directional camera markers within <= 120m of forward route corridor (e.g. TC002F) and excludes distant cameras
@@ -5160,7 +5165,7 @@ test('Issues 1-4: Zoom-Gated Global Cameras, Upstream Jam & Time-Decay Corridor 
   // --- Issue 4: Separate API-Driven Bus Speed Layer & TD Gap Filling ---
   const inferBusApiSegmentSpeeds = sb.ctx.window.inferBusApiSegmentSpeeds;
   const t0 = Date.UTC(2026, 10, 23, 2, 0, 0);
-  // Stop 0 -> Stop 1: 2.0 km in 10 min (minus dwell => ~12 km/h CONGESTED)
+  // Stop 0 -> Stop 1: 2.0 km in 10 min (isolated single slow span -> downgraded from Red to MODERATE/SMOOTH)
   // Stop 1 -> Stop 2: 2.44 km highway span in 2.5 min (minus dwell => ~64 km/h SMOOTH)
   const busEtas = {
     0: [{ eta: new Date(t0).toISOString() }],
@@ -5169,26 +5174,29 @@ test('Issues 1-4: Zoom-Gated Global Cameras, Upstream Jam & Time-Decay Corridor 
   };
   const busSegs = inferBusApiSegmentSpeeds(corridorStops.slice(0, 3), busEtas, corridorPoly, { tdDetectors: [], nowMs: t0 });
   assert.equal(busSegs.length, 2, 'Must infer speed for both stop-to-stop spans from live bus ETAs');
-  assert.equal(busSegs[0].tier, 'CONGESTED', `Slow inter-stop bus span (~12 km/h) must classify as CONGESTED, got ${busSegs[0].speedKmh} km/h (${busSegs[0].tier})`);
   assert.equal(busSegs[1].tier, 'SMOOTH', `Fast highway bus span (~64 km/h) must classify as SMOOTH, got ${busSegs[1].speedKmh} km/h (${busSegs[1].tier})`);
   assert.equal(busSegs[0].source, 'BUS_API');
   assert.equal(busSegs[0].coveredByTd, false);
 
-  // Verify separate UI controls & chips in index.html
-  assert.ok(html.includes('id="detailMapBusSpeedBtn"') && html.includes('toggleBusSpeedLayer()'), 'Detail map must include separate Bus Speed Layer toggle button');
+  // Verify unified Traffic toggle (no separate Bus Speed button), decluttered single status bar, and Exit/Road Ahead chips in index.html
+  assert.ok(!html.includes('id="detailMapBusSpeedBtn"') && !mapSrc.includes('browseMapBusSpeedBtn'),
+    'Separate Bus Speed map toggle buttons (#detailMapBusSpeedBtn / #browseMapBusSpeedBtn) must be merged into single Traffic toggle');
+  assert.ok(html.includes('id="detailMapTrafficBtn"') && html.includes('toggleTrafficLayerOverlay()'), 'Detail map must expose unified Traffic toggle button');
   assert.ok(html.includes('class="stop-exit-pill') && html.includes('toggleDetailExitStop('), 'Downstream stop rows must include compact 1-tap Exit pill button');
   assert.ok(html.includes('class="traffic-ahead-cam-chip"') && html.includes('Road Ahead'), 'Expanded stop traffic card must include compact Road Ahead camera chip');
-  assert.ok(html.includes('class="traffic-approaching-strip') && html.includes('class="traffic-segment-list"'), 'Expanded stop traffic card must render upstream Jam Before Stop and segment-by-segment bottlenecks');
+  assert.ok(!html.includes('traffic-segment-list') && !html.includes('traffic-segment-row') && !html.includes('traffic-approaching-strip'),
+    'Expanded bus stop card must remove .traffic-segment-list, .traffic-segment-row, and .traffic-approaching-strip completely');
 });
 
-test('Dedicated busspeed.js Calibration, South Lantau NLB Coverage, TD Ground-Truth Conflict Priority, Stop-by-Stop 3-Tier Cards, and Duplicate Jam Banner Fix', () => {
+test('Dedicated busspeed.js Calibration, Rural 1.45x Winding Factor, >=2 Consecutive Live Slow Span Red Rule, Multi-Operator Global Corridor Deduplication, and Clean Single Status Bar', () => {
   const bsWindow: any = {};
-  const bsSandbox: any = { window: bsWindow, globalThis: bsWindow, Math, Date, Number, String, Array, Map, Set, Object, parseFloat, isFinite };
+  const bsSandbox: any = { window: bsWindow, globalThis: bsWindow, Math, Date, Number, String, Array, Map, Set, Object, Uint8Array, parseFloat, isFinite };
   vm.createContext(bsSandbox);
   vm.runInContext(fs.readFileSync('public/busspeed.js', 'utf8'), bsSandbox);
   const busSpeedEngine: any = bsWindow.BusSpeedEngine;
   assert.ok(busSpeedEngine, 'public/busspeed.js must export window.BusSpeedEngine');
   const html = fs.readFileSync('index.html', 'utf8');
+  const mapSrc = fs.readFileSync('public/map.js', 'utf8');
   const t0 = Date.UTC(2026, 10, 27, 1, 15, 0);
 
   // 1. Empty new-town road (Yu Tung Rd / Tung Chung Waterfront Rd):
@@ -5201,8 +5209,8 @@ test('Dedicated busspeed.js Calibration, South Lantau NLB Coverage, TD Ground-Tr
   ];
   const yuTungEtas = {
     0: [{ eta: new Date(t0).toISOString(), seq: 1 }],
-    1: [{ eta: new Date(t0 + 180000).toISOString(), seq: 1 }], // 3 min terminus departure padding
-    2: [{ eta: new Date(t0 + 300000).toISOString(), seq: 1 }], // 2 min minute-rounded urban hop
+    1: [{ eta: new Date(t0 + 180000).toISOString(), seq: 1 }],
+    2: [{ eta: new Date(t0 + 300000).toISOString(), seq: 1 }],
   };
   const yuTungSegs = busSpeedEngine.inferBusApiSegmentSpeeds(yuTungStops, yuTungEtas, null, { tdDetectors: [], nowMs: t0 });
   assert.equal(yuTungSegs.length, 2, 'Must produce calibrated segments for Yu Tung Rd');
@@ -5226,39 +5234,87 @@ test('Dedicated busspeed.js Calibration, South Lantau NLB Coverage, TD Ground-Tr
   assert.equal(fastUrbanSegs[0].tier, 'SMOOTH');
   assert.ok(fastUrbanSegs[0].speedKmh <= 40, `Fast 1-min 490m urban hop must stay realistically capped (<= 40 km/h), got ${fastUrbanSegs[0].speedKmh} km/h`);
 
-  // 2. Scheduled timetable-only ETAs (no live GPS) must NEVER fabricate red/amber jams
+  // 2. Scheduled timetable-only ETAs (including fetchEtaRaw's { targetMs, isSched: true } shape) must NEVER create false delays
   const schedEtas = {
-    0: [{ eta: new Date(t0).toISOString(), rmk_en: 'Scheduled Bus', isScheduled: true }],
-    1: [{ eta: new Date(t0 + 480000).toISOString(), rmk_en: 'Scheduled Bus', isScheduled: true }],
+    0: [{ targetMs: t0, rawTargetMs: t0, isSched: true, noGPS: 1 }],
+    1: [{ targetMs: t0 + 480000, rawTargetMs: t0 + 480000, isSched: true, noGPS: 1 }],
+    2: [{ targetMs: t0 + 960000, rawTargetMs: t0 + 960000, isSched: true, noGPS: 1 }],
   };
-  const schedSegs = busSpeedEngine.inferBusApiSegmentSpeeds(yuTungStops.slice(0, 2), schedEtas, null, { tdDetectors: [], nowMs: t0 });
-  assert.equal(schedSegs.length, 1);
+  const schedSegs = busSpeedEngine.inferBusApiSegmentSpeeds(yuTungStops, schedEtas, null, { tdDetectors: [], nowMs: t0 });
+  assert.equal(schedSegs.length, 2);
   assert.equal(schedSegs[0].tier, 'SMOOTH', 'Scheduled-only ETAs must never fabricate red/amber jams');
+  assert.equal(schedSegs[1].tier, 'SMOOTH', 'Consecutive scheduled-only ETAs must never fabricate red/amber jams');
   assert.equal(schedSegs[0].isScheduledOnly, true);
+  assert.equal(schedSegs[0].isBottleneck, false);
 
-  // 3. South Lantau Road (NLB 3M Mui Wo / Pui O):
-  // Must be selected by selectGlobalBusSpeedRoutes (not filtered out as KMB-only!) and accurately detect smooth vs real jam
+  // 3. Rural/winding corridors (South Lantau Rd to Pui O & Mui Wo, Tung Chung Rd, Tai O, Sai Kung, Shek O):
+  // a) Must apply 1.45x winding-road distance factor when unsnapped
+  // b) Must parse fetchEtaRaw's { targetMs, rawTargetMs, isSched: false } format for NLB/CTB/GMB!
+  // c) Isolated single slow rural span must stay Green (SMOOTH) — NEVER Red (CONGESTED)
+  // d) 2 consecutive slow/congested live spans on South Lantau Rd DO flag Red (CONGESTED)
   const southLantauStops = [
-    { stopKey: 'SL0', stopName_e: 'Pui O, South Lantau Road', latitude: '22.2435', longitude: '113.9785' },
-    { stopKey: 'SL1', stopName_e: 'Lo Uk Tsuen, South Lantau Road', latitude: '22.2422', longitude: '113.9710' },
-    { stopKey: 'SL2', stopName_e: 'San Shek Wan, South Lantau Road', latitude: '22.2385', longitude: '113.9615' },
+    { stopKey: 'SL0', stopName_e: 'Mui Wo Ferry Pier, South Lantau Road', latitude: '22.2646', longitude: '114.0015' },
+    { stopKey: 'SL1', stopName_e: 'Pui O, South Lantau Road', latitude: '22.2435', longitude: '113.9785' },
+    { stopKey: 'SL2', stopName_e: 'Lo Uk Tsuen, South Lantau Road', latitude: '22.2422', longitude: '113.9710' },
+    { stopKey: 'SL3', stopName_e: 'San Shek Wan, South Lantau Road', latitude: '22.2385', longitude: '113.9615' },
   ];
-  const nlbRoute = { key: 'NLB_3M_O', routeNo: '3M', company: 'NLB', bound: 'O', mode: 'BUS', routeIds: ['NLB_3M_O'], stops: southLantauStops };
-  const mockBounds = {
-    contains: ([la, lo]: [number, number]) => la >= 22.23 && la <= 22.26 && lo >= 113.95 && lo <= 113.99
-  };
-  const selectedGlobal = busSpeedEngine.selectGlobalBusSpeedRoutes([nlbRoute], mockBounds, (g: any) => g.stops, 6);
-  assert.equal(selectedGlobal.length, 1, 'selectGlobalBusSpeedRoutes must include NLB routes on South Lantau Rd');
-  assert.equal(selectedGlobal[0].operator, 'NLB');
+  assert.equal(busSpeedEngine.isRuralWindingCorridor(southLantauStops[0], southLantauStops[1]), true);
+  assert.equal(busSpeedEngine.isRuralWindingCorridor({ stopName_e: 'Sai Kung Town' }, { stopName_e: 'Clear Water Bay' }), true);
+  assert.equal(busSpeedEngine.isRuralWindingCorridor({ stopName_e: 'Shek O Bus Terminus' }, { stopName_e: 'Shek O Road' }), true);
 
-  const slSmoothEtas = {
-    0: [{ eta: new Date(t0).toISOString() }],
-    1: [{ eta: new Date(t0 + 100000).toISOString() }], // ~850m in 100s -> smooth rural flow
-    2: [{ eta: new Date(t0 + 700000).toISOString() }], // ~1.1km in 600s -> real South Lantau jam
+  // Single isolated slow span on South Lantau Rd (using NLB fetchEtaRaw targetMs objects) -> stays SMOOTH (not Red!)
+  const slIsolatedEtas = {
+    0: [{ targetMs: t0, rawTargetMs: t0, isSched: false, noGPS: 0 }],
+    1: [{ targetMs: t0 + 360000, rawTargetMs: t0 + 360000, isSched: false, noGPS: 0 }], // ~3.3km straight * 1.45 = ~4.8km in 6m => SMOOTH
+    2: [{ targetMs: t0 + 840000, rawTargetMs: t0 + 840000, isSched: false, noGPS: 0 }], // single slow 8-min span
+    3: [{ targetMs: t0 + 960000, rawTargetMs: t0 + 960000, isSched: false, noGPS: 0 }], // fast 2-min next span
   };
-  const slSegs = busSpeedEngine.inferBusApiSegmentSpeeds(southLantauStops, slSmoothEtas, null, { tdDetectors: [], nowMs: t0 });
-  assert.equal(slSegs[0].tier, 'SMOOTH', `Normal South Lantau Rd flow must be SMOOTH, got ${slSegs[0].tier}`);
-  assert.equal(slSegs[1].tier, 'CONGESTED', `10-min crawl over 1.1km on South Lantau Rd must be CONGESTED, got ${slSegs[1].tier}`);
+  const slIsolatedSegs = busSpeedEngine.inferBusApiSegmentSpeeds(southLantauStops, slIsolatedEtas, null, { tdDetectors: [], nowMs: t0 });
+  assert.equal(slIsolatedSegs.length, 3, 'Must parse fetchEtaRaw targetMs objects for NLB routes');
+  assert.ok(slIsolatedSegs[0].roadDistKm > 4.2, `Unsnapped South Lantau Rd span must apply 1.45x winding factor (>4.2km), got ${slIsolatedSegs[0].roadDistKm}km`);
+  assert.equal(slIsolatedSegs[0].tier, 'SMOOTH', `Normal South Lantau Rd flow must be SMOOTH, got ${slIsolatedSegs[0].tier}`);
+  assert.equal(slIsolatedSegs[1].tier, 'SMOOTH', `Isolated single slow rural span without a 2nd consecutive slow span must stay SMOOTH (never Red), got ${slIsolatedSegs[1].tier}`);
+
+  // 2 consecutive slow/congested live spans on South Lantau Rd -> flags Red (CONGESTED)
+  const slConsecJamEtas = {
+    0: [{ targetMs: t0, rawTargetMs: t0, isSched: false, noGPS: 0 }],
+    1: [{ targetMs: t0 + 360000, rawTargetMs: t0 + 360000, isSched: false, noGPS: 0 }], // smooth
+    2: [{ targetMs: t0 + 960000, rawTargetMs: t0 + 960000, isSched: false, noGPS: 0 }], // 10 min crawl
+    3: [{ targetMs: t0 + 1680000, rawTargetMs: t0 + 1680000, isSched: false, noGPS: 0 }], // 12 min crawl (2nd consecutive!)
+  };
+  const slConsecSegs = busSpeedEngine.inferBusApiSegmentSpeeds(southLantauStops, slConsecJamEtas, null, { tdDetectors: [], nowMs: t0 });
+  assert.equal(slConsecSegs[1].tier, 'CONGESTED', `First of 2 consecutive live jams on South Lantau Rd must be CONGESTED, got ${slConsecSegs[1].tier}`);
+  assert.equal(slConsecSegs[2].tier, 'CONGESTED', `Second of 2 consecutive live jams on South Lantau Rd must be CONGESTED, got ${slConsecSegs[2].tier}`);
+
+  // 3b. Global corridor selector: removes tight maxRoutes=8 cap, selects >8 distinct corridors across KMB/LWB/CTB/NLB/GMB,
+  // deduplicates overlapping routes on the exact same road stretch, and skips routes fully covered by TD detectors!
+  const wideBounds = {
+    contains: ([la, lo]: [number, number]) => la >= 22.20 && la <= 22.45 && lo >= 113.85 && lo <= 114.25
+  };
+  const multiCorridorPool: any[] = [];
+  const ops = ['KMB', 'LWB', 'CTB', 'NLB', 'GMB'];
+  for (let c = 0; c < 12; c++) {
+    const baseLat = 22.22 + c * 0.015;
+    const co = ops[c % ops.length];
+    const st = [
+      { stopKey: `C${c}_0`, stopName_e: `Corridor ${c} A`, latitude: String(baseLat), longitude: '114.0000' },
+      { stopKey: `C${c}_1`, stopName_e: `Corridor ${c} B`, latitude: String(baseLat), longitude: '114.0120' },
+      { stopKey: `C${c}_2`, stopName_e: `Corridor ${c} C`, latitude: String(baseLat), longitude: '114.0240' },
+    ];
+    multiCorridorPool.push({ key: `${co}_${100 + c}_O`, routeNo: String(100 + c), company: co, bound: 'O', mode: 'BUS', routeIds: [`${co}_${100 + c}_O`], stops: st });
+    // Add an overlapping duplicate route on the exact same road stretch!
+    multiCorridorPool.push({ key: `${co}_${200 + c}_O`, routeNo: String(200 + c), company: co, bound: 'O', mode: 'BUS', routeIds: [`${co}_${200 + c}_O`], stops: st });
+  }
+  // Place TD detectors covering Corridor 0 completely
+  const tdCovDets = [
+    { id: 'TD_C0_1', lat: 22.22, lon: 114.0060, rot: 90, spd: 60 },
+    { id: 'TD_C0_2', lat: 22.22, lon: 114.0180, rot: 90, spd: 60 },
+  ];
+  const pickedCorridors = busSpeedEngine.selectGlobalBusSpeedRoutes(multiCorridorPool, wideBounds, (g: any) => g.stops, undefined, tdCovDets);
+  assert.equal(pickedCorridors.length, 11, `Must select all 11 distinct unmonitored corridors (skipping TD-covered corridor 0 & deduplicating 12 overlaps), got ${pickedCorridors.length}`);
+  assert.ok(pickedCorridors.length > 8, 'Must NOT be bottlenecked by legacy maxRoutes = 8 cap');
+  const pickedOps = new Set(pickedCorridors.map((p: any) => p.operator));
+  assert.ok(pickedOps.has('KMB') && pickedOps.has('CTB') && pickedOps.has('NLB') && pickedOps.has('GMB'), 'Must cover KMB/LWB, CTB, NLB, and GMB corridors');
 
   // 4. Strict TD Ground-Truth Priority on Conflict (Castle Peak Rd-Ping Shan 70 km/h GREEN beats slower Bus API ETA!)
   const pingShanStops = [
@@ -5277,7 +5333,7 @@ test('Dedicated busspeed.js Calibration, South Lantau NLB Coverage, TD Ground-Tr
     spd: 70,
     occ: 0,
     tier: 'SMOOTH',
-    rot: 285, // WNW aligned with PS0 -> PS1
+    rot: 285,
     roadEn: 'Castle Peak Road - Ping Shan',
     roadTc: '青山公路－屏山段',
     camKey: 'NL126',
@@ -5291,7 +5347,7 @@ test('Dedicated busspeed.js Calibration, South Lantau NLB Coverage, TD Ground-Tr
   }];
   const slowBusConflictEtas = {
     0: [{ eta: new Date(t0).toISOString() }],
-    1: [{ eta: new Date(t0 + 270000).toISOString() }], // Slow bus ETA would infer amber/red (~13 km/h)
+    1: [{ eta: new Date(t0 + 270000).toISOString() }],
   };
   const resolvedSegs = busSpeedEngine.inferBusApiSegmentSpeeds(pingShanStops, slowBusConflictEtas, pingShanPoly, {
     tdDetectors: pingShanTdDetector,
@@ -5308,9 +5364,9 @@ test('Dedicated busspeed.js Calibration, South Lantau NLB Coverage, TD Ground-Tr
   // 5. Unified 3-tier Stop-by-Stop Segment Builder: Tier 1 (TD) > Tier 2 (BUS_API) > Tier 3 (CAM_ONLY)
   const fourStops = [
     { stopKey: 'A', stopName_e: 'Stop A', latitude: '22.3000', longitude: '114.1000' },
-    { stopKey: 'B', stopName_e: 'Stop B', latitude: '22.3060', longitude: '114.1000' }, // Covered by TD
-    { stopKey: 'C', stopName_e: 'Stop C', latitude: '22.3120', longitude: '114.1000' }, // Covered by BUS_API only
-    { stopKey: 'D', stopName_e: 'Stop D', latitude: '22.3180', longitude: '114.1000' }, // Covered by TD Camera only
+    { stopKey: 'B', stopName_e: 'Stop B', latitude: '22.3060', longitude: '114.1000' },
+    { stopKey: 'C', stopName_e: 'Stop C', latitude: '22.3120', longitude: '114.1000' },
+    { stopKey: 'D', stopName_e: 'Stop D', latitude: '22.3180', longitude: '114.1000' },
   ];
   const fourPoly = [[22.3000, 114.1000], [22.3060, 114.1000], [22.3120, 114.1000], [22.3180, 114.1000]];
   const fourDets = [{ id: 'DET_AB', lat: 22.3030, lon: 114.1000, spd: 64, occ: 12, tier: 'SMOOTH', rot: 0, roadEn: 'Corridor A-B', camKey: 'CAM_AB' }];
@@ -5319,7 +5375,7 @@ test('Dedicated busspeed.js Calibration, South Lantau NLB Coverage, TD Ground-Tr
     { key: 'CAM_CD', lat: 22.3150, lon: 114.1000, desc: 'Cam C-D', bearingDeg: 0 },
   ];
   const fourBusSegs = [
-    { fromIdx: 0, toIdx: 1, speedKmh: 12, tier: 'CONGESTED', roadDistKm: 0.67, deltaSec: 210, expectedKmh: 35 }, // overridden by TD!
+    { fromIdx: 0, toIdx: 1, speedKmh: 12, tier: 'CONGESTED', roadDistKm: 0.67, deltaSec: 210, expectedKmh: 35 },
     { fromIdx: 1, toIdx: 2, speedKmh: 28, tier: 'SMOOTH', roadDistKm: 0.67, deltaSec: 110, expectedKmh: 30 },
   ];
   const timeline = busSpeedEngine.buildStopByStopSegmentTraffic(fourStops, fourPoly, fourDets, fourCams, fourBusSegs);
@@ -5332,15 +5388,103 @@ test('Dedicated busspeed.js Calibration, South Lantau NLB Coverage, TD Ground-Tr
   assert.equal(timeline[2].source, 'CAM_ONLY', 'Span 2->3 must pick Tier 3 CAM_ONLY when only camera exists');
   assert.equal(timeline[2].camKey, 'CAM_CD');
 
-  // 6. Verify index.html wires busspeed.js, stops duplicate "Jam before stop" banner, and renders stop-by-stop pills + 3-tier modal
+  // 5b. Strict TD ground-truth suppression (~100m, ±45°) against BOTH TD speed links and TD detectors:
+  // Same-direction TD speed link within 100m & <=45° MUST suppress BUS_API; opposite direction (180°) or >100m MUST NOT suppress.
+  const busSpanCoords = [[22.3200, 114.1700], [22.3240, 114.1700]]; // Northbound (0°)
+  const tdLinkSameDir = {
+    type: 'FeatureCollection',
+    features: [{
+      type: 'Feature',
+      geometry: { type: 'LineString', coordinates: [[114.1704, 22.3205], [114.1704, 22.3235]] }, // ~41m east, Northbound (0°)
+      properties: { id: 'LINK_NB', spd: 58, tier: 'SMOOTH', rot: 0, roadEn: 'Nathan Road NB' }
+    }]
+  };
+  const tdLinkOppDir = {
+    type: 'FeatureCollection',
+    features: [{
+      type: 'Feature',
+      geometry: { type: 'LineString', coordinates: [[114.1704, 22.3235], [114.1704, 22.3205]] }, // ~41m east, Southbound (180°)
+      properties: { id: 'LINK_SB', spd: 20, tier: 'CONGESTED', rot: 180, roadEn: 'Nathan Road SB' }
+    }]
+  };
+  const tdLinkTooFar = {
+    type: 'FeatureCollection',
+    features: [{
+      type: 'Feature',
+      geometry: { type: 'LineString', coordinates: [[114.1720, 22.3205], [114.1720, 22.3235]] }, // ~206m east (>100m), Northbound
+      properties: { id: 'LINK_FAR', spd: 60, tier: 'SMOOTH', rot: 0, roadEn: 'Parallel Road NB' }
+    }]
+  };
+  assert.equal(busSpeedEngine.isSegmentCoveredByTdGroundTruth(busSpanCoords, [], tdLinkSameDir), true,
+    'Same-direction TD speed link within ~100m and ±45° must mark stretch covered by TD ground truth');
+  assert.equal(busSpeedEngine.isSegmentCoveredByTdGroundTruth(busSpanCoords, [], tdLinkOppDir), false,
+    'Opposite-direction TD speed link (180°) must NOT suppress northbound BUS_API stretch');
+  assert.equal(busSpeedEngine.isSegmentCoveredByTdGroundTruth(busSpanCoords, [], tdLinkTooFar), false,
+    'TD speed link >100m away must NOT suppress BUS_API stretch');
+
+  // Verify map.js _drawBusSpeedSegmentsIntoLayer discards TD-covered BUS_API segments and draws unmonitored BUS_API
+  // segments with translucent dashed stroke (opacity 0.62, dashArray '8, 6', weight 4)
+  const drawnPolylines: any[] = [];
+  const drawMapCtx: any = {
+    window: {
+      globalTrafficLayerEnabled: true,
+      trafficLayerEnabled: true,
+      __LIVE_TRAFFIC_DETECTORS__: [],
+      __LIVE_TRAFFIC_SPEED_GEOJSON__: tdLinkSameDir,
+      isSegmentCoveredByTdGroundTruth: busSpeedEngine.isSegmentCoveredByTdGroundTruth,
+      getBusSpeedLayerColorHex: busSpeedEngine.getBusSpeedColorHex,
+    },
+    document: { getElementById: () => null },
+    currentLang: 'en',
+    escapeHtml: (s: any) => String(s ?? ''),
+    calculateDistanceKm: (a1: number, o1: number, a2: number, o2: number) => Math.hypot((a2 - a1) * 111.32, (o2 - o1) * 102.5),
+    L: {
+      layerGroup: () => ({ addLayer() {}, clearLayers() {} }),
+      polyline: (coords: any, opts: any) => {
+        const p = { coords, opts, addTo() { drawnPolylines.push(p); return p; }, bindTooltip() { return p; } };
+        return p;
+      },
+    },
+    console, Math, Number, String, Array, Map, Set,
+  };
+  vm.createContext(drawMapCtx);
+  vm.runInContext(mapSrc, drawMapCtx);
+  const drawnCount = drawMapCtx._drawBusSpeedSegmentsIntoLayer([
+    // Covered by tdLinkSameDir within 41m & 0° -> MUST be discarded!
+    { fromIdx: 0, toIdx: 1, tier: 'CONGESTED', speedKmh: 10, color: '#dc2626', source: 'BUS_API', isRoadSnapped: true, coords: busSpanCoords },
+    // Unmonitored South Lantau corridor -> MUST draw translucent dashed (opacity 0.62, dashArray '8, 6', weight 4)!
+    { fromIdx: 1, toIdx: 2, tier: 'SMOOTH', speedKmh: 42, color: '#16a34a', source: 'BUS_API', isRoadSnapped: true, coords: [[22.2435, 113.9785], [22.2428, 113.9745], [22.2422, 113.9710]] },
+  ], drawMapCtx.L.layerGroup(), 'NLB 3M', new Map());
+  assert.equal(drawnCount, 1, 'TD-covered BUS_API segment must be discarded while unmonitored South Lantau segment draws');
+  const mainBusStroke = drawnPolylines.find(p => p.opts?.color === '#16a34a');
+  assert.ok(mainBusStroke, 'Unmonitored BUS_API polyline must be drawn in tier green (#16a34a)');
+  assert.equal(mainBusStroke.opts.opacity, 0.62, 'BUS_API polyline must use translucent opacity 0.62');
+  assert.equal(mainBusStroke.opts.dashArray, '8, 6', 'BUS_API polyline must use dashed stroke dashArray "8, 6"');
+  assert.equal(mainBusStroke.opts.weight, 4, 'BUS_API polyline must use weight 4');
+
+  // 6. Verify index.html & map.js unified Traffic toggle & visual distinction rules:
+  // - Single unified Traffic toggle (zero separate Bus Speed buttons)
+  // - Solid TD lines (weight 4.5, opacity 0.92, dashArray null) vs translucent dashed BUS_API lines (weight 4, opacity 0.62, dashArray '8, 6')
+  // - Solid-filled TD stop-row pills (.source-td) with exact km/h vs translucent dashed BUS_API pills (.source-bus-api) with coarse flow labels
+  // - Single status bar (zero .traffic-segment-list / .traffic-segment-row / .traffic-approaching-strip)
+  // - Hollow white stop circles suppressed while unified Traffic overlay is ON
   assert.ok(html.includes('<script src="busspeed.js"></script>'), 'index.html must load busspeed.js');
-  assert.ok(
-    html.includes("if (app && !roadSum.isApproaching && (app.tier === 'CONGESTED' || app.tier === 'MODERATE'))"),
-    'index.html must suppress duplicate .traffic-approaching-strip when roadSum.isApproaching is already the primary headline'
-  );
-  assert.ok(html.includes('stop-seg-speed-slot-') && html.includes('window.refreshStopByStopTrafficUI') && html.includes('window.openStopSegmentTrafficModal'),
-    'index.html must wire stop-by-stop traffic pills and 3-tier click modal on every bus stop row');
+  assert.ok(!html.includes('detailMapBusSpeedBtn') && !mapSrc.includes('browseMapBusSpeedBtn'),
+    'Separate Bus Speed buttons must be removed in favor of single unified Traffic toggle');
+  assert.ok(html.includes('.stop-seg-speed-pill.source-td') && html.includes('.stop-seg-speed-pill.source-bus-api { border-width: 1px; border-style: dashed; }'),
+    'index.html must visually distinguish solid .source-td badges from translucent 1px dashed .source-bus-api badges');
+  assert.ok(!html.includes('traffic-approaching-strip') && !html.includes('traffic-segment-list') && !html.includes('traffic-segment-row'),
+    'index.html must not contain cluttered .traffic-approaching-strip, .traffic-segment-list, or .traffic-segment-row');
+  assert.ok(html.includes("'Flowing'") && html.includes("'Slow'") && html.includes("'Heavy'") && !html.includes('~${Math.round(seg.speedKmh)} km/h · ${srcTag}'),
+    'BUS_API stop-row pills must show coarse Flowing/Slow/Heavy labels instead of ~XX km/h');
+  assert.ok(mapSrc.includes('const flowWeight = 4.5;') && mapSrc.includes('opacity: feat?.properties?.isGapBridge ? 0.55 : 0.92,'),
+    'Global TD ground-truth polylines must render solid at weight 4.5 and opacity 0.92');
+  assert.ok(mapSrc.includes('if (window.globalTrafficLayerEnabled)') && mapSrc.includes('renderGlobalBusSpeedOverlay(window.browseMapInstance);'),
+    'Unified Global Traffic toggle must jointly drive TD lines + Bus Speed gap-fill and suppress hollow white stop circles');
+  assert.ok(mapSrc.includes('_globalBusStretchDedupKey') && mapSrc.includes('BATCH_SIZE = 5'),
+    'map.js must deduplicate overlapping stretches and batch Global Bus Speed fetches cleanly');
 });
+
 
 
 

@@ -922,8 +922,6 @@ function syncTrafficOverlaysAllMaps() {
   if (window.browseMapInstance) {
     if (window.globalTrafficLayerEnabled) {
       renderGlobalTrafficDashboard(window.browseMapInstance);
-    }
-    if (window.busSpeedLayerEnabled) {
       renderGlobalBusSpeedOverlay(window.browseMapInstance);
     }
   }
@@ -935,6 +933,12 @@ function syncTrafficOverlaysAllMaps() {
 function toggleTrafficLayerOverlay(forceState = null) {
   if (typeof triggerHaptic === 'function') triggerHaptic(10);
   window.trafficLayerEnabled = (typeof forceState === 'boolean') ? forceState : !window.trafficLayerEnabled;
+  if (window.trafficLayerEnabled && window.mapInstance && currentDetailCorridorMeta?.isBusRoute && typeof detailRouteGroup !== 'undefined' && detailRouteGroup) {
+    if (!Array.isArray(window.__DETAIL_BUS_SPEED_SEGMENTS__) || !window.__DETAIL_BUS_SPEED_SEGMENTS__.length) {
+      const stops = _getDetailStopsForGroup(detailRouteGroup);
+      syncDetailRouteBusSpeedSegments(detailRouteGroup, stops);
+    }
+  }
   syncTrafficOverlaysAllMaps();
   if (typeof window.syncTrafficToggleButtonsUI === 'function') {
     window.syncTrafficToggleButtonsUI();
@@ -942,8 +946,8 @@ function toggleTrafficLayerOverlay(forceState = null) {
   const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
   if (typeof showToast === 'function') {
     showToast(window.trafficLayerEnabled
-      ? (isZh ? '🚦 已顯示實時道路交通及路面快照' : '🚦 Live HK Road Traffic & Cameras ON')
-      : (isZh ? '🚦 已隱藏實時道路交通圖層' : '🚦 Live Road Traffic Layer OFF'));
+      ? (isZh ? '🚦 已顯示實時道路交通、巴士車速及路面快照' : '🚦 Live Traffic, Bus Speed & Cameras ON')
+      : (isZh ? '🚦 已隱藏實時道路交通圖層' : '🚦 Live Traffic Layer OFF'));
   }
 }
 
@@ -1619,21 +1623,37 @@ function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) 
   const highContrastCasingColor = '#0f172a';
   const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
 
-  const appendBusSpeedOverlay = () => {
-    if (!window.busSpeedLayerEnabled) return;
+  const appendBusSpeedOverlay = (detailSpeedGeo = null) => {
+    if (!window.trafficLayerEnabled) return;
     const busSegs = Array.isArray(window.__DETAIL_BUS_SPEED_SEGMENTS__) ? window.__DETAIL_BUS_SPEED_SEGMENTS__ : [];
     if (!busSegs.length) return;
+    const tdCoverFn = typeof window.isSegmentCoveredByTdGroundTruth === 'function' ? window.isSegmentCoveredByTdGroundTruth : null;
+    const combinedTdSpeedFeats = [];
+    if (Array.isArray(window.__LIVE_TRAFFIC_SPEED_GEOJSON__?.features)) {
+      combinedTdSpeedFeats.push(...window.__LIVE_TRAFFIC_SPEED_GEOJSON__.features);
+    }
+    if (Array.isArray(detailSpeedGeo?.features)) {
+      detailSpeedGeo.features.forEach((f) => {
+        const p = f?.properties || {};
+        if (p.hasSpeedData !== false && p.speedKmh !== null && p.speedKmh !== undefined && Number.isFinite(Number(p.speedKmh))) {
+          combinedTdSpeedFeats.push(f);
+        }
+      });
+    }
     for (let i = 0; i < busSegs.length; i++) {
       const seg = busSegs[i];
-      // Strictly fill stop-to-stop gaps not covered by TD speed feeds when TD Traffic is also enabled
-      if (window.trafficLayerEnabled && (seg.coveredByTd || seg.tdCovered)) continue;
+      if (!seg || seg.isScheduledOnly) continue;
+      // Strict TD ground-truth priority (~100m, ±45°): discard BUS_API estimate wherever TD coverage exists
+      if (seg.coveredByTd || seg.tdCovered || seg.source === 'TD') continue;
       if (!Array.isArray(seg.coords) || seg.coords.length < 2) continue;
+      if (tdCoverFn && tdCoverFn(seg.coords, liveDetectors, combinedTdSpeedFeats, { maxDistKm: 0.10, maxAngDeg: 45 })) continue;
+      // Soft translucent dashed casing + translucent dashed BUS_API stroke (opacity 0.62, dashArray '8, 6', weight 4)
       layers.push(
         L.polyline(seg.coords, {
           color: highContrastCasingColor,
-          weight: 7,
-          opacity: 0.85,
-          dashArray: null,
+          weight: 5.5,
+          opacity: 0.22,
+          dashArray: '8, 6',
           smoothFactor: 1.5,
           lineJoin: 'round',
           lineCap: 'round',
@@ -1641,10 +1661,10 @@ function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) 
         })
       );
       const busLine = L.polyline(seg.coords, {
-        color: seg.color || '#2563eb',
+        color: seg.color || '#16a34a',
         weight: 4,
-        opacity: 0.96,
-        dashArray: null,
+        opacity: 0.62,
+        dashArray: '8, 6',
         smoothFactor: 1.5,
         lineJoin: 'round',
         lineCap: 'round'
@@ -1654,8 +1674,13 @@ function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) 
         const rawTo = isZh ? (seg.toNameTc || seg.toNameEn) : (seg.toNameEn || seg.toNameTc);
         const fromNm = sanitizeBottleneckLabel(rawFrom || `Stop ${seg.fromSeq || ((seg.fromIdx || 0) + 1)}`);
         const toNm = sanitizeBottleneckLabel(rawTo || `Stop ${seg.toSeq || ((seg.toIdx || 0) + 2)}`);
+        const flowTxt = seg.tier === 'CONGESTED'
+          ? (isZh ? '擠塞' : 'Heavy')
+          : (seg.tier === 'MODERATE'
+            ? (isZh ? '緩慢' : 'Slow')
+            : (isZh ? '暢順' : 'Flowing'));
         busLine.bindTooltip(
-          `🚌 ${isZh ? '巴士車速' : 'Bus Speed'} · ${Math.round(seg.speedKmh)} km/h (${fromNm} → ${toNm})`,
+          `🚌 ${isZh ? '巴士車速推算' : 'Bus Speed Est.'} · ${flowTxt} (${fromNm} → ${toNm})`,
           { sticky: true, className: 'kmb-map-stop-label' }
         );
       }
@@ -1682,8 +1707,8 @@ function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) 
     window.__LAST_DETAIL_SPEED_GEOJSON__ = speedGeoJson;
 
     if (speedGeoJson && Array.isArray(speedGeoJson.features) && speedGeoJson.features.length > 0) {
-      // High-contrast dark casing (#0f172a, weight 7, opacity 0.85) underneath ALL route segments
-      // so green speed segments (#16a34a) and solid vivid unmonitored roads pop against green map tiles.
+      // High-contrast dark casing (#0f172a, weight 7, opacity 0.85) underneath route segments
+      // so solid TD speed lines (#16a34a / #f59e0b / #dc2626) pop cleanly against map tiles.
       speedGeoJson.features.forEach((feat) => {
         const gCoords = feat?.geometry?.coordinates;
         if (!Array.isArray(gCoords) || gCoords.length < 2) return;
@@ -1706,21 +1731,22 @@ function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) 
           const p = feat?.properties || {};
           const hasLiveSpeed = p.hasSpeedData !== false && p.speedKmh !== null && p.speedKmh !== undefined && Number.isFinite(Number(p.speedKmh));
           if (!hasLiveSpeed) {
-            // Solid vivid route line on unmonitored local/airport roads (never dashed like MTR lines)
+            // Solid vivid route line on unmonitored local/airport roads
             return {
               color: solidRouteFallback,
               weight: 4,
-              opacity: 0.95,
+              opacity: 0.92,
               dashArray: null,
               smoothFactor: 1.5,
               lineJoin: 'round',
               lineCap: 'round'
             };
           }
+          // TD ground-truth hardware sensor speed segment: solid, crisp, high-opacity polyline
           return {
             color: p.color || solidRouteFallback,
-            weight: 4,
-            opacity: 0.96,
+            weight: 4.5,
+            opacity: 0.92,
             dashArray: null,
             smoothFactor: 1.5,
             lineJoin: 'round',
@@ -1733,7 +1759,7 @@ function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) 
           if (!hasLiveSpeed) {
             if (typeof lyr.bindTooltip === 'function') {
               lyr.bindTooltip(
-                isZh ? '實時巴士路線（無測速段 · 可開啟巴士車速圖層）' : 'Bus route (no TD detector · toggle Bus Speed layer for ETA speed)',
+                isZh ? '實時巴士路線（無運輸署測速段）' : 'Bus route (no TD speed detector)',
                 { sticky: true, className: 'kmb-map-stop-label' }
               );
             }
@@ -1757,7 +1783,7 @@ function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) 
         }
       });
       layers.push(geoLayer);
-      appendBusSpeedOverlay();
+      appendBusSpeedOverlay(speedGeoJson);
       return L.layerGroup(layers);
     }
   }
@@ -2616,18 +2642,19 @@ function renderGlobalTrafficDashboard(targetMap = window.browseMapInstance) {
   const speedGeo = filterAndOffsetGlobalSpeedGeoJson(rawSpeedGeo, zoom, detectors);
   window.__LAST_GLOBAL_SPEED_GEOJSON__ = speedGeo;
 
-  const casingWeight = 5;
-  const flowWeight = 3;
+  const casingWeight = 6.5;
+  const flowWeight = 4.5;
 
   if (speedGeo && Array.isArray(speedGeo.features) && speedGeo.features.length > 0) {
     if (typeof L.geoJSON === 'function') {
-      // Crisp 5px dark casing (#0f172a) underneath vivid 3px top stroke; gap-bridges render at softer opacity
+      // Crisp dark casing (#0f172a) underneath solid TD ground-truth 4.5px stroke (opacity 0.92, dashArray null)
       L.geoJSON(speedGeo, {
         interactive: false,
         style: (feat) => ({
           color: '#0f172a',
           weight: casingWeight,
-          opacity: feat?.properties?.isGapBridge ? 0.34 : 0.62,
+          opacity: feat?.properties?.isGapBridge ? 0.34 : 0.65,
+          dashArray: null,
           smoothFactor: 1.5,
           lineCap: 'round',
           lineJoin: 'round'
@@ -2638,7 +2665,8 @@ function renderGlobalTrafficDashboard(targetMap = window.browseMapInstance) {
         style: (feat) => ({
           color: feat?.properties?.color || '#3b82f6',
           weight: flowWeight,
-          opacity: feat?.properties?.isGapBridge ? 0.55 : 0.95,
+          opacity: feat?.properties?.isGapBridge ? 0.55 : 0.92,
+          dashArray: null,
           smoothFactor: 1.5,
           lineCap: 'round',
           lineJoin: 'round'
@@ -3113,32 +3141,76 @@ function clearGlobalBusSpeedOverlay(targetMap = window.browseMapInstance) {
   }
 }
 
-function _drawBusSpeedSegmentsIntoLayer(segments, layerGroup, routeLabel = '') {
+function _globalBusStretchDedupKey(coords) {
+  if (!Array.isArray(coords) || coords.length < 2) return '';
+  const a = coords[0];
+  const b = coords[coords.length - 1];
+  const mid = coords[Math.floor(coords.length / 2)];
+  const la = Number(mid[0]), lo = Number(mid[1]);
+  if (!Number.isFinite(la) || !Number.isFinite(lo)) return '';
+  const brg = (typeof computeBearingDeg === 'function')
+    ? computeBearingDeg(a[0], a[1], b[0], b[1])
+    : 0;
+  const oct = Math.round((((brg % 360) + 360) % 360) / 45) % 8;
+  return `${Math.round(la * 650)}_${Math.round(lo * 650)}_${oct}`;
+}
+
+function _busTierSeverityRank(tier) {
+  const t = String(tier || '').toUpperCase();
+  if (t === 'CONGESTED' || t === 'JAMMED') return 3;
+  if (t === 'MODERATE' || t === 'SLOW') return 2;
+  if (t === 'SMOOTH') return 1;
+  return 0;
+}
+
+function _drawBusSpeedSegmentsIntoLayer(segments, layerGroup, routeLabel = '', drawnStretchMap = null) {
   if (!layerGroup || typeof L === 'undefined' || !Array.isArray(segments) || !segments.length) return 0;
   const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
+  const tdDetectors = Array.isArray(window.__LIVE_TRAFFIC_DETECTORS__) ? window.__LIVE_TRAFFIC_DETECTORS__ : [];
+  const tdSpeedGeo = window.__LIVE_TRAFFIC_SPEED_GEOJSON__ || window.__LAST_GLOBAL_SPEED_GEOJSON__ || null;
+  const tdCoverFn = typeof window.isSegmentCoveredByTdGroundTruth === 'function' ? window.isSegmentCoveredByTdGroundTruth : null;
   let drawn = 0;
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i];
-    if (window.globalTrafficLayerEnabled && (seg.coveredByTd || seg.tdCovered)) continue;
+    if (!seg || seg.isScheduledOnly) continue;
+    // Strict TD ground-truth priority (~100m, ±45°): never draw synthetic BUS_API where TD sensors/links cover the road
+    if (seg.coveredByTd || seg.tdCovered || seg.source === 'TD') continue;
     if (!Array.isArray(seg.coords) || seg.coords.length < 2) continue;
-    // Never draw long straight 2-point stop-to-stop chords cutting across buildings or hillsides
-    if (seg.coords.length === 2 && typeof calculateDistanceKm === 'function') {
+    if (tdCoverFn && tdCoverFn(seg.coords, tdDetectors, tdSpeedGeo, { maxDistKm: 0.10, maxAngDeg: 45 })) continue;
+    // Strictly require road-snapped polylines (never draw straight coastline-cutting chords)
+    if (!seg.isRoadSnapped && seg.coords.length === 2 && typeof calculateDistanceKm === 'function') {
       const chordKm = calculateDistanceKm(seg.coords[0][0], seg.coords[0][1], seg.coords[1][0], seg.coords[1][1]);
-      if (chordKm > 0.28) continue;
+      if (chordKm > 0.16) continue;
     }
+
+    // Deduplicate overlapping bus routes on the exact same road stretch
+    if (drawnStretchMap instanceof Map) {
+      const stretchKey = _globalBusStretchDedupKey(seg.coords);
+      if (stretchKey) {
+        const sev = _busTierSeverityRank(seg.tier);
+        const prevSev = drawnStretchMap.get(stretchKey) || 0;
+        if (prevSev >= sev) continue;
+        drawnStretchMap.set(stretchKey, sev);
+      }
+    }
+
+    const strokeColor = seg.color || (typeof getBusSpeedLayerColorHex === 'function' ? getBusSpeedLayerColorHex(seg.tier, seg.speedKmh) : '#16a34a');
+    // Translucent dashed BUS_API stroke (opacity 0.62, dashArray '8, 6', weight 4) with subtle matching dashed casing
     L.polyline(seg.coords, {
       color: '#0f172a',
       weight: 5.5,
-      opacity: 0.62,
+      opacity: 0.22,
+      dashArray: '8, 6',
       smoothFactor: 1.5,
       lineCap: 'round',
       lineJoin: 'round',
       interactive: false
     }).addTo(layerGroup);
     const line = L.polyline(seg.coords, {
-      color: seg.color || '#2563eb',
-      weight: 3.4,
-      opacity: 0.94,
+      color: strokeColor,
+      weight: 4,
+      opacity: 0.62,
+      dashArray: '8, 6',
       smoothFactor: 1.5,
       lineCap: 'round',
       lineJoin: 'round'
@@ -3149,9 +3221,13 @@ function _drawBusSpeedSegmentsIntoLayer(segments, layerGroup, routeLabel = '') {
       const rawTo = isZh ? (seg.toNameTc || seg.toNameEn) : (seg.toNameEn || seg.toNameTc);
       const fromNm = sanitizeBottleneckLabel(rawFrom || `Stop ${seg.fromSeq || ((seg.fromIdx || 0) + 1)}`);
       const toNm = sanitizeBottleneckLabel(rawTo || `Stop ${seg.toSeq || ((seg.toIdx || 0) + 2)}`);
-      const srcBadge = seg.source === 'TD' ? '🚦 TD' : '🚌';
+      const flowTxt = seg.tier === 'CONGESTED'
+        ? (isZh ? '擠塞' : 'Heavy')
+        : (seg.tier === 'MODERATE'
+          ? (isZh ? '緩慢' : 'Slow')
+          : (isZh ? '暢順' : 'Flowing'));
       line.bindTooltip(
-        `${srcBadge} ${prefix}${Math.round(seg.speedKmh)} km/h (${fromNm} → ${toNm})`,
+        `🚌 ${prefix}${flowTxt} (${fromNm} → ${toNm})`,
         { sticky: true, className: 'kmb-map-stop-label' }
       );
     }
@@ -3247,12 +3323,13 @@ async function syncDetailRouteBusSpeedSegments(group, stops, preloadedEtaByStopI
   const segs = window.inferBusApiSegmentSpeeds(stops, etaByStopIdx, roadCoords, {
     tdDetectors,
     tdCameras,
+    tdSpeedGeoJson: window.__LIVE_TRAFFIC_SPEED_GEOJSON__ || null,
     routeNo: group.routeNo || '',
     company: group.company || '',
     nowMs: Date.now()
   });
   window.__DETAIL_BUS_SPEED_SEGMENTS__ = segs;
-  if (window.busSpeedLayerEnabled && window.mapInstance && currentDetailCorridorMeta?.groupKey === (group?.key || '')) {
+  if (window.trafficLayerEnabled && window.mapInstance && currentDetailCorridorMeta?.groupKey === (group?.key || '')) {
     _refreshDetailBusSpeedPolylineIfActive();
   }
   if (typeof window.onDetailBusSpeedReady === 'function') {
@@ -3267,13 +3344,17 @@ async function syncDetailRouteBusSpeedSegments(group, stops, preloadedEtaByStopI
 function renderGlobalBusSpeedOverlay(targetMap = window.browseMapInstance) {
   if (!targetMap || typeof L === 'undefined') return;
   clearGlobalBusSpeedOverlay(targetMap);
-  if (!window.busSpeedLayerEnabled) return;
+  if (!window.globalTrafficLayerEnabled) return;
+
+  // Hide hollow white stop circles so Traffic & Bus Speed render as clean road-aligned green/amber/red lines
+  clearAllActiveBrowseMarkers();
 
   _globalBusSpeedLayerGroup = L.layerGroup().addTo(targetMap);
+  const drawnStretchMap = new Map();
 
   // Render any pre-computed / injected bus speed segments immediately
   if (Array.isArray(window.__GLOBAL_BUS_SPEED_SEGMENTS__) && window.__GLOBAL_BUS_SPEED_SEGMENTS__.length) {
-    _drawBusSpeedSegmentsIntoLayer(window.__GLOBAL_BUS_SPEED_SEGMENTS__, _globalBusSpeedLayerGroup);
+    _drawBusSpeedSegmentsIntoLayer(window.__GLOBAL_BUS_SPEED_SEGMENTS__, _globalBusSpeedLayerGroup, '', drawnStretchMap);
   }
 
   const routePool = (typeof groupedRoutes !== 'undefined' && Array.isArray(groupedRoutes) && groupedRoutes.length)
@@ -3285,26 +3366,34 @@ function renderGlobalBusSpeedOverlay(targetMap = window.browseMapInstance) {
   if (!bounds || typeof bounds.contains !== 'function') return;
   const tdDetectors = Array.isArray(window.__LIVE_TRAFFIC_DETECTORS__) ? window.__LIVE_TRAFFIC_DETECTORS__ : [];
   const tdCameras = Array.isArray(window.__LIVE_TRAFFIC_CAMERAS__) ? window.__LIVE_TRAFFIC_CAMERAS__ : [];
+  const tdSpeedGeo = window.__LIVE_TRAFFIC_SPEED_GEOJSON__ || window.__LAST_GLOBAL_SPEED_GEOJSON__ || null;
 
-  // Multi-operator selection (KMB, LWB, NLB for South Lantau Rd / Mui Wo / Pui O, CTB for HKI, GMB)
+  // Select ALL distinct unmonitored bus corridors in the current viewport (KMB, LWB, CTB, NLB, GMB, MTRB)
   const picked = (typeof window.selectGlobalBusSpeedRoutes === 'function')
-    ? window.selectGlobalBusSpeedRoutes(routePool, bounds, (typeof getStopsForGroup === 'function' ? getStopsForGroup : null), 7)
+    ? window.selectGlobalBusSpeedRoutes(
+        routePool,
+        bounds,
+        (typeof getStopsForGroup === 'function' ? getStopsForGroup : null),
+        40,
+        tdDetectors,
+        tdSpeedGeo
+      )
     : [];
   if (!picked.length) return;
 
   const myToken = ++_globalBusSpeedFetchToken;
-  Promise.all(picked.map(async ({ group, stops, operator, inBoundsIndices }) => {
+  const processRouteItem = async ({ group, stops, operator, inBoundsIndices }) => {
     const rId = group.routeIds?.[0] || '';
     const parts = rId.split('_');
     const svcType = parts[3] || group.serviceType || '1';
     const dirChar = parts[2] || (String(group.bound || '').toUpperCase().startsWith('I') ? 'I' : 'O');
     const cacheKey = `${group.company || ''}|${group.routeNo || ''}|${dirChar}|${svcType}`;
     const cached = window.__GLOBAL_BUS_SPEED_CACHE__?.get(cacheKey);
-    const etaByStopIdx = (cached && (Date.now() - cached.ts) < 45000) ? cached.etaByStopIdx : null;
+    const cachedEta = (cached && (Date.now() - cached.ts) < 45000) ? cached.etaByStopIdx : null;
 
     const [etaRes, snappedRoad] = await Promise.all([
       (async () => {
-        if (etaByStopIdx) return etaByStopIdx;
+        if (cachedEta) return cachedEta;
         if (operator === 'KMB' && typeof fetchKmbRouteBulkEta === 'function') {
           try {
             const bulkMap = await fetchKmbRouteBulkEta(parts[1] || group.routeNo, svcType, false);
@@ -3317,28 +3406,37 @@ function renderGlobalBusSpeedOverlay(targetMap = window.browseMapInstance) {
             return null;
           }
         }
-        // Live stop-by-stop sampling for NLB (South Lantau Rd / Mui Wo / Pui O), CTB (HK Island), and GMB
+        // Live stop sampling across the full visible corridor for NLB (South Lantau / Mui Wo / Pui O), CTB, GMB, MTRB
         if (typeof fetchEtaRaw === 'function') {
           try {
             const vis = Array.isArray(inBoundsIndices) && inBoundsIndices.length ? inBoundsIndices : [0, 1, 2, 3, 4, 5];
             const firstVis = Math.max(0, vis[0] - 1);
             const lastVis = Math.min(stops.length - 1, vis[vis.length - 1] + 1);
+            const spanLen = Math.max(1, lastVis - firstVis + 1);
+            const stride = spanLen > 24 ? 3 : (spanLen > 12 ? 2 : 1);
             const sampleIdxs = [];
-            for (let idx = firstVis; idx <= lastVis && sampleIdxs.length < 9; idx++) {
+            for (let idx = firstVis; idx <= lastVis && sampleIdxs.length < 13; idx += stride) {
               sampleIdxs.push(idx);
             }
+            if (sampleIdxs.length && sampleIdxs[sampleIdxs.length - 1] !== lastVis && sampleIdxs.length < 14) {
+              sampleIdxs.push(lastVis);
+            }
             const nowMs = Date.now();
-            const results = await Promise.all(sampleIdxs.map(async (idx) => {
-              const s = stops[idx];
-              const stKey = s?.stopKey || (typeof getGlobalStopKey === 'function' ? getGlobalStopKey(s) : '');
-              if (!stKey) return [idx, []];
-              const arr = await fetchEtaRaw(group, stKey, true, nowMs, idx);
-              return [idx, Array.isArray(arr) ? arr : []];
-            }));
             const mapOut = {};
-            results.forEach(([idx, arr]) => {
-              if (Array.isArray(arr) && arr.length) mapOut[idx] = arr;
-            });
+            for (let c = 0; c < sampleIdxs.length; c += 4) {
+              if (myToken !== _globalBusSpeedFetchToken) return null;
+              const chunk = sampleIdxs.slice(c, c + 4);
+              const results = await Promise.all(chunk.map(async (idx) => {
+                const s = stops[idx];
+                const stKey = s?.stopKey || (typeof getGlobalStopKey === 'function' ? getGlobalStopKey(s) : '');
+                if (!stKey) return [idx, []];
+                const arr = await fetchEtaRaw(group, stKey, true, nowMs, idx);
+                return [idx, Array.isArray(arr) ? arr : []];
+              }));
+              results.forEach(([idx, arr]) => {
+                if (Array.isArray(arr) && arr.length) mapOut[idx] = arr;
+              });
+            }
             if (Object.keys(mapOut).length >= 2) {
               window.__GLOBAL_BUS_SPEED_CACHE__?.set(cacheKey, { ts: Date.now(), etaByStopIdx: mapOut });
               return mapOut;
@@ -3349,7 +3447,7 @@ function renderGlobalBusSpeedOverlay(targetMap = window.browseMapInstance) {
       })(),
       (async () => {
         const cachedPoly = getCachedBusRoutePolyline(group, stops);
-        if (Array.isArray(cachedPoly) && cachedPoly.length >= stops.length + 2) return cachedPoly;
+        if (Array.isArray(cachedPoly) && cachedPoly.length >= 3) return cachedPoly;
         if (typeof fetchRoadSnappedBusPolyline === 'function') {
           try {
             const poly = await fetchRoadSnappedBusPolyline(group, stops);
@@ -3364,50 +3462,63 @@ function renderGlobalBusSpeedOverlay(targetMap = window.browseMapInstance) {
     const segs = window.inferBusApiSegmentSpeeds(stops, etaRes, snappedRoad, {
       tdDetectors,
       tdCameras,
+      tdSpeedGeoJson: tdSpeedGeo,
       routeNo: group.routeNo || '',
       company: group.company || '',
+      allowSparseBridge: operator !== 'KMB',
       nowMs: Date.now()
     });
     return { routeLabel: `${group.company || ''} ${group.routeNo}`.trim(), segs };
-  })).then((batches) => {
-    if (myToken !== _globalBusSpeedFetchToken || !window.busSpeedLayerEnabled || !_globalBusSpeedLayerGroup) return;
-    batches.forEach((b) => {
-      if (b && Array.isArray(b.segs) && b.segs.length) {
-        _drawBusSpeedSegmentsIntoLayer(b.segs, _globalBusSpeedLayerGroup, b.routeLabel);
-      }
-    });
-  }).catch(() => {});
+  };
+
+  // Paint routes progressively in clean batches of 5 (cached routes painted first) so the map
+  // populates rapidly without thundering-herd API spikes or stalling on slow corridors.
+  (async () => {
+    const cachedItems = [];
+    const liveItems = [];
+    for (let i = 0; i < picked.length; i++) {
+      const item = picked[i];
+      const g = item.group;
+      const rId = g.routeIds?.[0] || '';
+      const parts = rId.split('_');
+      const svcType = parts[3] || g.serviceType || '1';
+      const dirChar = parts[2] || (String(g.bound || '').toUpperCase().startsWith('I') ? 'I' : 'O');
+      const cacheKey = `${g.company || ''}|${g.routeNo || ''}|${dirChar}|${svcType}`;
+      const hasEta = Boolean(window.__GLOBAL_BUS_SPEED_CACHE__?.get(cacheKey)?.etaByStopIdx);
+      const hasPoly = Boolean(getCachedBusRoutePolyline(g, item.stops)?.length >= 3);
+      if (hasEta && hasPoly) cachedItems.push(item);
+      else liveItems.push(item);
+    }
+
+    const ordered = [...cachedItems, ...liveItems];
+    const BATCH_SIZE = 5;
+    for (let start = 0; start < ordered.length; start += BATCH_SIZE) {
+      if (myToken !== _globalBusSpeedFetchToken || !window.globalTrafficLayerEnabled || !_globalBusSpeedLayerGroup) return;
+      const slice = ordered.slice(start, start + BATCH_SIZE);
+      const batchRes = await Promise.all(slice.map((item) => processRouteItem(item).catch(() => null)));
+      if (myToken !== _globalBusSpeedFetchToken || !window.globalTrafficLayerEnabled || !_globalBusSpeedLayerGroup) return;
+      batchRes.forEach((b) => {
+        if (b && Array.isArray(b.segs) && b.segs.length) {
+          _drawBusSpeedSegmentsIntoLayer(b.segs, _globalBusSpeedLayerGroup, b.routeLabel, drawnStretchMap);
+        }
+      });
+    }
+  })().catch(() => {});
 }
 
+// Compatibility delegate: Bus Speed is merged into the single unified Traffic toggle
 function toggleBusSpeedLayer(forceState = null) {
-  if (typeof triggerHaptic === 'function') triggerHaptic(10);
-  window.busSpeedLayerEnabled = (typeof forceState === 'boolean') ? forceState : !window.busSpeedLayerEnabled;
-  if (typeof window.syncTrafficToggleButtonsUI === 'function') {
-    window.syncTrafficToggleButtonsUI();
-  }
-  const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
-
-  if (window.browseMapInstance) {
-    if (window.busSpeedLayerEnabled) renderGlobalBusSpeedOverlay(window.browseMapInstance);
-    else clearGlobalBusSpeedOverlay(window.browseMapInstance);
-  }
-  if (window.mapInstance && currentDetailCorridorMeta?.isBusRoute) {
-    if (window.busSpeedLayerEnabled && typeof detailRouteGroup !== 'undefined' && detailRouteGroup) {
-      const stops = _getDetailStopsForGroup(detailRouteGroup);
-      syncDetailRouteBusSpeedSegments(detailRouteGroup, stops);
-    }
-    _refreshDetailBusSpeedPolylineIfActive();
-  }
-  if (typeof showToast === 'function') {
-    showToast(window.busSpeedLayerEnabled
-      ? (isZh ? '🚌 已開啟巴士實時車速圖層（填補運輸署無測速路段）' : '🚌 Live Bus Speed Layer ON (fills non-TD corridor gaps)')
-      : (isZh ? '🚌 已關閉巴士車速圖層' : '🚌 Live Bus Speed Layer OFF'));
+  if (typeof currentView !== 'undefined' && currentView === 'map') {
+    toggleGlobalTrafficLayer(forceState);
+  } else {
+    toggleTrafficLayerOverlay(forceState);
   }
 }
 
 function toggleGlobalTrafficLayer(forceState = null) {
   if (typeof triggerHaptic === 'function') triggerHaptic(10);
   window.globalTrafficLayerEnabled = (typeof forceState === 'boolean') ? forceState : !window.globalTrafficLayerEnabled;
+  window.busSpeedLayerEnabled = window.globalTrafficLayerEnabled;
   if (typeof window.syncTrafficToggleButtonsUI === 'function') {
     window.syncTrafficToggleButtonsUI();
   }
@@ -3417,16 +3528,18 @@ function toggleGlobalTrafficLayer(forceState = null) {
     if (window.browseMapInstance) {
       clearAllActiveBrowseMarkers();
       renderGlobalTrafficDashboard(window.browseMapInstance);
+      renderGlobalBusSpeedOverlay(window.browseMapInstance);
     }
     // Refresh complete unfiltered TD Speed Map & cameras from Worker cache
     if (typeof syncEdgeTrafficCorridors === 'function') {
       syncEdgeTrafficCorridors();
     }
     if (typeof showToast === 'function') {
-      showToast(isZh ? '🚦 全港實時路況已開啟（放大至街道即可查看鏡頭）' : '🚦 City-Wide Live Traffic ON (Zoom in to view cameras)');
+      showToast(isZh ? '🚦 全港實時路況及巴士車速已開啟（放大可查看鏡頭）' : '🚦 City-Wide Live Traffic & Bus Speed ON (Zoom in for cameras)');
     }
   } else {
     clearGlobalTrafficDashboard(window.browseMapInstance);
+    clearGlobalBusSpeedOverlay(window.browseMapInstance);
     if (window.browseMapInstance) {
       renderBrowseMapVisiblePins();
     }
@@ -3442,23 +3555,7 @@ function attachGlobalTrafficControlToBrowseMap(mapInst) {
     options: { position: 'bottomright' },
     onAdd: function() {
       const container = L.DomUtil.create('div', 'leaflet-control-global-traffic');
-      if (container && container.style) {
-        container.style.display = 'flex';
-        container.style.flexDirection = 'column';
-        container.style.gap = '6px';
-        container.style.alignItems = 'flex-end';
-      }
-
       const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
-
-      const busBtn = L.DomUtil.create('button', 'map-traffic-chip-btn map-bus-speed-toggle global-bus-speed-btn', container);
-      busBtn.type = 'button';
-      busBtn.id = 'browseMapBusSpeedBtn';
-      busBtn.innerText = window.busSpeedLayerEnabled
-        ? (isZh ? '🚌 巴士車速 開' : '🚌 Bus Speed ON')
-        : (isZh ? '🚌 巴士車速' : '🚌 Bus Speed');
-      busBtn.classList.toggle('active', Boolean(window.busSpeedLayerEnabled));
-      busBtn.setAttribute('aria-pressed', window.busSpeedLayerEnabled ? 'true' : 'false');
 
       const btn = L.DomUtil.create('button', 'map-traffic-chip-btn map-traffic-toggle global-traffic-btn', container);
       btn.type = 'button';
@@ -3471,10 +3568,6 @@ function attachGlobalTrafficControlToBrowseMap(mapInst) {
 
       L.DomEvent.disableClickPropagation(container);
       L.DomEvent.disableScrollPropagation(container);
-      L.DomEvent.on(busBtn, 'click', (e) => {
-        L.DomEvent.preventDefault(e);
-        toggleBusSpeedLayer();
-      });
       L.DomEvent.on(btn, 'click', (e) => {
         L.DomEvent.preventDefault(e);
         toggleGlobalTrafficLayer();
@@ -3524,10 +3617,10 @@ function initAndRenderBrowseMap() {
       _globalTrafficMoveTimer = setTimeout(() => {
         if (!window.browseMapInstance) return;
         const z = window.browseMapInstance.getZoom ? (window.browseMapInstance.getZoom() || 13) : 13;
-        if (window.globalTrafficLayerEnabled && z >= GLOBAL_CAMERA_MIN_ZOOM) {
-          renderGlobalTrafficDashboard(window.browseMapInstance);
-        }
-        if (window.busSpeedLayerEnabled) {
+        if (window.globalTrafficLayerEnabled) {
+          if (z >= GLOBAL_CAMERA_MIN_ZOOM) {
+            renderGlobalTrafficDashboard(window.browseMapInstance);
+          }
           renderGlobalBusSpeedOverlay(window.browseMapInstance);
         }
       }, 140);
@@ -3535,15 +3628,17 @@ function initAndRenderBrowseMap() {
     window.browseMapInstance.on('zoomend', () => {
       if (window.globalTrafficLayerEnabled) {
         renderGlobalTrafficDashboard(window.browseMapInstance);
-      }
-      if (window.busSpeedLayerEnabled) {
         renderGlobalBusSpeedOverlay(window.browseMapInstance);
       }
     });
     attachMapResizeObserver('browse-map-canvas', window.browseMapInstance, () => {
-      if (window.globalTrafficLayerEnabled) renderGlobalTrafficDashboard(window.browseMapInstance);
-      else renderBrowseMapVisiblePins();
-      if (window.busSpeedLayerEnabled) renderGlobalBusSpeedOverlay(window.browseMapInstance);
+      if (window.globalTrafficLayerEnabled) {
+        clearAllActiveBrowseMarkers();
+        renderGlobalTrafficDashboard(window.browseMapInstance);
+        renderGlobalBusSpeedOverlay(window.browseMapInstance);
+      } else {
+        renderBrowseMapVisiblePins();
+      }
     });
 
     window.browseMapInstance.on('contextmenu', (e) => {
@@ -3584,7 +3679,9 @@ function initAndRenderBrowseMap() {
   updateUserMarkers();
   if (!browseMapStopGrid.size && allStops.length) rebuildBrowseMapSpatialGrid();
   if (window.globalTrafficLayerEnabled) {
+    clearAllActiveBrowseMarkers();
     renderGlobalTrafficDashboard(window.browseMapInstance);
+    renderGlobalBusSpeedOverlay(window.browseMapInstance);
   } else {
     renderBrowseMapVisiblePins();
   }
@@ -3639,7 +3736,8 @@ function createBrowseMapStopMarker(s, displayLat = null, displayLon = null) {
 function renderBrowseMapVisiblePins() {
   if (!window.browseMapInstance) return;
   updateUserMarkers();
-  // De-cluttering Logic: while Global Traffic Dashboard is ON, suppress all bus/rail stop markers
+  // De-cluttering Logic: while the unified Global Traffic overlay is ON,
+  // suppress hollow white bus/rail stop circles so solid TD and dashed Bus-API road lines render seamlessly
   if (window.globalTrafficLayerEnabled) {
     clearAllActiveBrowseMarkers();
     return;

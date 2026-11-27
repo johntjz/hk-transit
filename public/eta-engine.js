@@ -9,8 +9,8 @@
 // ============================================================================
 // PART 1: EXECUTION ENGINE (Modularized across domain scripts)
 // ============================================================================
-window.__FIXED_JS_BUILD_TS__ = '2026-11-27 20:00 HKT';
-const APP_VERSION = '2026-11-27 20:00 HKT';
+window.__FIXED_JS_BUILD_TS__ = '2026-11-27 21:00 HKT';
+const APP_VERSION = '2026-11-27 21:00 HKT';
 const HK_UNIFIED_API_BASE = '/api/worker';
 let isHydratingInitialData = true;
 window.isHydratingInitialData = true;
@@ -2008,7 +2008,7 @@ function generateExpandedETAsHtml(arrs, group, stopKey, stopIdx) {
   const activeBusSegs = (window.trafficLayerEnabled !== false && Array.isArray(window.__DETAIL_BUS_SPEED_SEGMENTS__))
     ? window.__DETAIL_BUS_SPEED_SEGMENTS__
     : [];
-  if ((!group?.mode || group?.mode === 'BUS') && (hasLiveTdDets || activeBusSegs.length > 0) && typeof getDirectionalRoadSummary === 'function') {
+  if ((!group?.mode || group?.mode === 'BUS') && (hasLiveTdDets || activeBusSegs.length > 0 || (window.trafficLayerEnabled !== false && Array.isArray(stops) && stops.length >= 2 && typeof window.buildStopByStopSegmentTraffic === 'function')) && typeof getDirectionalRoadSummary === 'function') {
     const roadPoly = (typeof window.getCurrentDetailRoadPolyline === 'function' && group?.key)
       ? (window.getCurrentDetailRoadPolyline(group.key) || window.__ROUTE_GEOM_CACHE__?.[group.key] || null)
       : ((window.__ROUTE_GEOM_CACHE__ && group?.key) ? window.__ROUTE_GEOM_CACHE__[group.key] : null);
@@ -2070,6 +2070,10 @@ function generateExpandedETAsHtml(arrs, group, stopKey, stopIdx) {
 
     const _effSegTier = (seg) => {
       if (!seg) return 'NONE';
+      if (seg.source === 'BUS_EST' || seg.isSyntheticFallback) {
+        const spd = Number(seg.speedKmh);
+        return (Number.isFinite(spd) && Math.abs(spd) >= 18) ? 'SMOOTH' : 'MODERATE';
+      }
       if (seg.source === 'BUS_API') {
         if (typeof window.capBusApiTierHardcode === 'function') {
           return window.capBusApiTierHardcode(seg.tier, seg.speedKmh, {
@@ -2095,7 +2099,7 @@ function generateExpandedETAsHtml(arrs, group, stopKey, stopIdx) {
     if (journeySegs.length > 0) {
       const endStopName = stops[journeyEndIdx] ? _cleanLbl(getStopName(stops[journeyEndIdx])) : (isZh ? '總站' : 'Terminus');
       const segButtonsHtml = journeySegs.map((seg) => {
-        const isMonitored = seg.source === 'TD' || seg.source === 'BUS_API';
+        const isMonitored = seg.source === 'TD' || seg.source === 'BUS_API' || seg.source === 'BUS_EST';
         const effTier = isMonitored ? _effSegTier(seg) : 'NONE';
         const legTone = !isMonitored
           ? 'none'
@@ -2110,9 +2114,11 @@ function generateExpandedETAsHtml(arrs, group, stopKey, stopIdx) {
         const absLegSpd = Number.isFinite(Number(seg.speedKmh)) && Number(seg.speedKmh) > 0
           ? Math.abs(Math.round(Number(seg.speedKmh)))
           : null;
-        const busTipPart = (seg.source === 'BUS_API' && absLegSpd !== null && !seg.isScheduledFallback)
-          ? (isZh ? ` · 巴士推算 • ${absLegSpd} km/h` : ` · Bus API • ${absLegSpd} km/h`)
-          : '';
+        const busTipPart = (seg.source === 'BUS_EST' && absLegSpd !== null)
+          ? (isZh ? ` · 路況估算 • ${absLegSpd} km/h` : ` · Bus Est. • ${absLegSpd} km/h`)
+          : ((seg.source === 'BUS_API' && absLegSpd !== null && !seg.isScheduledFallback)
+            ? (isZh ? ` · 巴士推算 • ${absLegSpd} km/h` : ` · Bus API • ${absLegSpd} km/h`)
+            : '');
         const legTip = `#${seg.fromSeq} ${_cleanLbl(rawFrom)} → #${seg.toSeq} ${_cleanLbl(rawTo)} · ${qualLbl}${busTipPart}`;
         const flexWeight = Math.max(1, Math.min(40, Math.round(Math.abs(Number(seg.roadDistKm) || 0.35) * 10)));
         return `<button type="button" class="traffic-journey-seg tone-${legTone}" data-from-idx="${seg.fromIdx}" data-seg-tier="${escapeHtml(effTier)}" style="flex:${flexWeight} 1 0;" title="${escapeHtml(legTip)}" aria-label="${escapeHtml(legTip)}" onclick="event.stopPropagation(); if(typeof focusJourneySegmentOnDetailMap==='function'){focusJourneySegmentOnDetailMap(${seg.fromIdx});}else if(typeof openStopSegmentTrafficModal==='function'){openStopSegmentTrafficModal(${seg.fromIdx});}"></button>`;
@@ -2129,7 +2135,7 @@ function generateExpandedETAsHtml(arrs, group, stopKey, stopIdx) {
       const oppDet = roadSum.oppDet;
       const segNote = roadSum.betweenLabel || '';
       const breakdownSegs = Array.isArray(roadSum.stopBreakdownSegments)
-        ? roadSum.stopBreakdownSegments.filter(s => s && (s.source === 'TD' || s.source === 'BUS_API'))
+        ? roadSum.stopBreakdownSegments.filter(s => s && (s.source === 'TD' || s.source === 'BUS_API' || s.source === 'BUS_EST'))
         : [];
       const hasInlineBreakdown = breakdownSegs.length > 0;
       const breakdownId = `traffic-inline-breakdown-${stopIdx}`;
@@ -2195,9 +2201,13 @@ function generateExpandedETAsHtml(arrs, group, stopKey, stopIdx) {
             ? (seg.roundaboutBottleneck
               ? (isZh ? '運輸署測速 · 迴旋處/交匯處瓶頸 (TD Detector)' : 'TD Detector · Roundabout/Interchange')
               : (isZh ? '運輸署測速 (TD Detector)' : 'TD Detector'))
-            : (absSpd !== null
-              ? (isZh ? `巴士推算 • ${absSpd} km/h` : `Bus API • ${absSpd} km/h`)
-              : (isZh ? '巴士實時推算 (Bus API inferred)' : 'Bus API inferred'));
+            : ((seg.source === 'BUS_EST' || seg.isSyntheticFallback)
+              ? (absSpd !== null
+                ? (isZh ? `路況估算 • ${absSpd} km/h` : `Bus Est. • ${absSpd} km/h`)
+                : (isZh ? '道路類型估算 (Bus Est.)' : 'Bus Est.'))
+              : (absSpd !== null
+                ? (isZh ? `巴士推算 • ${absSpd} km/h` : `Bus API • ${absSpd} km/h`)
+                : (isZh ? '巴士實時推算 (Bus API inferred)' : 'Bus API inferred')));
           return `<div class="traffic-inline-item" data-seg-source="${escapeHtml(seg.source)}" data-seg-tier="${escapeHtml(effTier)}" style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;padding:5px 0;border-bottom:1px solid rgba(148,163,184,0.18);">
             <span style="min-width:0;flex:1;line-height:1.3;">${sDot} <strong>${escapeHtml(pairLbl)}</strong><br><span class="traffic-inline-src" style="font-size:0.68rem;color:var(--text-sub);">${escapeHtml(srcLabel)}</span></span>
             <span style="white-space:nowrap;font-weight:700;font-variant-numeric:tabular-nums;">${escapeHtml(spdVal)}</span>

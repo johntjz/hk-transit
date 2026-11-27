@@ -914,6 +914,8 @@ function drawRouteOnMap(group, activeStopIdx = 0) {
   if (currentDetailCorridorMeta?.groupKey !== (group?.key || '')) {
     window.__FOCUSED_TRAFFIC_DET_ID__ = '';
     window.__DETAIL_BUS_SPEED_SEGMENTS__ = [];
+    window.__DETAIL_STOP_SEGMENTS__ = [];
+    window.__LAST_DETAIL_STOP_SEGS_SIG__ = '';
   }
   const hasHighwaySpan = isBusRoute && _stopsHaveHighwaySpan(stops);
   const exitStopIdx = _resolveActiveExitStopIdx(stops, activeStopIdx);

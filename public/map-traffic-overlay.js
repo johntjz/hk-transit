@@ -711,6 +711,9 @@ function renderTrafficOverlayOnMap(targetMap, forceRedraw = false) {
 
     const MAX_ROUTE_CAM_DIST_KM = 0.12;
     const MAX_ROUTE_CAM_BEARING_DIFF = 55;
+    const RAMP_CAM_RE = /\b(?:slip\s*r(?:oa)?d|off[\s-]*ramp|on[\s-]*ramp|ramp|link\s*r(?:oa)?d)\b|支路|引道|連接路/i;
+    const activeRouteNo = currentDetailCorridorMeta?.routeNo || (typeof detailRouteGroup !== 'undefined' ? (detailRouteGroup?.routeNo || '') : '');
+    const activeRouteStops = (typeof detailRouteGroup !== 'undefined' && detailRouteGroup) ? _getDetailStopsForGroup(detailRouteGroup) : [];
     const camBounds = targetMap.getBounds ? targetMap.getBounds().pad(0.18) : null;
     const matchedRouteCams = [];
     for (let cIdx = 0; cIdx < routeCamPool.length; cIdx++) {
@@ -727,15 +730,34 @@ function renderTrafficOverlayOnMap(targetMap, forceRedraw = false) {
         /\b(?:northbound|southbound|eastbound|westbound|nb|sb|eb|wb)\b|北行|南行|東行|西行/i.test(String(cam.desc || ''))
       );
       const bearingDeg = resolveCameraBearingDeg(cam, detectors, forwardCamCoords);
+      const angDiff = (Number.isFinite(proj.segBrg) && Number.isFinite(bearingDeg))
+        ? _mapAngDiffDeg(bearingDeg, proj.segBrg)
+        : 0;
       if (hasExplicitDir && Number.isFinite(proj.segBrg) && Number.isFinite(bearingDeg)) {
-        if (_mapAngDiffDeg(bearingDeg, proj.segBrg) > MAX_ROUTE_CAM_BEARING_DIFF) continue;
+        if (angDiff > MAX_ROUTE_CAM_BEARING_DIFF) continue;
       }
+
+      const isDividedHwyCam = (typeof window.isDividedHighwaySnapRoadHardcode === 'function')
+        ? window.isDividedHighwaySnapRoadHardcode(cam.desc || '', cam.descTc || '', cam.key || '')
+        : false;
+      const camSpeedSnapKm = isDividedHwyCam ? 0.085 : 0.045;
+      const isRampCam = RAMP_CAM_RE.test(`${cam.desc || ''} ${cam.descTc || ''}`);
+      const allowSpeedAttach = Boolean(!isRampCam && proj.distKm <= camSpeedSnapKm && (!hasExplicitDir || angDiff <= 45));
+      const matchedDet = (allowSpeedAttach && typeof window.findNearestMatchingDetectorForCamera === 'function')
+        ? window.findNearestMatchingDetectorForCamera(
+            { ...cam, bearingDeg },
+            detectors,
+            { routeCoords: forwardCamCoords, routeNo: activeRouteNo, stops: activeRouteStops }
+          )
+        : null;
 
       matchedRouteCams.push({
         cam,
         distKm: proj.distKm,
         alongKm: proj.alongKm,
-        bearingDeg
+        bearingDeg,
+        matchedDet,
+        allowSpeedAttach
       });
     }
 
@@ -743,7 +765,7 @@ function renderTrafficOverlayOnMap(targetMap, forceRedraw = false) {
     const placedRouteCamPts = [];
     const MIN_ROUTE_CAM_PX = zoom >= 16 ? 20 : 28;
     for (let i = 0; i < matchedRouteCams.length; i++) {
-      const { cam, alongKm, bearingDeg } = matchedRouteCams[i];
+      const { cam, alongKm, bearingDeg, matchedDet, allowSpeedAttach } = matchedRouteCams[i];
       const cLat = Number(cam.lat), cLon = Number(cam.lon);
       const ptPx = projectDetectorToScreenPx(targetMap, cLat, cLon, zoom);
       let tooCloseCam = false;
@@ -765,9 +787,20 @@ function renderTrafficOverlayOnMap(targetMap, forceRedraw = false) {
         opacity: camOpacity,
         zIndexOffset: alongKm <= 8.0 ? 245 : 220
       }).addTo(layerGroup);
+      const validDetSpd = (allowSpeedAttach && matchedDet && Number.isFinite(Number(matchedDet.spd)) && Number(matchedDet.spd) > 0)
+        ? Math.abs(Math.round(Number(matchedDet.spd)))
+        : null;
       if (typeof camMarker.bindTooltip === 'function') {
         const distLbl = alongKm < 1 ? `${Math.round(alongKm * 1000)}m` : `${alongKm.toFixed(1)}km`;
-        camMarker.bindTooltip(`📷 ${cleanDesc}${compassTxt ? ` (${compassTxt})` : ''} · ${distLbl}`, {
+        let spdPart = '';
+        if (validDetSpd !== null) {
+          const detOcc = Math.abs(Number(matchedDet.occ) || 0);
+          const flowTxt = (validDetSpd < 15 || detOcc >= 75)
+            ? (isZh ? '擠塞' : 'Jammed')
+            : (validDetSpd < 40 ? (isZh ? '緩慢' : 'Slow') : (isZh ? '暢通' : 'Clear'));
+          spdPart = ` · ${flowTxt} • ${validDetSpd} km/h`;
+        }
+        camMarker.bindTooltip(`📷 ${cleanDesc}${compassTxt ? ` (${compassTxt})` : ''}${spdPart} · ${distLbl}`, {
           direction: 'top',
           offset: [0, -10],
           className: 'kmb-map-stop-label'
@@ -777,7 +810,12 @@ function renderTrafficOverlayOnMap(targetMap, forceRedraw = false) {
         camMarker.on('click', (ev) => {
           if (ev?.originalEvent?.stopPropagation) ev.originalEvent.stopPropagation();
           if (typeof window.openTrafficCameraModal === 'function') {
-            window.openTrafficCameraModal({ ...cam, bearingDeg });
+            window.openTrafficCameraModal({
+              ...cam,
+              bearingDeg,
+              suppressDetectorSpeed: !allowSpeedAttach || !matchedDet,
+              matchedDetId: matchedDet?.id || ''
+            });
           }
         });
       }
@@ -1149,11 +1187,33 @@ function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) 
     const isRoadSnapped = Boolean(currentDetailCorridorMeta?.isRoadSnapped);
     const hasHighwaySpan = Boolean(currentDetailCorridorMeta?.hasHighwaySpan || _stopsHaveHighwaySpan(stops));
     const activeRouteNo = currentDetailCorridorMeta?.routeNo || (typeof detailRouteGroup !== 'undefined' ? (detailRouteGroup?.routeNo || '') : '');
+    const detailStopSegs = Array.isArray(window.__DETAIL_STOP_SEGMENTS__) ? window.__DETAIL_STOP_SEGMENTS__ : [];
+    const detailBusSegs = Array.isArray(window.__DETAIL_BUS_SPEED_SEGMENTS__) ? window.__DETAIL_BUS_SPEED_SEGMENTS__ : [];
+    let effectiveStopSegs = [];
+    if (detailStopSegs.length && (!Array.isArray(stops) || stops.length < 2 || detailStopSegs.length === stops.length - 1)) {
+      effectiveStopSegs = detailStopSegs;
+    } else if (Array.isArray(stops) && stops.length >= 2 && typeof window.buildStopByStopSegmentTraffic === 'function') {
+      effectiveStopSegs = window.buildStopByStopSegmentTraffic(
+        stops,
+        coords,
+        liveDetectors,
+        Array.isArray(window.__LIVE_TRAFFIC_CAMERAS__) ? window.__LIVE_TRAFFIC_CAMERAS__ : [],
+        detailBusSegs,
+        {
+          tdSpeedGeoJson: window.__LIVE_TRAFFIC_SPEED_GEOJSON__ || null,
+          routeNo: activeRouteNo
+        }
+      );
+    } else if (detailBusSegs.length) {
+      effectiveStopSegs = detailBusSegs;
+    }
+
     const speedGeoJson = window.buildRouteSpeedGeoJson(coords, liveDetectors, {
       isRoadSnapped,
       hasHighwaySpan,
       routeNo: activeRouteNo,
       stops: Array.isArray(stops) ? stops : [],
+      stopSegments: effectiveStopSegs,
       noDataColor: unmonitoredTrafficColor,
       maxMicroStepKm: 0.15
     });
@@ -1161,7 +1221,7 @@ function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) 
 
     if (speedGeoJson && Array.isArray(speedGeoJson.features) && speedGeoJson.features.length > 0) {
       // High-contrast dark casing (#0f172a, weight 7, opacity 0.85, _zRank: 0) strictly underneath route segments
-      // so solid vivid route / TD speed top strokes (_zRank: 1) always render cleanly on top of the casing.
+      // so solid vivid route / TD / BUS_API / BUS_EST speed top strokes (_zRank: 1) always render cleanly on top of the casing.
       speedGeoJson.features.forEach((feat) => {
         const gCoords = feat?.geometry?.coordinates;
         if (!Array.isArray(gCoords) || gCoords.length < 2) return;
@@ -1185,7 +1245,7 @@ function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) 
           const p = feat?.properties || {};
           const hasLiveSpeed = p.hasSpeedData !== false && p.speedKmh !== null && p.speedKmh !== undefined && Number.isFinite(Number(p.speedKmh));
           if (!hasLiveSpeed) {
-            // Neutral Slate/Blue (#3b82f6) on unmonitored segments when Traffic Overlay is ON — NEVER Red!
+            // Neutral Slate/Blue (#3b82f6) strictly as a last-resort fallback when neither TD nor BUS_API/BUS_EST exists
             return {
               color: unmonitoredTrafficColor,
               weight: 4,
@@ -1197,11 +1257,11 @@ function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) 
               _zRank: 1
             };
           }
-          // TD ground-truth hardware sensor speed segment: solid, crisp, high-opacity polyline
+          // Solid vivid speed stroke for TD, BUS_API, and BUS_EST segments
           return {
             color: p.color || unmonitoredTrafficColor,
             weight: 4.5,
-            opacity: 0.92,
+            opacity: p.source === 'BUS_EST' ? 0.88 : 0.92,
             dashArray: null,
             smoothFactor: 1.5,
             lineJoin: 'round',
@@ -1222,16 +1282,38 @@ function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) 
             }
             return;
           }
-          if (!p.detectorId) return;
-          const cleanName = sanitizeBottleneckLabel(isZh ? (p.roadTc || p.roadEn) : (p.roadEn || p.roadTc)) || (isZh ? '實時路況' : 'Live Road');
           const absSpd = Math.abs(Math.round(Number(p.speedKmh)));
-          const tdFlowTxt = p.tier === 'CONGESTED'
+          const flowTxt = p.tier === 'CONGESTED'
             ? (isZh ? '擠塞' : 'Jammed')
             : (p.tier === 'MODERATE'
               ? (isZh ? '緩慢' : 'Slow')
               : (isZh ? '暢通' : 'Clear'));
+          if (p.source === 'BUS_API' || p.source === 'BUS_EST') {
+            const rawFrom = isZh ? (p.fromNameTc || p.fromNameEn) : (p.fromNameEn || p.fromNameTc);
+            const rawTo = isZh ? (p.toNameTc || p.toNameEn) : (p.toNameEn || p.toNameTc);
+            const fromNm = sanitizeBottleneckLabel(rawFrom || (p.fromSeq ? `Stop ${p.fromSeq}` : ''));
+            const toNm = sanitizeBottleneckLabel(rawTo || (p.toSeq ? `Stop ${p.toSeq}` : ''));
+            const spanPart = (fromNm && toNm) ? ` (${fromNm} → ${toNm})` : '';
+            const srcLabel = p.source === 'BUS_EST'
+              ? (isZh ? `🚌 路況估算 • ${absSpd} km/h` : `🚌 Bus Est. • ${absSpd} km/h`)
+              : (isZh ? `🚌 巴士推算 • ${absSpd} km/h` : `🚌 Bus API • ${absSpd} km/h`);
+            if (typeof lyr.bindTooltip === 'function') {
+              lyr.bindTooltip(`${srcLabel} · ${flowTxt}${spanPart}`, { sticky: true, className: 'kmb-map-stop-label' });
+            }
+            if (Number.isFinite(Number(p.fromIdx)) && typeof lyr.on === 'function') {
+              lyr.on('click', (ev) => {
+                if (ev?.originalEvent?.stopPropagation) ev.originalEvent.stopPropagation();
+                if (typeof window.openStopSegmentTrafficModal === 'function') {
+                  window.openStopSegmentTrafficModal(Number(p.fromIdx));
+                }
+              });
+            }
+            return;
+          }
+          if (!p.detectorId) return;
+          const cleanName = sanitizeBottleneckLabel(isZh ? (p.roadTc || p.roadEn) : (p.roadEn || p.roadTc)) || (isZh ? '實時路況' : 'Live Road');
           if (typeof lyr.bindTooltip === 'function') {
-            lyr.bindTooltip(`${cleanName} · ${tdFlowTxt} • ${absSpd} km/h`, { sticky: true, className: 'kmb-map-stop-label' });
+            lyr.bindTooltip(`${cleanName} · ${flowTxt} • ${absSpd} km/h`, { sticky: true, className: 'kmb-map-stop-label' });
           }
           if (typeof lyr.on === 'function') {
             lyr.on('click', (ev) => {
@@ -1246,7 +1328,12 @@ function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) 
         }
       });
       layers.push(geoLayer);
-      appendBusSpeedOverlay(speedGeoJson);
+      const mergedBusOnGeo = speedGeoJson.features.some(
+        (f) => f?.properties?.source === 'BUS_API' || f?.properties?.source === 'BUS_EST'
+      );
+      if (!mergedBusOnGeo) {
+        appendBusSpeedOverlay(speedGeoJson);
+      }
       return L.layerGroup(layers);
     }
   }
@@ -2037,8 +2124,14 @@ function renderGlobalTrafficDashboard(targetMap = window.browseMapInstance) {
       const m = L.marker([cLat, cLon], { icon: camIcon, zIndexOffset: 240 });
       const cleanDesc = sanitizeBottleneckLabel(cam.desc || cam.key);
       const orientTag = [boundBadge, compassTxt].filter(Boolean).join(' · ');
+      const matchedDetForTip = (typeof window.findNearestMatchingDetectorForCamera === 'function')
+        ? window.findNearestMatchingDetectorForCamera({ ...cam, bearingDeg }, detectors)
+        : null;
+      const tipSpdPart = (matchedDetForTip && Number.isFinite(Number(matchedDetForTip.spd)) && Number(matchedDetForTip.spd) > 0)
+        ? ` · ${Math.abs(Math.round(Number(matchedDetForTip.spd)))} km/h`
+        : '';
       if (typeof m.bindTooltip === 'function') {
-        m.bindTooltip(`📷 ${cleanDesc}${orientTag ? ` (${orientTag})` : ''}`, { direction: 'top', offset: [0, -10], className: 'kmb-map-stop-label' });
+        m.bindTooltip(`📷 ${cleanDesc}${orientTag ? ` (${orientTag})` : ''}${tipSpdPart}`, { direction: 'top', offset: [0, -10], className: 'kmb-map-stop-label' });
       }
       if (typeof m.on === 'function') {
         m.on('click', (ev) => {
@@ -2049,12 +2142,12 @@ function renderGlobalTrafficDashboard(targetMap = window.browseMapInstance) {
             if (clickedEl) clickedEl.classList.add('cam-selected');
           } catch (e) {}
           const matchedDet = (typeof window.findNearestMatchingDetectorForCamera === 'function')
-            ? window.findNearestMatchingDetectorForCamera(cam, detectors)
+            ? window.findNearestMatchingDetectorForCamera({ ...cam, bearingDeg }, detectors)
             : (detectors.find(x => x.id === cam.key || x.camKey === cam.key) || null);
           if (matchedDet && typeof window.openTrafficDecisionModal === 'function') {
             window.openTrafficDecisionModal(matchedDet.id, _findOppositeTrafficDetectorId(matchedDet), '', false, { ...cam, bearingDeg });
           } else if (typeof window.openTrafficCameraModal === 'function') {
-            window.openTrafficCameraModal({ ...cam, bearingDeg });
+            window.openTrafficCameraModal({ ...cam, bearingDeg, suppressDetectorSpeed: true });
           }
         });
       }
@@ -3078,15 +3171,10 @@ async function syncDetailRouteBusSpeedSegments(group, stops, preloadedEtaByStopI
     }
   }
 
-  if (!etaByStopIdx || !Object.keys(etaByStopIdx).length) {
-    window.__DETAIL_BUS_SPEED_SEGMENTS__ = [];
-    if (typeof window.refreshStopByStopTrafficUI === 'function') window.refreshStopByStopTrafficUI();
-    return [];
-  }
-
   const isNlb = coUpper === 'NLB' || rId.startsWith('NLB_');
   const isKmb = coUpper === 'KMB' || coUpper === 'LWB' || rId.startsWith('KMB_') || rId.startsWith('LWB_');
-  const segs = window.inferBusApiSegmentSpeeds(stops, etaByStopIdx, roadCoords, {
+  const effectiveEtaMap = (etaByStopIdx && Object.keys(etaByStopIdx).length) ? etaByStopIdx : {};
+  const segs = window.inferBusApiSegmentSpeeds(stops, effectiveEtaMap, roadCoords, {
     tdDetectors,
     tdCameras,
     tdSpeedGeoJson: window.__LIVE_TRAFFIC_SPEED_GEOJSON__ || null,
@@ -3095,17 +3183,18 @@ async function syncDetailRouteBusSpeedSegments(group, stops, preloadedEtaByStopI
     bound: dirChar,
     allowSparseBridge: !isKmb,
     allowNlbScheduledFallback: isNlb,
+    includeSyntheticFallback: true,
     nowMs: Date.now()
   });
   window.__DETAIL_BUS_SPEED_SEGMENTS__ = segs;
+  if (typeof window.refreshStopByStopTrafficUI === 'function') {
+    window.refreshStopByStopTrafficUI();
+  }
   if (window.trafficLayerEnabled && window.mapInstance && currentDetailCorridorMeta?.groupKey === (group?.key || '')) {
     _refreshDetailBusSpeedPolylineIfActive();
   }
   if (typeof window.onDetailBusSpeedReady === 'function') {
     window.onDetailBusSpeedReady(group?.key || '');
-  }
-  if (typeof window.refreshStopByStopTrafficUI === 'function') {
-    window.refreshStopByStopTrafficUI();
   }
   return segs;
 }

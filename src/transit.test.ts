@@ -4397,9 +4397,18 @@ test('Traffic Update 4: Camera modal wraps 2-line titles, shows explicit EB/WB/N
       rot: 72,
     },
     {
-      id: 'TDS90062',
+      id: 'TDS90062_FAR',
       lat: 22.4384,
-      lon: 114.0098, // ~445m downstream, SAME road + SAME direction (EB) -> must match!
+      lon: 114.0098, // ~445m downstream -> must be rejected by tightened <=85m divided-highway camera binding!
+      roadEn: 'Yuen Long Highway near Tong Yan San Tsuen - Eastbound',
+      roadTc: '元朗公路近唐人新村 - 東行',
+      spd: 65,
+      rot: 72,
+    },
+    {
+      id: 'TDS90062',
+      lat: 22.43635,
+      lon: 114.00675, // ~63m downstream (<=85m divided highway), SAME road + SAME direction (EB) -> must match!
       roadEn: 'Yuen Long Highway near Tong Yan San Tsuen - Eastbound',
       roadTc: '元朗公路近唐人新村 - 東行',
       spd: 68,
@@ -4407,9 +4416,11 @@ test('Traffic Update 4: Camera modal wraps 2-line titles, shows explicit EB/WB/N
     },
   ];
   const matched = findNearestMatchingDetectorForCamera(camTDS90061, liveDetectors);
-  assert.ok(matched, 'TDS90061 EB must resolve a nearby live TD speed detector');
-  assert.equal(matched.id, 'TDS90062', 'TDS90061 EB must match same-road EB sensor TDS90062 and never opposite WB TDS91045');
+  assert.ok(matched, 'TDS90061 EB must resolve a nearby <=85m live TD speed detector');
+  assert.equal(matched.id, 'TDS90062', 'TDS90061 EB must match same-road EB sensor TDS90062 within <=85m and never opposite WB TDS91045');
   assert.equal(matched.spd, 68);
+  const farOnlyMatch = findNearestMatchingDetectorForCamera(camTDS90061, liveDetectors.filter((d: any) => d.id !== 'TDS90062'));
+  assert.equal(farOnlyMatch, null, 'Camera must NOT attach a mismatched >85m detector (445m away)');
 });
 
 test('Commuter Update 1: iOS PWA controllerchange strictly requires sw-user-reload sessionStorage flag, suppresses duplicate toasts, and shows loading skeleton during isHydratingInitialData', async () => {
@@ -6500,7 +6511,7 @@ test('Follow-up Fix 6: Deduplicated operator prefixes in Bus-API tooltips (NLB 1
     '.kmb-map-stop-label must wrap naturally without clipping');
 });
 
-test('Tasks 1-3 Regression: Modularized domain scripts in exact 12-script order, 2026-11-27 20:00 HKT timestamp, South Lantau continuity, Wong Chu leakage block, and unified worst-ahead pill/banner', () => {
+test('Tasks 1-3 Regression: Modularized domain scripts in exact 12-script order, 2026-11-27 21:00 HKT timestamp, South Lantau continuity, Wong Chu leakage block, and unified worst-ahead pill/banner', () => {
   // 1. Task 1: External files exist, exact 12-script load order in index.html, no inline main style block, SW precaches all of them
   const rawIndex = fs.readFileSync('index.html', 'utf8');
   const swSrc = fs.readFileSync('public/sw.js', 'utf8');
@@ -6548,8 +6559,8 @@ test('Tasks 1-3 Regression: Modularized domain scripts in exact 12-script order,
     assert.ok(swSrc.includes(asset), `public/sw.js must precache ${asset}`);
   }
 
-  // 2. Task 2: Build timestamp 2026-11-27 20:00 HKT & Settings About subtitle cleanup
-  const expectedTs = '2026-11-27 20:00 HKT';
+  // 2. Task 2: Build timestamp 2026-11-27 21:00 HKT & Settings About subtitle cleanup
+  const expectedTs = '2026-11-27 21:00 HKT';
   assert.ok(rawIndex.includes(expectedTs), `index.html must contain build timestamp ${expectedTs}`);
   assert.ok(swSrc.includes(expectedTs), `public/sw.js must contain build timestamp ${expectedTs}`);
   assert.equal(JSON.parse(fs.readFileSync('version.json', 'utf8')).version, expectedTs);
@@ -6679,8 +6690,8 @@ test('Task 2A: Bus API inferred severity cap (6-17 km/h single-bus caps at Slow 
   assert.ok(sumStop1.detail.includes('Bus API • 6 km/h'), `Expected clean Bus API • 6 km/h label, got: ${sumStop1.detail}`);
   assert.ok(!sumStop1.detail.includes('~'), `Bus API detail must NEVER include tilde (~): ${sumStop1.detail}`);
 
-  // Map Bus API polyline overlay caps single-bus 6 km/h at Amber #f59e0b and labels cleanly with Bus API • 6 km/h
-  const drawnPolys: any[] = [];
+  // Map Bus API solid route polyline caps single-bus 6 km/h at Amber #f59e0b and labels cleanly with Bus API • 6 km/h
+  const geoStrokes: any[] = [];
   const drawnTips: string[] = [];
   const mapCtx: any = {
     window: {
@@ -6689,17 +6700,22 @@ test('Task 2A: Bus API inferred severity cap (6-17 km/h single-bus caps at Slow 
       __DETAIL_BUS_SPEED_SEGMENTS__: busSegs,
       capBusApiTierHardcode: sb.ctx.window.capBusApiTierHardcode,
       buildRouteSpeedGeoJson: sb.ctx.window.buildRouteSpeedGeoJson,
+      buildStopByStopSegmentTraffic: engine.buildStopByStopSegmentTraffic,
     },
     document: { getElementById: () => null },
     currentLang: 'en',
     L: {
       layerGroup: (arr: any[] = []) => ({ _arr: arr, addTo() { return this; }, clearLayers() {} }),
-      polyline: (c: any, opts: any) => {
-        const lyr: any = { c, opts, addTo() { return this; }, bindTooltip(t: string) { drawnTips.push(t); return this; } };
-        drawnPolys.push(lyr);
-        return lyr;
+      polyline: (c: any, opts: any) => ({ c, opts, addTo() { return this; }, bindTooltip(t: string) { drawnTips.push(t); return this; } }),
+      geoJSON: (fc: any, cfg: any) => {
+        for (const feat of fc?.features || []) {
+          const st = typeof cfg?.style === 'function' ? cfg.style(feat) : {};
+          geoStrokes.push({ feat, style: st });
+          const lyr: any = { options: {}, bindTooltip(t: string) { drawnTips.push(t); return this; }, on() { return this; } };
+          if (typeof cfg?.onEachFeature === 'function') cfg.onEachFeature(feat, lyr);
+        }
+        return { addTo() { return this; } };
       },
-      geoJSON: () => ({ addTo() { return this; } }),
     },
     console, Math, Number, String, Array, Map, Set, Object,
   };
@@ -6707,9 +6723,10 @@ test('Task 2A: Bus API inferred severity cap (6-17 km/h single-bus caps at Slow 
   vm.runInContext(readMapBundle(), mapCtx);
   mapCtx.window.__DETAIL_BUS_SPEED_SEGMENTS__ = busSegs;
   mapCtx.buildDetailBusPolylineLayer(busSegs[0].coords, e36Stops, 0, '#FF3B30');
-  const busStrokes = drawnPolys.filter((p) => p.opts?.dashArray === '8, 6' && p.opts?._zRank === 3);
-  assert.ok(busStrokes.length >= 1, 'Expected dashed BUS_API stroke');
-  assert.equal(busStrokes[0].opts.color, '#f59e0b', 'Single-bus 6 km/h map polyline MUST render Amber #f59e0b, NEVER Red');
+  const busGeoStrokes = geoStrokes.filter((g) => g.feat?.properties?.source === 'BUS_API');
+  assert.ok(busGeoStrokes.length >= 1, 'Expected solid GeoJSON BUS_API stroke merged onto detail route polyline');
+  assert.equal(busGeoStrokes[0].style.color, '#f59e0b', 'Single-bus 6 km/h map polyline MUST render Amber #f59e0b, NEVER Red');
+  assert.equal(busGeoStrokes[0].style.dashArray, null, 'Merged BUS_API route stroke must render solid (dashArray: null)');
   assert.ok(drawnTips.some((t) => t.includes('Bus API • 6 km/h') && !t.includes('~')),
     `Map Bus API tooltip must show Bus API • 6 km/h without tilde, got: ${drawnTips.join(' | ')}`);
 });
@@ -6985,3 +7002,430 @@ test('Task 2C: Bottom-sheet pull-up gesture & auto-snap to top detent (expandSto
   handleListeners.pointerup[0]({ pointerId: 11, clientY: 360 });
   assert.equal(viewClasses.has('sheet-expanded-top'), false, 'Downward drag from top detent must restore split map view');
 });
+
+test('Unified Traffic Consistency 1: Camera >85m away or on off-route ramp rejects mismatched detector speed while compatible <=85m detector updates both camera tooltip & route polyline', () => {
+  const sb = loadHardcodeAndPlannerSandbox();
+  const findDet = sb.ctx.window.findNearestMatchingDetectorForCamera;
+  const buildRouteGeo = sb.ctx.window.buildRouteSpeedGeoJson;
+
+  // Divided highway (Yuen Long Highway EB, heading ~90°)
+  const ylhCoords: [number, number][] = [
+    [22.4360, 114.0040],
+    [22.4360, 114.0065],
+    [22.4360, 114.0090],
+    [22.4360, 114.0115],
+  ];
+  const nearDet = {
+    id: 'TDS_YLH_NEAR',
+    lat: 22.43655, // ~61m north of route centerline (<= 85m divided highway)
+    lon: 114.0068,
+    rot: 90,
+    spd: 62,
+    occ: 18,
+    tier: 'SMOOTH',
+    roadEn: 'Yuen Long Highway near Tong Yan San Tsuen - Eastbound',
+    roadTc: '元朗公路近唐人新村 - 東行',
+  };
+  const farDet = {
+    id: 'TDS_YLH_FAR',
+    lat: 22.4372, // ~133m north (> 85m divided highway cap)
+    lon: 114.0068,
+    rot: 90,
+    spd: 58,
+    occ: 22,
+    tier: 'SMOOTH',
+    roadEn: 'Yuen Long Highway near Tong Yan San Tsuen - Eastbound',
+    roadTc: '元朗公路近唐人新村 - 東行',
+  };
+
+  // 1a. Camera >85m from detector (or on diverging off-route ramp) MUST NOT bind a detector speed
+  const camNearCorridor = {
+    key: 'CAM_YLH_OK',
+    lat: 22.4361,
+    lon: 114.0066,
+    bearingDeg: 90,
+    dir: 'Eastbound',
+    desc: 'Yuen Long Highway near Tong Yan San Tsuen (Eastbound)',
+  };
+  const nearDetRamp = {
+    id: 'TDS_YLH_NEAR_2',
+    lat: 22.43645, // ~50m north of mainline right next to camOnRamp
+    lon: 114.0086,
+    rot: 90,
+    spd: 64,
+    occ: 16,
+    tier: 'SMOOTH',
+    roadEn: 'Yuen Long Highway near Tong Yan San Tsuen - Eastbound',
+    roadTc: '元朗公路近唐人新村 - 東行',
+  };
+  const camOnRamp = {
+    key: 'CAM_YLH_RAMP',
+    lat: 22.43635,
+    lon: 114.0086, // ~205m east of camNearCorridor so de-overlap keeps both markers visible
+    bearingDeg: 90,
+    dir: 'Eastbound',
+    desc: 'Yuen Long Highway slip road off-ramp near Tong Yan San Tsuen (Eastbound)',
+  };
+  const camFarOffCorridor = {
+    key: 'CAM_YLH_FAR',
+    lat: 22.43695, // ~105m from route polyline (> 85m divided highway snap, <= 120m visible cam marker)
+    lon: 114.0108, // ~225m east of camOnRamp
+    bearingDeg: 90,
+    dir: 'Eastbound',
+    desc: 'Yuen Long Highway near Tong Yan San Tsuen (Eastbound)',
+  };
+  assert.equal(findDet(camNearCorridor, [farDet], { routeCoords: ylhCoords }), null,
+    'Camera must NOT attach >85m detector (133m away) while road polyline has no detector');
+  assert.equal(findDet(camOnRamp, [nearDet, nearDetRamp], { routeCoords: ylhCoords }), null,
+    'Diverging slip-road/off-ramp camera must NOT inherit mainline highway detector speed');
+
+  // 1b. Non-highway local road enforces <=45m strict radius & <=45deg bearing
+  const localCam = {
+    key: 'CAM_LOCAL',
+    lat: 22.4440,
+    lon: 114.0250,
+    bearingDeg: 90,
+    desc: 'Castle Peak Road - Yuen Long (Eastbound)',
+  };
+  const localDet60m = {
+    id: 'DET_LOCAL_60M',
+    lat: 22.44454, // ~60m away (> 45m local cap!)
+    lon: 114.0250,
+    rot: 90,
+    spd: 28,
+    roadEn: 'Castle Peak Road - Yuen Long - Eastbound',
+  };
+  const localDet30m = {
+    id: 'DET_LOCAL_30M',
+    lat: 22.44427, // ~30m away (<= 45m local cap)
+    lon: 114.0250,
+    rot: 90,
+    spd: 28,
+    roadEn: 'Castle Peak Road - Yuen Long - Eastbound',
+  };
+  assert.equal(findDet(localCam, [localDet60m]), null, 'Local non-highway camera must reject detector >45m away');
+  assert.equal(findDet(localCam, [localDet30m])?.id, 'DET_LOCAL_30M', 'Local non-highway camera must match same-road detector <=45m');
+
+  // 1c. Compatible <=85m divided-highway detector updates BOTH camera binding and route polyline
+  const okMatch = findDet(camNearCorridor, [nearDet], { routeCoords: ylhCoords });
+  assert.equal(okMatch?.id, 'TDS_YLH_NEAR', 'Divided-highway camera within <=85m must bind compatible detector');
+  const routeGeoNear = buildRouteGeo(ylhCoords, [nearDet], { isRoadSnapped: true, hasHighwaySpan: true, routeNo: 'E36' });
+  assert.ok(routeGeoNear.features.some((f: any) => f.properties?.detectorId === 'TDS_YLH_NEAR' && f.properties?.color === '#16a34a'),
+    'Compatible <=85m divided-highway detector must also paint the route polyline Green');
+  const routeGeoFar = buildRouteGeo(ylhCoords, [farDet], { isRoadSnapped: true, hasHighwaySpan: true, routeNo: 'E36' });
+  assert.ok(routeGeoFar.features.every((f: any) => f.properties?.hasSpeedData === false),
+    'Detector >85m away (133m) must leave route polyline unmonitored (consistent with camera rejecting it)');
+
+  // 1d. Map route camera tooltip attaches speed ONLY to <=85m compatible mainline camera, NOT to ramp or >85m camera
+  const camTips: Record<string, string> = {};
+  const camClicks: Record<string, any> = {};
+  const camMarkers: Record<string, any> = {};
+  const mapCtx: any = {
+    window: {
+      trafficLayerEnabled: true,
+      __LIVE_TRAFFIC_DETECTORS__: [nearDet, nearDetRamp],
+      __LIVE_TRAFFIC_CAMERAS__: [camNearCorridor, camOnRamp, camFarOffCorridor],
+      __LAST_DETAIL_SPEED_GEOJSON__: routeGeoNear,
+      findNearestMatchingDetectorForCamera: findDet,
+      isDividedHighwaySnapRoadHardcode: sb.ctx.window.isDividedHighwaySnapRoadHardcode,
+      pointToSegmentDistanceKm: sb.ctx.window.pointToSegmentDistanceKm,
+      extractCardinalDirectionMeta: sb.ctx.window.extractCardinalDirectionMeta,
+      openTrafficCameraModal: (payload: any) => { camClicks[payload.key] = payload; },
+    },
+    document: { getElementById: () => null },
+    currentLang: 'en',
+    escapeHtml: (s: any) => String(s ?? ''),
+    L: {
+      layerGroup: () => ({ addTo() { return this; }, clearLayers() {} }),
+      polyline: () => ({ addTo() { return this; }, bindTooltip() { return this; }, on() { return this; }, bindPopup() { return this; } }),
+      divIcon: (o: any) => o,
+      marker: (_ll: any, opts: any) => {
+        const html = String(opts?.icon?.html || '');
+        const keyMatch = html.match(/data-cam-key="([^"]+)"/);
+        const k = keyMatch ? keyMatch[1] : `m_${Math.random()}`;
+        const m: any = {
+          addTo() { return this; },
+          bindTooltip(t: string) { camTips[k] = t; return this; },
+          on(ev: string, fn: any) { if (ev === 'click') m._click = fn; return this; },
+        };
+        camMarkers[k] = m;
+        return m;
+      },
+    },
+    console, Math, Number, String, Array, Map, Set, Object,
+  };
+  vm.createContext(mapCtx);
+  vm.runInContext(readMapBundle(), mapCtx);
+  mapCtx.window.mapInstance = {
+    getZoom: () => 16,
+    getBounds: () => ({ pad: () => ({ contains: () => true }) }),
+    project: (ll: [number, number]) => ({ x: ll[1] * 100000, y: ll[0] * 100000 }),
+    removeLayer() {},
+  };
+  mapCtx.window._setDetailCorridorMetaForTest({
+    groupKey: 'LWB_E36_O',
+    routeNo: 'E36',
+    isBusRoute: true,
+    isRoadSnapped: true,
+    coords: ylhCoords,
+    forwardCoords: ylhCoords,
+    forwardCameraCoords: ylhCoords,
+  });
+  mapCtx.renderTrafficOverlayOnMap(mapCtx.window.mapInstance, true);
+  assert.ok(camMarkers.CAM_YLH_OK && camMarkers.CAM_YLH_RAMP && camMarkers.CAM_YLH_FAR,
+    'All 3 spaced route cameras must render independently for tooltip/click checks');
+  assert.ok((camTips.CAM_YLH_OK || '').includes('62 km/h'),
+    `Compatible <=85m mainline camera tooltip must show 62 km/h, got: ${camTips.CAM_YLH_OK}`);
+  assert.ok(!(camTips.CAM_YLH_RAMP || '').includes('km/h'),
+    `Diverging ramp camera tooltip must NOT attach mainline detector speed, got: ${camTips.CAM_YLH_RAMP}`);
+  assert.ok(!(camTips.CAM_YLH_FAR || '').includes('km/h'),
+    `Camera >85m off corridor must NOT attach detector speed, got: ${camTips.CAM_YLH_FAR}`);
+  camMarkers.CAM_YLH_OK._click({});
+  camMarkers.CAM_YLH_RAMP._click({});
+  camMarkers.CAM_YLH_FAR._click({});
+  assert.equal(camClicks.CAM_YLH_OK?.suppressDetectorSpeed, false);
+  assert.equal(camClicks.CAM_YLH_OK?.matchedDetId, 'TDS_YLH_NEAR');
+  assert.equal(camClicks.CAM_YLH_RAMP?.suppressDetectorSpeed, true, 'Ramp camera click must suppress mismatched mainline speed');
+  assert.equal(camClicks.CAM_YLH_FAR?.suppressDetectorSpeed, true, 'Far >85m camera click must suppress mismatched speed');
+
+  // 1e. Worker static metadata pre-binding enforces <=0.085km divided highway / <=0.045km local & <=45deg
+  const workerSrc = fs.readFileSync('functions/api/worker.js', 'utf8');
+  assert.ok(workerSrc.includes('0.085') && workerSrc.includes('0.045') && workerSrc.includes('angDiffDegWorker(det.rot, c.bearingDeg) > 45'),
+    'functions/api/worker.js getTrafficStaticMetadata must enforce <=85m divided highway / <=45m local & <=45deg camera pre-binding');
+});
+
+test('Unified Traffic Consistency 2: Multi-stop sparse ETA bridging does NOT clone the same speed pill onto intermediate stops (fIdx+1 .. tIdx-1)', () => {
+  const bsWindow: any = {};
+  const bsSandbox: any = { window: bsWindow, globalThis: bsWindow, Math, Date, Number, String, Array, Map, Set, Object, Uint8Array, parseFloat, isFinite };
+  vm.createContext(bsSandbox);
+  vm.runInContext(readHardcodeBundle(), bsSandbox);
+  vm.runInContext(fs.readFileSync('public/busspeed.js', 'utf8'), bsSandbox);
+  const engine: any = bsWindow.BusSpeedEngine;
+
+  // Simulate E36 Stops 1-9 (Airport GTC -> Airport Perimeter stops -> Tung Chung Cable Car -> Yu Tung Court -> Terminus)
+  const e36AirportToTcStops = [
+    { stopName_e: 'Airport (Ground Transportation Centre)', name_tc: '機場（地面運輸中心）', latitude: '22.3155', longitude: '113.9365' },
+    { stopName_e: 'Cathay City, Chek Lap Kok South Road', name_tc: '國泰城，赤鱲角南路', latitude: '22.3010', longitude: '113.9340' },
+    { stopName_e: 'SuperTerminal 1, South Perimeter Road', name_tc: '超級一號貨站，南環路', latitude: '22.2975', longitude: '113.9310' },
+    { stopName_e: 'Air Mail Centre, Chun Wan Road', name_tc: '空郵中心，駿運路', latitude: '22.2950', longitude: '113.9285' },
+    { stopName_e: 'Asia Airfreight Terminal, South Perimeter Road', name_tc: '亞洲空運中心，南環路', latitude: '22.2932', longitude: '113.9325' },
+    { stopName_e: 'Cathay Pacific Cargo Terminal, South Perimeter Road', name_tc: '國泰貨運站，南環路', latitude: '22.2918', longitude: '113.9365' },
+    { stopName_e: 'Airport South Interchange, Chek Lap Kok South Road', name_tc: '機場南交匯處，赤鱲角南路', latitude: '22.2912', longitude: '113.9400' },
+    { stopName_e: 'Tung Chung Cable Car Terminal, Tat Tung Road', name_tc: '東涌纜車站，達東路', latitude: '22.2896', longitude: '113.9388' },
+    { stopName_e: 'Yu Tung Court, Yu Tung Road', name_tc: '裕東苑，裕東路', latitude: '22.2820', longitude: '113.9425' },
+    { stopName_e: 'Pat Heung Road Bus Terminus', name_tc: '八鄉路總站', latitude: '22.4300', longitude: '114.0600' },
+  ];
+
+  // Feed a single sparse bridged BUS_API segment spanning stops 0 -> 7 at 13 km/h
+  const sparseBridgedSegs = [
+    {
+      fromIdx: 0,
+      toIdx: 7,
+      fromSeq: 1,
+      toSeq: 8,
+      fromNameEn: 'Airport (Ground Transportation Centre)',
+      toNameEn: 'Tung Chung Cable Car Terminal',
+      source: 'BUS_API',
+      tier: 'MODERATE',
+      speedKmh: 13,
+      roadDistKm: 4.5,
+      matchedBusCount: 1,
+      isVerifiedMultiBusStall: false,
+      coords: [[22.3155, 113.9365], [22.2896, 113.9388]],
+    },
+  ];
+  const timeline = engine.buildStopByStopSegmentTraffic(e36AirportToTcStops, null, [], [], sparseBridgedSegs, { routeNo: 'E36' });
+  assert.equal(timeline[0].source, 'BUS_API', 'Origin slot fIdx=0 keeps the bridged BUS_API segment');
+  assert.equal(timeline[0].speedKmh, 13);
+  for (let m = 1; m <= 6; m++) {
+    assert.equal(timeline[m].source, 'BUS_EST',
+      `Intermediate stop ${m + 1} MUST NOT clone sparse-bridged 13 km/h BUS_API — must fall through cleanly to BUS_EST`);
+    assert.notEqual(timeline[m].speedKmh, 13, `Intermediate stop ${m + 1} must not duplicate bridged 13 km/h`);
+    assert.equal(timeline[m].isSyntheticFallback, true);
+    assert.equal(timeline[m].allowRed, false);
+  }
+
+  // Also verify inferBusApiSegmentSpeeds refuses to sparse-bridge across airport-perimeter <-> non-airport boundary
+  const t0 = Date.UTC(2026, 10, 27, 12, 0, 0);
+  const etaOnlyAcrossBoundary: Record<number, any[]> = {
+    5: [{ eta: new Date(t0 + 60_000).toISOString(), eta_seq: 1 }], // Airport perimeter
+    7: [{ eta: new Date(t0 + 420_000).toISOString(), eta_seq: 1 }], // Tung Chung Cable Car (non-airport)
+  };
+  const inferred = engine.inferBusApiSegmentSpeeds(e36AirportToTcStops, etaOnlyAcrossBoundary, null, {
+    routeNo: 'E36',
+    company: 'LWB',
+    allowSparseBridge: true,
+    nowMs: t0,
+  });
+  assert.ok(!inferred.some((s: any) => s.fromIdx === 5 && s.toIdx === 7),
+    'Sparse bridge must NOT jump across airport-perimeter <-> Tung Chung boundary');
+});
+
+test('Unified Traffic Consistency 3: Non-terminus TD-blind spans without live ETAs (e.g. E36 Yu Tung Court -> TM-CLK Tunnel BBI) emit BUS_EST capped at SMOOTH/MODERATE with Bus Est. labeling', () => {
+  const sb = loadHardcodeAndPlannerSandbox();
+  const bsWindow: any = {};
+  const bsSandbox: any = { window: bsWindow, globalThis: bsWindow, Math, Date, Number, String, Array, Map, Set, Object, Uint8Array, parseFloat, isFinite };
+  vm.createContext(bsSandbox);
+  vm.runInContext(readHardcodeBundle(), bsSandbox);
+  vm.runInContext(fs.readFileSync('public/busspeed.js', 'utf8'), bsSandbox);
+  const engine: any = bsWindow.BusSpeedEngine;
+
+  const e36MidStops = [
+    { stopName_e: 'Yu Tung Court', name_tc: '裕東苑', latitude: '22.2830', longitude: '113.9430' },
+    { stopName_e: 'TM-CLK Tunnel Bus-Bus Interchange', name_tc: '屯門赤鱲角隧道轉車站', latitude: '22.3690', longitude: '113.9580' },
+    { stopName_e: 'Yuen Long Plaza', name_tc: '元朗廣場', latitude: '22.4445', longitude: '114.0235' },
+    { stopName_e: 'Pat Heung Road Bus Terminus', name_tc: '八鄉路總站', latitude: '22.4300', longitude: '114.0600' },
+  ];
+
+  // 1. inferBusApiSegmentSpeeds with includeSyntheticFallback: true emits BUS_EST on non-terminus spans even with empty ETAs
+  const synInferred = engine.inferBusApiSegmentSpeeds(e36MidStops, {}, null, {
+    routeNo: 'E36',
+    company: 'LWB',
+    includeSyntheticFallback: true,
+  });
+  assert.equal(synInferred.length, 2, 'Should emit BUS_EST for the 2 non-terminus spans (excluding final terminus approach)');
+  for (const seg of synInferred) {
+    assert.equal(seg.source, 'BUS_EST');
+    assert.equal(seg.isSyntheticFallback, true);
+    assert.equal(seg.allowRed, false);
+    assert.ok(seg.tier === 'SMOOTH' || seg.tier === 'MODERATE', `BUS_EST tier must never be CONGESTED, got ${seg.tier}`);
+    assert.equal(seg.speedKmh, 56, `Long highway span (${seg.roadDistKm} km) should use EXPRESSWAY expectedKmh=56`);
+  }
+
+  // 2. buildStopByStopSegmentTraffic emits BUS_EST on Stops 10-11 (never NONE/blank) and preserves NONE on final terminus span
+  const unified = engine.buildStopByStopSegmentTraffic(e36MidStops, null, [], [], [], { routeNo: 'E36' });
+  assert.equal(unified[0].source, 'BUS_EST', 'Yu Tung Court -> TM-CLK Tunnel BBI must fall back to BUS_EST');
+  assert.equal(unified[0].isSyntheticFallback, true);
+  assert.equal(unified[0].allowRed, false);
+  assert.equal(unified[0].tier, 'SMOOTH');
+  assert.equal(unified[0].speedKmh, 56);
+  assert.equal(unified[1].source, 'BUS_EST', 'TM-CLK Tunnel BBI -> Yuen Long Plaza must fall back to BUS_EST');
+  assert.equal(unified[2].source, 'NONE', 'Final terminus span without TD/ETA/cam remains NONE');
+
+  // 3. Expanded summary & breakdown label BUS_EST cleanly as "Bus Est. • 56 km/h"
+  const sum = sb.getDirectionalRoadSummary(e36MidStops, 0, [], false, 40, null, 12000, [], { unifiedSegments: unified });
+  assert.ok(sum, 'Expected road summary driven by BUS_EST');
+  assert.equal(sum.tone, 'smooth', 'BUS_EST must never produce jammed (Red) tone');
+  assert.ok(sum.detail.includes('Bus Est. • 56 km/h'), `Summary detail must display Bus Est. • 56 km/h, got: ${sum.detail}`);
+
+  // 4. UI templates in public/app-ui.js and public/eta-engine.js render Bus Est. pills & inline breakdown
+  const appUiSrc = fs.readFileSync('public/app-ui.js', 'utf8');
+  const etaSrc = fs.readFileSync('public/eta-engine.js', 'utf8');
+  assert.ok(appUiSrc.includes('🚌 Bus Est. •') && appUiSrc.includes('source-bus-est'),
+    'public/app-ui.js must render BUS_EST stop pills with Bus Est. • XX km/h');
+  assert.ok(etaSrc.includes('Bus Est. •') && etaSrc.includes("s.source === 'BUS_EST'"),
+    'public/eta-engine.js must render BUS_EST in journey bar and inline Details breakdown');
+});
+
+test('Unified Traffic Consistency 4: buildRouteSpeedGeoJson & buildDetailBusPolylineLayer paint BUS_API CONGESTED Red, MODERATE Amber, BUS_API/BUS_EST SMOOTH Green, and Blue only as last-resort fallback', () => {
+  const sb = loadHardcodeAndPlannerSandbox();
+  const stops = [
+    { seq: 14, stopName_e: 'Shui Pin Wai Estate', name_tc: '水邊圍邨', latitude: '22.4440', longitude: '114.0180' },
+    { seq: 15, stopName_e: 'Yuen Long Plaza', name_tc: '元朗廣場', latitude: '22.4440', longitude: '114.0220' },
+    { seq: 16, stopName_e: 'Tung Lok Street', name_tc: '同樂街', latitude: '22.4440', longitude: '114.0260' },
+    { seq: 17, stopName_e: 'Kuk Ting Street', name_tc: '谷亭街', latitude: '22.4440', longitude: '114.0300' },
+    { seq: 18, stopName_e: 'Yoho Mall I', name_tc: '形點 I', latitude: '22.4440', longitude: '114.0340' },
+    { seq: 19, stopName_e: 'Pat Heung Road Bus Terminus', name_tc: '八鄉路總站', latitude: '22.4440', longitude: '114.0380' },
+  ];
+  const polyCoords: [number, number][] = stops.map((s) => [parseFloat(s.latitude), parseFloat(s.longitude)]);
+  const stopSegments = [
+    {
+      fromIdx: 0, toIdx: 1, fromSeq: 14, toSeq: 15,
+      fromNameEn: 'Shui Pin Wai Estate', toNameEn: 'Yuen Long Plaza',
+      source: 'BUS_API', tier: 'CONGESTED', speedKmh: 7, matchedBusCount: 2, isVerifiedMultiBusStall: true, allowRed: true,
+      coords: [polyCoords[0], polyCoords[1]],
+    },
+    {
+      fromIdx: 1, toIdx: 2, fromSeq: 15, toSeq: 16,
+      fromNameEn: 'Yuen Long Plaza', toNameEn: 'Tung Lok Street',
+      source: 'BUS_API', tier: 'MODERATE', speedKmh: 12, matchedBusCount: 1, isVerifiedMultiBusStall: false, allowRed: false,
+      coords: [polyCoords[1], polyCoords[2]],
+    },
+    {
+      fromIdx: 2, toIdx: 3, fromSeq: 16, toSeq: 17,
+      fromNameEn: 'Tung Lok Street', toNameEn: 'Kuk Ting Street',
+      source: 'BUS_API', tier: 'SMOOTH', speedKmh: 28, matchedBusCount: 2, isVerifiedMultiBusStall: false, allowRed: false,
+      coords: [polyCoords[2], polyCoords[3]],
+    },
+    {
+      fromIdx: 3, toIdx: 4, fromSeq: 17, toSeq: 18,
+      fromNameEn: 'Kuk Ting Street', toNameEn: 'Yoho Mall I',
+      source: 'BUS_EST', tier: 'SMOOTH', speedKmh: 56, isSyntheticFallback: true, allowRed: false,
+      coords: [polyCoords[3], polyCoords[4]],
+    },
+    {
+      fromIdx: 4, toIdx: 5, fromSeq: 18, toSeq: 19,
+      fromNameEn: 'Yoho Mall I', toNameEn: 'Pat Heung Road Bus Terminus',
+      source: 'NONE', tier: 'NONE', speedKmh: null,
+      coords: [polyCoords[4], polyCoords[5]],
+    },
+  ];
+
+  // 1. Direct buildRouteSpeedGeoJson check
+  const fc = sb.ctx.window.buildRouteSpeedGeoJson(polyCoords, [], {
+    isRoadSnapped: true,
+    stops,
+    stopSegments,
+    noDataColor: '#3b82f6',
+  });
+  const byFromIdx = new Map<number, any>();
+  for (const f of fc.features) {
+    if (f.properties?.fromIdx !== null && f.properties?.fromIdx !== undefined) {
+      byFromIdx.set(f.properties.fromIdx, f.properties);
+    }
+  }
+  assert.equal(byFromIdx.get(0)?.color, '#dc2626', 'Verified multi-bus stall BUS_API (7 km/h) must paint Red #dc2626');
+  assert.equal(byFromIdx.get(0)?.source, 'BUS_API');
+  assert.equal(byFromIdx.get(1)?.color, '#f59e0b', 'Single-bus slow BUS_API (12 km/h) must paint Amber #f59e0b');
+  assert.equal(byFromIdx.get(2)?.color, '#16a34a', 'Smooth BUS_API (28 km/h) must paint Green #16a34a');
+  assert.equal(byFromIdx.get(3)?.color, '#16a34a', 'Synthetic BUS_EST (56 km/h) must paint Green #16a34a');
+  assert.equal(byFromIdx.get(3)?.source, 'BUS_EST');
+  const blueFallbackFeats = fc.features.filter((f: any) => f.properties?.hasSpeedData === false);
+  assert.equal(blueFallbackFeats.length, 1, 'Only the final NONE terminus span should fall back to Blue #3b82f6');
+  assert.equal(blueFallbackFeats[0].properties.color, '#3b82f6');
+
+  // 2. buildDetailBusPolylineLayer renders solid colors & tooltips matching Bus API / Bus Est. / fallback
+  const styledFeats: any[] = [];
+  const tips: string[] = [];
+  const mapCtx: any = {
+    window: {
+      trafficLayerEnabled: true,
+      __LIVE_TRAFFIC_DETECTORS__: [],
+      __DETAIL_STOP_SEGMENTS__: stopSegments,
+      capBusApiTierHardcode: sb.ctx.window.capBusApiTierHardcode,
+      buildRouteSpeedGeoJson: sb.ctx.window.buildRouteSpeedGeoJson,
+    },
+    document: { getElementById: () => null },
+    currentLang: 'en',
+    L: {
+      layerGroup: (arr: any[] = []) => ({ _arr: arr, addTo() { return this; }, clearLayers() {} }),
+      polyline: (c: any, opts: any) => ({ c, opts, addTo() { return this; }, bindTooltip(t: string) { tips.push(t); return this; } }),
+      geoJSON: (geo: any, cfg: any) => {
+        for (const feat of geo?.features || []) {
+          styledFeats.push({ props: feat.properties, style: cfg.style(feat) });
+          const lyr: any = { options: {}, bindTooltip(t: string) { tips.push(t); return this; }, on() { return this; } };
+          cfg.onEachFeature(feat, lyr);
+        }
+        return { addTo() { return this; } };
+      },
+    },
+    console, Math, Number, String, Array, Map, Set, Object,
+  };
+  vm.createContext(mapCtx);
+  vm.runInContext(readMapBundle(), mapCtx);
+  mapCtx.window.__DETAIL_STOP_SEGMENTS__ = stopSegments;
+  mapCtx.buildDetailBusPolylineLayer(polyCoords, stops, 0, '#FF3B30');
+
+  assert.ok(styledFeats.some((f) => f.props.source === 'BUS_API' && f.props.speedKmh === 7 && f.style.color === '#dc2626'),
+    'Detail polyline must paint verified multi-bus stall 7 km/h in Red #dc2626');
+  assert.ok(styledFeats.some((f) => f.props.source === 'BUS_API' && f.props.speedKmh === 12 && f.style.color === '#f59e0b'),
+    'Detail polyline must paint moderate 12 km/h in Amber #f59e0b');
+  assert.ok(styledFeats.some((f) => f.props.source === 'BUS_API' && f.props.speedKmh === 28 && f.style.color === '#16a34a'),
+    'Detail polyline must paint smooth 28 km/h BUS_API in Green #16a34a');
+  assert.ok(styledFeats.some((f) => f.props.source === 'BUS_EST' && f.props.speedKmh === 56 && f.style.color === '#16a34a'),
+    'Detail polyline must paint smooth 56 km/h BUS_EST in Green #16a34a');
+  assert.ok(tips.some((t) => t.includes('Bus API • 7 km/h')), `Expected Bus API • 7 km/h tooltip, got: ${tips.join(' | ')}`);
+  assert.ok(tips.some((t) => t.includes('Bus Est. • 56 km/h')), `Expected Bus Est. • 56 km/h tooltip, got: ${tips.join(' | ')}`);
+  assert.ok(tips.some((t) => t.includes('no TD speed detector')), 'Unmonitored terminus span retains fallback tooltip');
+});
+

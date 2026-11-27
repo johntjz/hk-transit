@@ -1747,9 +1747,17 @@ window.openTrafficCameraByKey = function(camKey, fallbackDesc = '') {
 window.openTrafficCameraModal = function(cam) {
   if (!cam || !cam.key) return;
   const list = Array.isArray(window.__LIVE_TRAFFIC_DETECTORS__) ? window.__LIVE_TRAFFIC_DETECTORS__ : [];
-  const matchedDet = (typeof window.findNearestMatchingDetectorForCamera === 'function')
-    ? window.findNearestMatchingDetectorForCamera(cam, list)
-    : (list.find(d => d.camKey === cam.key || d.id === cam.key) || null);
+  let matchedDet = null;
+  if (!cam.suppressDetectorSpeed) {
+    if (cam.matchedDetId) {
+      matchedDet = list.find(d => d.id === cam.matchedDetId) || null;
+    }
+    if (!matchedDet) {
+      matchedDet = (typeof window.findNearestMatchingDetectorForCamera === 'function')
+        ? window.findNearestMatchingDetectorForCamera(cam, list)
+        : (list.find(d => d.camKey === cam.key || d.id === cam.key) || null);
+    }
+  }
   if (matchedDet && typeof window.openTrafficDecisionModal === 'function') {
     const oppId = (typeof _findOppositeTrafficDetectorId === 'function') ? _findOppositeTrafficDetectorId(matchedDet) : '';
     window.openTrafficDecisionModal(matchedDet.id, oppId, '', false, cam);
@@ -2539,6 +2547,13 @@ window.refreshStopByStopTrafficUI = function() {
       routeNo: detailRouteGroup?.routeNo || ''
     });
     window.__DETAIL_STOP_SEGMENTS__ = segs;
+    const segSig = `${detailRouteGroup?.key || ''}|${segs.map(s => `${s.source}:${s.tier}:${s.speedKmh ?? ''}`).join(',')}`;
+    if (window.trafficLayerEnabled && window.__LAST_DETAIL_STOP_SEGS_SIG__ !== segSig) {
+      window.__LAST_DETAIL_STOP_SEGS_SIG__ = segSig;
+      if (typeof window._refreshDetailBusSpeedPolylineIfActive === 'function') {
+        window._refreshDetailBusSpeedPolylineIfActive();
+      }
+    }
     const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
     const exitIdxRaw = detailTargetStopKey
       ? stops.findIndex(s => s && (s.stopKey === detailTargetStopKey || s.stopId === detailTargetStopKey))
@@ -2556,7 +2571,10 @@ window.refreshStopByStopTrafficUI = function() {
         : null;
       const seg = worstPick ? worstPick.seg : ownSeg;
       let dispTier = worstPick ? worstPick.tier : (ownSeg?.tier || 'UNKNOWN');
-      if (seg && seg.source === 'BUS_API') {
+      if (seg && (seg.source === 'BUS_EST' || seg.isSyntheticFallback)) {
+        const estSpd = Number(seg.speedKmh);
+        dispTier = (Number.isFinite(estSpd) && Math.abs(estSpd) >= 18) ? 'SMOOTH' : 'MODERATE';
+      } else if (seg && seg.source === 'BUS_API') {
         if (typeof window.capBusApiTierHardcode === 'function') {
           dispTier = window.capBusApiTierHardcode(dispTier, seg.speedKmh, {
             isTerminusApproach: Boolean(seg.isTerminusApproach),
@@ -2584,7 +2602,9 @@ window.refreshStopByStopTrafficUI = function() {
         : (dispTier === 'CONGESTED' ? 'tone-congested' : (dispTier === 'MODERATE' ? 'tone-moderate' : 'tone-smooth'));
       const srcCls = seg.source === 'TD'
         ? 'source-td'
-        : (seg.source === 'BUS_API' ? 'source-bus-api' : 'source-cam');
+        : (seg.source === 'BUS_API'
+          ? 'source-bus-api'
+          : ((seg.source === 'BUS_EST' || seg.isSyntheticFallback) ? 'source-bus-est' : 'source-cam'));
       const dot = seg.source === 'CAM_ONLY'
         ? '📷'
         : (dispTier === 'CONGESTED' ? '🔴' : (dispTier === 'MODERATE' ? '🟠' : '🟢'));
@@ -2606,6 +2626,14 @@ window.refreshStopByStopTrafficUI = function() {
           ? (isZh ? `🚌 巴士推算 • ${Math.abs(Math.round(busSpdVal))} km/h` : `🚌 Bus API • ${Math.abs(Math.round(busSpdVal))} km/h`)
           : '🚌';
         const srcTag = seg.camKey ? `${busTag} 📷` : busTag;
+        labelTxt = `${dot} ${flowTxt} · ${srcTag}`;
+      } else if (seg.source === 'BUS_EST' || seg.isSyntheticFallback) {
+        const estSpdVal = Number(seg.speedKmh);
+        const hasEstSpd = Number.isFinite(estSpdVal) && estSpdVal > 0;
+        const estTag = hasEstSpd
+          ? (isZh ? `🚌 路況估算 • ${Math.abs(Math.round(estSpdVal))} km/h` : `🚌 Bus Est. • ${Math.abs(Math.round(estSpdVal))} km/h`)
+          : (isZh ? '🚌 路況估算' : '🚌 Bus Est.');
+        const srcTag = seg.camKey ? `${estTag} 📷` : estTag;
         labelTxt = `${dot} ${flowTxt} · ${srcTag}`;
       } else {
         labelTxt = isZh ? '📷 路段鏡頭' : '📷 Road Cam';
@@ -2668,7 +2696,7 @@ window.openStopSegmentTrafficModal = function(fromIdx) {
     return;
   }
 
-  // Tier 2 (or Unmonitored leg tapped from horizontal journey bar): Breakdown modal
+  // Tier 2 / Tier 2.5 (BUS_API, BUS_EST, or Unmonitored leg tapped from horizontal journey bar): Breakdown modal
   const modal = document.getElementById('trafficDecisionModal');
   const bodyEl = document.getElementById('trafficModalBody');
   if (!modal || !bodyEl) return;
@@ -2677,32 +2705,41 @@ window.openStopSegmentTrafficModal = function(fromIdx) {
   const subEl = document.getElementById('trafficModalSub');
   const closeEl = document.getElementById('trafficModalCloseBtn');
   const isUnmonitored = seg.source === 'NONE' || seg.speedKmh === null || seg.speedKmh === undefined;
+  const isBusEst = Boolean(!isUnmonitored && (seg.source === 'BUS_EST' || seg.isSyntheticFallback));
   if (titleEl) {
     titleEl.innerText = isUnmonitored
       ? (isZh ? `路段路況 (${seg.fromSeq}→${seg.toSeq}站)` : `Route Stretch (#${seg.fromSeq}→#${seg.toSeq})`)
-      : (isZh ? `🚌 巴士實測路況 (${seg.fromSeq}→${seg.toSeq}站)` : `🚌 Bus Speed Segment (#${seg.fromSeq}→#${seg.toSeq})`);
+      : (isBusEst
+        ? (isZh ? `🚌 道路估算路況 (${seg.fromSeq}→${seg.toSeq}站)` : `🚌 Bus Est. Segment (#${seg.fromSeq}→#${seg.toSeq})`)
+        : (isZh ? `🚌 巴士實測路況 (${seg.fromSeq}→${seg.toSeq}站)` : `🚌 Bus Speed Segment (#${seg.fromSeq}→#${seg.toSeq})`));
   }
   if (subEl) subEl.innerHTML = `<span>${escapeHtml(spanLabel)}</span>`;
   if (closeEl) closeEl.innerText = isZh ? '✕ 關閉' : '✕ Close';
 
   const modalTier = isUnmonitored
     ? 'SMOOTH'
-    : (seg.source === 'BUS_API' && typeof window.capBusApiTierHardcode === 'function'
-      ? window.capBusApiTierHardcode(seg.tier, seg.speedKmh, {
-          isTerminusApproach: Boolean(seg.isTerminusApproach),
-          isScheduledFallback: Boolean(seg.isScheduledFallback),
-          isVerifiedMultiBusStall: Boolean(seg.isVerifiedMultiBusStall)
-        })
-      : (seg.source === 'BUS_API' && !seg.isVerifiedMultiBusStall && seg.tier === 'CONGESTED' ? 'MODERATE' : seg.tier));
+    : (isBusEst
+      ? ((Number.isFinite(Number(seg.speedKmh)) && Math.abs(Number(seg.speedKmh)) >= 18) ? 'SMOOTH' : 'MODERATE')
+      : (seg.source === 'BUS_API' && typeof window.capBusApiTierHardcode === 'function'
+        ? window.capBusApiTierHardcode(seg.tier, seg.speedKmh, {
+            isTerminusApproach: Boolean(seg.isTerminusApproach),
+            isScheduledFallback: Boolean(seg.isScheduledFallback),
+            isVerifiedMultiBusStall: Boolean(seg.isVerifiedMultiBusStall)
+          })
+        : (seg.source === 'BUS_API' && !seg.isVerifiedMultiBusStall && seg.tier === 'CONGESTED' ? 'MODERATE' : seg.tier)));
   const tone = isUnmonitored ? 'smooth' : (modalTier === 'CONGESTED' ? 'jammed' : (modalTier === 'MODERATE' ? 'slow' : 'smooth'));
   const toneDot = isUnmonitored ? '⚪' : (modalTier === 'CONGESTED' ? '🔴' : (modalTier === 'MODERATE' ? '🟠' : '🟢'));
   const verdict = isUnmonitored
     ? (isZh ? '此路段暫無實時測速監測' : 'Unmonitored stretch (no live TD sensor or bus ETA pair)')
-    : (modalTier === 'CONGESTED'
-      ? (isZh ? '此路段巴士多班受阻' : 'Jammed bus flow (multi-bus stall)')
-      : (modalTier === 'MODERATE'
-        ? (isZh ? '此路段車流稍慢' : 'Slow bus flow on this stretch')
-        : (isZh ? '此路段巴士行車暢通' : 'Clear bus traffic on this stretch')));
+    : (isBusEst
+      ? (modalTier === 'MODERATE'
+        ? (isZh ? '此路段按道路類型估算稍慢' : 'Estimated slower road-class flow on this stretch')
+        : (isZh ? '此路段按道路類型估算暢通' : 'Estimated clear road-class flow on this stretch'))
+      : (modalTier === 'CONGESTED'
+        ? (isZh ? '此路段巴士多班受阻' : 'Jammed bus flow (multi-bus stall)')
+        : (modalTier === 'MODERATE'
+          ? (isZh ? '此路段車流稍慢' : 'Slow bus flow on this stretch')
+          : (isZh ? '此路段巴士行車暢通' : 'Clear bus traffic on this stretch'))));
   const absDistKm = Math.abs(Number(seg.roadDistKm) || 0);
   const distTxt = absDistKm < 1 ? `${Math.round(absDistKm * 1000)}m` : `${absDistKm.toFixed(2)} km`;
   const absDeltaSec = Math.abs(Number(seg.deltaSec));
@@ -2727,15 +2764,25 @@ window.openStopSegmentTrafficModal = function(fromIdx) {
          <button type="button" style="border:none; background:none; color:var(--ios-blue); font-weight:700; font-size:0.72rem; cursor:pointer; padding:2px 4px;" onclick="refreshTrafficDecisionCam('${escapeJsAttr(seg.camKey)}')">↻ ${isZh ? '更新圖片' : 'Refresh'}</button>
        </div>`
     : `<div style="font-size:0.76rem; color:var(--text-sub); text-align:center; padding:12px; border-radius:11px; background:var(--bg-surface);">
-         ${isZh
-           ? '此路段暫無運輸署車速感應器或鏡頭覆蓋，以上車速由實時巴士站間到站時間（扣除上落客及燈位停頓）推算。'
-           : 'No HKSAR TD road sensor or camera covers this stretch — speed is calibrated from live bus stop-to-stop ETAs (dwell & signal adjusted).'}
+         ${isBusEst
+           ? (isZh
+             ? '此路段暫無運輸署車速感應器或實時站間配對，車速按站間距離及香港道路類型估算（僅顯示暢通／稍慢）。'
+             : 'No HKSAR TD road sensor or live bus ETA pair covers this stretch — speed is estimated from span distance and road class (capped at Clear/Slow).')
+           : (isZh
+             ? '此路段暫無運輸署車速感應器或鏡頭覆蓋，以上車速由實時巴士站間到站時間（扣除上落客及燈位停頓）推算。'
+             : 'No HKSAR TD road sensor or camera covers this stretch — speed is calibrated from live bus stop-to-stop ETAs (dwell & signal adjusted).')}
        </div>`;
+
+  const verdictSourceTip = isUnmonitored
+    ? (isZh ? '未有實時感應器或站間到站數據' : 'No live sensor or paired stop ETA available yet')
+    : (isBusEst
+      ? (isZh ? `數據來源：路況估算 • ${speedDisplayTxt}（無運輸署感應器及實時站間配對）` : `Source: Bus Est. • ${speedDisplayTxt} (road-class estimate)`)
+      : (isZh ? `數據來源：巴士推算 • ${speedDisplayTxt}（未有運輸署感應器路段）` : `Source: Bus API • ${speedDisplayTxt} (non-TD road)`));
 
   bodyEl.innerHTML = `
     <div class="traffic-verdict-banner tone-${tone}">
       <div class="traffic-verdict-title">${toneDot} ${escapeHtml(verdict)}</div>
-      <div class="traffic-verdict-tip">${isUnmonitored ? (isZh ? '未有實時感應器或站間到站數據' : 'No live sensor or paired stop ETA available yet') : (isZh ? `數據來源：巴士推算 • ${speedDisplayTxt}（未有運輸署感應器路段）` : `Source: Bus API • ${speedDisplayTxt} (non-TD road)`)}</div>
+      <div class="traffic-verdict-tip">${escapeHtml(verdictSourceTip)}</div>
     </div>
     <div class="traffic-metrics-grid">
       <div class="traffic-metric-box">

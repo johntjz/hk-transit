@@ -1253,8 +1253,28 @@ async function getTrafficStaticMetadata() {
     }));
   }
 
-  // Pre-bind official TD road snapshot camera using exact ID first, then same-road/direction proximity (<= 0.35 km)
+  const _isDividedHighwaySnapRoadWorker = (roadEn = '', roadTc = '', id = '') => {
+    const txt = `${roadEn || ''} ${roadTc || ''} ${id || ''}`;
+    return /\b(?:tuen\s*mun\s*r(?:oa)?d|tmr|yuen\s*long\s*h(?:igh)?w(?:a)?y|ylh|north\s*lantau\s*h(?:igh)?w(?:a)?y|nlh|tuen\s*mun[\s–-]*chek\s*lap\s*kok|tm[\s-]*clk(?:l)?|shun\s*long\s*r(?:oa)?d|lantau\s*link|tds91038)\b|屯門公路|元朗公路|北大嶼山公路|屯門至?赤鱲角|順朗路|青嶼幹線/i.test(txt);
+  };
+  const _rampReWorker = /\b(?:slip\s*r(?:oa)?d|off[\s-]*ramp|on[\s-]*ramp|ramp|link\s*r(?:oa)?d)\b|支路|引道|連接路/i;
+
+  // Compute directional viewing bearing (0-359 deg) for every TD camera first so pre-binding enforces <= 45 deg alignment
   const detectorList = Array.from(detectorMeta.values());
+  const speedLinkTangents = cameras.length ? buildSpeedLinkTangentsWorker(detectorList) : [];
+  if (cameras.length) {
+    cameras = cameras.map((c) => {
+      const bearingDeg = computeCameraBearingDegWorker(c, detectorList, cameras, speedLinkTangents);
+      return {
+        ...c,
+        bearingDeg
+      };
+    });
+  }
+
+  // Pre-bind official TD road snapshot camera using exact ID first, then strict corridor-aligned proximity:
+  // <= 0.085 km (85 m) on divided highways (Tuen Mun Rd, Yuen Long Hwy, North Lantau Hwy, TM-CLKL),
+  // <= 0.045 km (45 m) on non-highway / local roads, requiring <= 45 deg bearing alignment & compatible road names.
   if (cameras.length && detectorMeta.size) {
     const camByKey = new Map();
     for (let i = 0; i < cameras.length; i++) {
@@ -1269,20 +1289,29 @@ async function getTrafficStaticMetadata() {
       }
       const detRoad = _extractRoadCoreWorker(det.roadEn);
       const detDir = _extractCardinalDirWorker(`${det.roadEn || ''} ${det.dir || ''}`, det.rot);
+      const detIsRamp = _rampReWorker.test(`${det.roadEn || ''} ${det.roadTc || ''}`);
+      const detIsDivHwy = _isDividedHighwaySnapRoadWorker(det.roadEn, det.roadTc, det.id);
       let bestCam = null;
       let bestScore = Infinity;
       for (let i = 0; i < cameras.length; i++) {
         const c = cameras[i];
-        if (Math.abs(c.lat - det.lat) > 0.004 || Math.abs(c.lon - det.lon) > 0.0045) continue;
+        if (Math.abs(c.lat - det.lat) > 0.0012 || Math.abs(c.lon - det.lon) > 0.0014) continue;
+        const camIsRamp = _rampReWorker.test(c.desc || '');
+        if (detIsRamp !== camIsRamp) continue;
+        const isDivHwy = detIsDivHwy || _isDividedHighwaySnapRoadWorker(c.desc, '', c.key);
+        const maxBindKm = isDivHwy ? 0.085 : 0.045;
         const dKm = haversineKmWorker(det.lat, det.lon, c.lat, c.lon);
-        if (dKm > 0.35) continue;
+        if (dKm > maxBindKm) continue;
         const cDir = c.dir || '';
         if (detDir && cDir && _isOppositeCardinalWorker(detDir, cDir)) continue;
+        if (Number.isFinite(Number(det.rot)) && Number.isFinite(Number(c.bearingDeg))) {
+          if (angDiffDegWorker(det.rot, c.bearingDeg) > 45) continue;
+        }
         const cRoad = _extractRoadCoreWorker(c.desc);
         const sameRoad = Boolean(detRoad && cRoad && (cRoad === detRoad || cRoad.includes(detRoad) || detRoad.includes(cRoad)));
-        if (!sameRoad && dKm > 0.15) continue;
-        const dirBonus = (detDir && cDir && detDir === cDir) ? 0 : (cDir ? 0.08 : 0.04);
-        const roadPenalty = sameRoad ? 0 : 0.12;
+        if (detRoad && cRoad && !sameRoad) continue;
+        const dirBonus = (detDir && cDir && detDir === cDir) ? 0 : (cDir ? 0.015 : 0.005);
+        const roadPenalty = sameRoad ? 0 : 0.02;
         const score = dKm + dirBonus + roadPenalty;
         if (score < bestScore) {
           bestScore = score;
@@ -1294,18 +1323,6 @@ async function getTrafficStaticMetadata() {
         det.camDesc = bestCam.desc;
       }
     }
-  }
-
-  // Compute directional viewing bearing (0-359 deg) for every TD camera (verified azimuths, speed-link tangents, bounds & landmarks)
-  if (cameras.length) {
-    const speedLinkTangents = buildSpeedLinkTangentsWorker(detectorList);
-    cameras = cameras.map((c) => {
-      const bearingDeg = computeCameraBearingDegWorker(c, detectorList, cameras, speedLinkTangents);
-      return {
-        ...c,
-        bearingDeg
-      };
-    });
   }
 
   if (detectorMeta.size > 0) {

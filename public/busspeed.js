@@ -2084,12 +2084,88 @@
     return { ...allRes, isScheduledOnly: !anyLive };
   }
 
+  function _isAirportZoneForBridge(stop) {
+    if (!stop) return false;
+    if (isAirportPerimeterZone(stop, stop)) return true;
+    const nm = `${stop?.stopName_e || ''} ${stop?.name_tc || ''}`;
+    return /\bairport\b|ground\s*transportation\s*centre|\bgtc\b|passenger\s*terminal|機場|客運大樓|地面運輸中心/i.test(nm);
+  }
+
+  // Synthesize a realistic distance + road-class speed estimate (BUS_EST) for TD-blind
+  // non-terminus spans without valid live ETA pairs. Strictly capped at SMOOTH or MODERATE (NEVER Red CONGESTED).
+  function buildSyntheticBusEstSegment(fromIdx, toIdx, fromStop, toStop, segCoords, roadDistKm, tdTruth = null, opts = {}) {
+    const safeDistKm = Math.max(0.06, Number(roadDistKm) || 0.4);
+    const roadProfile = classifyBusRoadClass(safeDistKm, fromStop, toStop);
+    const maxCapKmh = Number(roadProfile.maxRealisticKmh) || 85;
+    const estSpeedKmh = Math.abs(Math.round(Math.max(12, Math.min(maxCapKmh, Number(roadProfile.expectedKmh) || 26))));
+    const tier = estSpeedKmh >= 18 ? 'SMOOTH' : 'MODERATE';
+    const fromNameEn = _stripPlatformLabel(fromStop?.stopName_e || fromStop?.name_tc || '');
+    const fromNameTc = _stripPlatformLabel(fromStop?.name_tc || fromStop?.stopName_e || '');
+    const toNameEn = _stripPlatformLabel(toStop?.stopName_e || toStop?.name_tc || '');
+    const toNameTc = _stripPlatformLabel(toStop?.name_tc || toStop?.stopName_e || '');
+    const matchedCam = tdTruth?.cam || opts.cam || null;
+    return {
+      fromIdx,
+      toIdx,
+      fromSeq: fromIdx + 1,
+      toSeq: toIdx + 1,
+      fromNameEn,
+      fromNameTc,
+      toNameEn,
+      toNameTc,
+      routeNo: String(opts.routeNo || ''),
+      company: String(opts.company || ''),
+      roadClass: roadProfile.roadClass,
+      isRuralWinding: isRuralWindingCorridor(fromStop, toStop),
+      isTerminusDep: isTerminusLikeStop(fromStop, fromIdx),
+      isOriginLayover: false,
+      isTerminusApproach: false,
+      isEtaRoundingArtifact: false,
+      isRoadSnapped: Boolean(opts.isRoadSnapped),
+      smoothMinKmh: roadProfile.smoothMinKmh,
+      moderateMinKmh: roadProfile.moderateMinKmh,
+      roadDistKm: Math.abs(Number(safeDistKm.toFixed(2))),
+      deltaSec: null,
+      matchedBusCount: 0,
+      severeSlowBusCount: 0,
+      isVerifiedMultiBusStall: false,
+      busInferredSpeedKmh: estSpeedKmh,
+      busInferredTier: tier,
+      speedKmh: estSpeedKmh,
+      expectedKmh: roadProfile.expectedKmh,
+      tier,
+      isBottleneck: tier === 'MODERATE',
+      allowRed: false,
+      isSyntheticFallback: true,
+      hasConsecutiveSlowSpan: false,
+      color: getBusSpeedColorHex(tier, estSpeedKmh),
+      source: 'BUS_EST',
+      confidence: 'ESTIMATE',
+      isScheduledOnly: false,
+      isScheduledFallback: false,
+      coveredByTd: false,
+      tdCovered: false,
+      occ: 0,
+      detId: '',
+      det: null,
+      detectorId: '',
+      roadEn: `${fromNameEn} → ${toNameEn}`.trim(),
+      roadTc: `${fromNameTc || fromNameEn} → ${toNameTc || toNameEn}`.trim(),
+      cam: matchedCam,
+      camKey: matchedCam?.camKey || matchedCam?.key || '',
+      camDesc: _sanitizeDirectionTypos(matchedCam?.desc || ''),
+      tdTruth: tdTruth || null,
+      coords: Array.isArray(segCoords) ? segCoords : []
+    };
+  }
+
   // Calibrated HK Bus API Speed Inference Engine (replaces naive stop-to-stop division)
   function inferBusApiSegmentSpeeds(stops, etaByStopIdx, roadPolylinePoints = null, opts = {}) {
     const routeNo = opts.routeNo || '';
     const company = opts.company || '';
     const isNlb = String(company || '').toUpperCase() === 'NLB';
     const allowNlbScheduledFallback = Boolean(opts.allowNlbScheduledFallback !== undefined ? opts.allowNlbScheduledFallback : isNlb);
+    const includeSyntheticFallback = Boolean(opts.includeSyntheticFallback);
     const debugSkips = Array.isArray(opts.debugSkips) ? opts.debugSkips : [];
     const publishDebug = (segsOut) => {
       if (opts.skipGlobalDebugUpdate) return;
@@ -2103,6 +2179,7 @@
           bound: opts.bound || '',
           segmentCount: segsOut.length,
           liveSegmentCount: segsOut.filter(s => s.source === 'BUS_API' && !s.isScheduledOnly && !s.isScheduledFallback).length,
+          syntheticEstCount: segsOut.filter(s => s.source === 'BUS_EST').length,
           scheduledFallbackCount: segsOut.filter(s => s.isScheduledFallback).length,
           tdOverrideCount: segsOut.filter(s => s.source === 'TD').length,
           skipReasons: debugSkips.slice(0, 60)
@@ -2119,7 +2196,7 @@
       }
     };
 
-    if (!Array.isArray(stops) || stops.length < 2 || !etaByStopIdx) {
+    if (!Array.isArray(stops) || stops.length < 2 || (!etaByStopIdx && !includeSyntheticFallback)) {
       _recordDebugSkip(debugSkips, { scope: 'route', routeNo, company, fromSeq: null, toSeq: null, reason: 'no_live_eta_pairs', detail: 'missing stops or ETA map' });
       publishDebug([]);
       return [];
@@ -2139,14 +2216,16 @@
     const parsedByIdx = new Array(stops.length);
     let stopsWithAnyEta = 0;
     for (let i = 0; i < stops.length; i++) {
-      const raw = (etaByStopIdx instanceof Map) ? etaByStopIdx.get(i) : etaByStopIdx[i];
+      const raw = !etaByStopIdx
+        ? null
+        : ((etaByStopIdx instanceof Map) ? etaByStopIdx.get(i) : etaByStopIdx[i]);
       const parsed = _parseStopEtaEntries(raw, nowMs);
       parsedByIdx[i] = parsed;
       if (parsed.length > 0) stopsWithAnyEta++;
     }
 
-    // Never fabricate speeds when live/API ETA data is completely missing
-    if (stopsWithAnyEta < 2) {
+    // Never fabricate speeds on global/bulk scans when live/API ETA data is completely missing
+    if (stopsWithAnyEta < 2 && !includeSyntheticFallback) {
       _recordDebugSkip(debugSkips, { scope: 'route', routeNo, company, fromSeq: null, toSeq: null, reason: 'no_live_eta_pairs', detail: `only ${stopsWithAnyEta} stop(s) had ETA entries` });
       publishDebug([]);
       return [];
@@ -2167,11 +2246,15 @@
       }
 
       // Pair with next stop (i + 1), or bridge ahead when sparse sampling long non-KMB / NLB rural routes
+      // Never bridge across airport-perimeter <-> highway/town boundaries so slow airport roads don't bleed onto highways.
       let j = i + 1;
       if (allowSparseBridge && (!parsedByIdx[j] || !parsedByIdx[j].length)) {
         const maxJump = Math.min(stops.length - 1, i + maxSparseJump);
+        const originIsAirport = _isAirportZoneForBridge(stops[i]);
         let foundJ = -1;
         for (let cand = i + 2; cand <= maxJump; cand++) {
+          const candIsAirport = _isAirportZoneForBridge(stops[cand]);
+          if (originIsAirport !== candIsAirport) break;
           if (parsedByIdx[cand] && parsedByIdx[cand].length) {
             foundJ = cand;
             break;
@@ -2212,7 +2295,7 @@
       }
 
       // Ground Truth Check: TD detectors & speed links ALWAYS have priority when covering this span
-      // (with strict <=60m highway / <=45m side-street & road-name compatibility, and never on distant bare chords)
+      // (with strict <=85m divided highway / <=60m highway / <=45m side-street & road-name compatibility, and never on distant bare chords)
       const tdTruth = matchTdGroundTruthForSpan(segCoords, tdDetectors, tdCameras, {
         tdSpeedGeoJson,
         fromStop: a,
@@ -2497,14 +2580,65 @@
       i = j;
     }
 
+    // Pass 1.5 (Detail-route synthetic fallback): whenever requested, emit BUS_EST road-class
+    // estimates for any non-terminus bus span lacking both TD detector coverage and a live ETA delta.
+    if (includeSyntheticFallback) {
+      const coveredFromIdx = new Set(rawSegs.map((s) => Number(s.fromIdx)));
+      let synCursor = 0;
+      const originLat = parseFloat(stops[0]?.latitude ?? stops[0]?.lat);
+      const originLon = parseFloat(stops[0]?.longitude ?? stops[0]?.lon);
+      for (let i = 0; i < stops.length - 2; i++) {
+        if (coveredFromIdx.has(i)) continue;
+        const a = stops[i], b = stops[i + 1];
+        const aLat = parseFloat(a?.latitude ?? a?.lat), aLon = parseFloat(a?.longitude ?? a?.lon);
+        const bLat = parseFloat(b?.latitude ?? b?.lat), bLon = parseFloat(b?.longitude ?? b?.lon);
+        if (!Number.isFinite(aLat) || !Number.isFinite(aLon) || !Number.isFinite(bLat) || !Number.isFinite(bLon)) continue;
+
+        const sliced = sliceStopSpanPolyline(roadPolylinePoints, aLat, aLon, bLat, bLon, synCursor);
+        synCursor = sliced.nextCursor;
+        const segCoords = sliced.coords;
+        const straightKm = _haversineKmLocal(aLat, aLon, bLat, bLon);
+        const polyKm = _polylineLengthKm(segCoords);
+        const unsnappedDistFactor = isRuralWindingCorridor(a, b) ? 1.45 : 1.18;
+        const roadDistKm = Math.max(0.08, sliced.isRoadSnapped ? polyKm : straightKm * unsnappedDistFactor);
+        if (roadDistKm < 0.06 || roadDistKm > 28) continue;
+
+        const distToOriginEndKm = (Number.isFinite(originLat) && Number.isFinite(originLon))
+          ? _haversineKmLocal(originLat, originLon, bLat, bLon)
+          : Infinity;
+        const isOriginLayoverLoop = Boolean(i === 0 && (distToOriginEndKm <= 0.15 || straightKm <= 0.15));
+        if (isOriginLayoverLoop) continue;
+
+        const tdTruth = matchTdGroundTruthForSpan(segCoords, tdDetectors, tdCameras, {
+          tdSpeedGeoJson,
+          fromStop: a,
+          toStop: b,
+          roadDistKm,
+          isRoadSnapped: Boolean(sliced.isRoadSnapped),
+          routeNo,
+          stops
+        });
+        const pairFlaggedTd = Boolean(tdCoveredPairs && tdCoveredPairs.has(`${i + 1}_${i + 2}`));
+        if (tdTruth.hasTd || pairFlaggedTd) continue;
+
+        rawSegs.push(buildSyntheticBusEstSegment(i, i + 1, a, b, segCoords, roadDistKm, tdTruth, {
+          routeNo,
+          company,
+          isRoadSnapped: Boolean(sliced.isRoadSnapped)
+        }));
+      }
+      rawSegs.sort((x, y) => Number(x.fromIdx) - Number(y.fromIdx));
+    }
+
     // Pass 2: 2-Stop Sliding-Window Smoothing for short urban hops (< 0.70 km)
     // Eliminates single-intersection traffic-light luck / minute-rounding spikes on empty roads!
     for (let k = 0; k < rawSegs.length; k++) {
       const seg = rawSegs[k];
+      if (seg.source === 'BUS_EST' || seg.isSyntheticFallback) continue;
       if (seg.coveredByTd || seg.isScheduledOnly || seg.isTerminusApproach || seg.isOriginLayover || seg.tier === 'SMOOTH' || seg.roadDistKm >= 0.70) continue;
       if (seg.isVerifiedMultiBusStall) continue;
-      const prev = (k > 0 && rawSegs[k - 1].toIdx === seg.fromIdx && !rawSegs[k - 1].isScheduledOnly) ? rawSegs[k - 1] : null;
-      const next = (k + 1 < rawSegs.length && rawSegs[k + 1].fromIdx === seg.toIdx && !rawSegs[k + 1].isScheduledOnly) ? rawSegs[k + 1] : null;
+      const prev = (k > 0 && rawSegs[k - 1].toIdx === seg.fromIdx && !rawSegs[k - 1].isScheduledOnly && rawSegs[k - 1].source !== 'BUS_EST') ? rawSegs[k - 1] : null;
+      const next = (k + 1 < rawSegs.length && rawSegs[k + 1].fromIdx === seg.toIdx && !rawSegs[k + 1].isScheduledOnly && rawSegs[k + 1].source !== 'BUS_EST') ? rawSegs[k + 1] : null;
       const neighbors = [prev, next].filter(Boolean);
       if (!neighbors.length) continue;
 
@@ -2532,16 +2666,17 @@
     // - Red (CONGESTED) is strictly reserved for verified severe multi-bus stalls (< 8 km/h across >= 2 consecutive live buses).
     // - Isolated single slow rural span without a slow neighbor smooths cleanly to Clear (SMOOTH).
     // - All other non-TD Bus API slow spans (< 18 km/h, including single-bus 6–17 km/h) strictly cap at Slow (MODERATE Amber).
-    const preConsecTiers = rawSegs.map(s => ((s.isScheduledOnly || s.isTerminusApproach || s.isOriginLayover) ? 'SMOOTH' : s.tier));
+    const preConsecTiers = rawSegs.map(s => ((s.isScheduledOnly || s.isTerminusApproach || s.isOriginLayover || s.source === 'BUS_EST' || s.isSyntheticFallback) ? 'SMOOTH' : s.tier));
     for (let k = 0; k < rawSegs.length; k++) {
       const seg = rawSegs[k];
+      if (seg.source === 'BUS_EST' || seg.isSyntheticFallback) continue;
       if (seg.coveredByTd || seg.isScheduledOnly || seg.isTerminusApproach || seg.isOriginLayover) continue;
       if (seg.tier === 'SMOOTH') continue;
       const isApZone = seg.roadClass === 'AIRPORT_PERIMETER';
       const neighborQualifies = (idx) => {
         if (idx < 0 || idx >= rawSegs.length) return false;
         const n = rawSegs[idx];
-        if (n.isScheduledOnly || n.isTerminusApproach || n.isOriginLayover) return false;
+        if (n.isScheduledOnly || n.isTerminusApproach || n.isOriginLayover || n.source === 'BUS_EST' || n.isSyntheticFallback) return false;
         if (isApZone) return n.speedKmh < 8 && preConsecTiers[idx] === 'CONGESTED';
         return preConsecTiers[idx] === 'CONGESTED' || preConsecTiers[idx] === 'MODERATE';
       };
@@ -2588,6 +2723,7 @@
           isBottleneck: td.tdTier === 'CONGESTED' || td.tdTier === 'MODERATE',
           color: td.tdColor,
           source: 'TD',
+          isSyntheticFallback: false,
           tdConflictResolved: conflict,
           detId: td.tdDetId,
           detectorId: td.tdDetId,
@@ -2599,6 +2735,27 @@
           cam: td.cam,
           camKey: td.cam?.camKey || td.cam?.key || '',
           camDesc: _sanitizeDirectionTypos(td.cam?.desc || '')
+        };
+      }
+      if (seg.source === 'BUS_EST' || seg.isSyntheticFallback) {
+        const estSpd = Math.abs(Math.round(Number(seg.speedKmh) || Number(seg.expectedKmh) || 26));
+        const estTier = estSpd >= 18 ? 'SMOOTH' : 'MODERATE';
+        return {
+          ...seg,
+          source: 'BUS_EST',
+          isSyntheticFallback: true,
+          allowRed: false,
+          speedKmh: estSpd,
+          tier: estTier,
+          color: getBusSpeedColorHex(estTier, estSpd),
+          detId: '',
+          detectorId: '',
+          occ: 0,
+          roadEn: `${seg.fromNameEn} → ${seg.toNameEn}`.trim(),
+          roadTc: `${seg.fromNameTc || seg.fromNameEn} → ${seg.toNameTc || seg.toNameEn}`.trim(),
+          cam: td?.cam || seg.cam || null,
+          camKey: td?.cam?.camKey || td?.cam?.key || seg.camKey || '',
+          camDesc: _sanitizeDirectionTypos(td?.cam?.desc || seg.camDesc || '')
         };
       }
       return {
@@ -2620,10 +2777,11 @@
 
   // Unified Stop-by-Stop Traffic Timeline Builder (Single Source of Truth for stop-row pills,
   // horizontal Board -> Terminus journey bar, expanded card banner, and inline "Details >" breakdown!)
-  // Strictly enforces 3-tier priority per stop-to-stop span:
+  // Strictly enforces 4-tier priority per stop-to-stop span:
   //   1) TD Speed Detector (+ TD Camera if present, with <=85m divided highway / <=60m highway / <=45m side-street & road-name compatibility)
-  //   2) Calibrated Bus Speed Inference (+ TD Camera if present, capped at Clear/Slow unless verified severe multi-bus stall)
-  //   3) TD Camera only (if no speed data yet)
+  //   2) Calibrated Bus Speed Inference (BUS_API + TD Camera if present, capped at Clear/Slow unless verified severe multi-bus stall)
+  //   2.5) Synthetic Road-Class Speed Estimate (BUS_EST, non-terminus spans without TD/ETA, capped at Clear/Slow — never Red)
+  //   3) TD Camera only (terminus spans without speed data)
   function buildStopByStopSegmentTraffic(stops, roadPolylinePoints = null, tdDetectors = [], tdCameras = [], busSpeedSegments = [], opts = {}) {
     if (!Array.isArray(stops) || stops.length < 2) return [];
     const detList = Array.isArray(tdDetectors)
@@ -2639,11 +2797,11 @@
         const b = busSpeedSegments[i];
         if (!b || !Number.isFinite(Number(b.fromIdx))) continue;
         const fIdx = Number(b.fromIdx);
-        const tIdx = Number.isFinite(Number(b.toIdx)) ? Number(b.toIdx) : (fIdx + 1);
-        busMap.set(fIdx, b);
-        // If sparse bridging spanned multiple stops, expose the bridged speed cleanly on covered intermediate slots
-        for (let m = fIdx + 1; m < tIdx; m++) {
-          if (!busMap.has(m)) busMap.set(m, b);
+        // Attach strictly to fIdx only — NEVER clone a single sparse multi-stop bridged speed
+        // onto uncovered intermediate stops (fIdx + 1 .. tIdx - 1); let uncovered spans fall through to BUS_EST.
+        const existing = busMap.get(fIdx);
+        if (!existing || (existing.source === 'BUS_EST' && b.source === 'BUS_API')) {
+          busMap.set(fIdx, b);
         }
       }
     }
@@ -2690,9 +2848,10 @@
       });
       const busSeg = busMap.get(i) || null;
       const destNmCombined = `${b?.stopName_e || ''} ${b?.name_tc || ''}`;
+      const isFinalTerminusSpan = (i === stops.length - 2);
       const isTerminusApproach = Boolean(
         busSeg?.isTerminusApproach ||
-        (i === stops.length - 2 && (
+        (isFinalTerminusSpan && (
           stops.length >= 5 ||
           isTerminusLikeStop(b, -1) ||
           /pat\s*heung\s*r(?:oa)?d|八鄉路/i.test(destNmCombined) ||
@@ -2732,13 +2891,22 @@
           isTerminusApproach: false,
           isScheduledOnly: false,
           isScheduledFallback: false,
+          isSyntheticFallback: false,
           coords: segCoords
         });
         continue;
       }
 
-      // Tier 2: Calibrated Bus Speed Inference (only when no TD detector or TD speed link covers this stretch)
-      if (busSeg && !busSeg.coveredByTd && !busSeg.tdCovered && busSeg.source !== 'TD' && Number.isFinite(Number(busSeg.speedKmh))) {
+      // Tier 2: Calibrated Live Bus Speed Inference (only when no TD detector or TD speed link covers this stretch)
+      if (
+        busSeg &&
+        !busSeg.coveredByTd &&
+        !busSeg.tdCovered &&
+        busSeg.source !== 'TD' &&
+        busSeg.source !== 'BUS_EST' &&
+        !busSeg.isSyntheticFallback &&
+        Number.isFinite(Number(busSeg.speedKmh))
+      ) {
         let effSpeed = Math.abs(Math.round(Number(busSeg.speedKmh)));
         const verifiedStall = Boolean(busSeg.isVerifiedMultiBusStall && !isTerminusApproach && !busSeg.isScheduledOnly && !busSeg.isScheduledFallback && effSpeed < 8);
         let tier = capBusApiTier(busSeg.tier, effSpeed, verifiedStall);
@@ -2776,6 +2944,7 @@
           isVerifiedMultiBusStall: verifiedStall,
           isScheduledOnly: Boolean(busSeg.isScheduledOnly),
           isScheduledFallback: Boolean(busSeg.isScheduledFallback),
+          isSyntheticFallback: false,
           isTerminusApproach,
           allowRed: Boolean(verifiedStall && busSeg.allowRed !== false),
           coords: segCoords
@@ -2783,7 +2952,30 @@
         continue;
       }
 
-      // Tier 3: TD Camera only (if present along unmonitored span)
+      // Tier 2.5: Distance + Road-Class Speed Fallback (BUS_EST) on TD-blind non-terminus spans without live ETA delta
+      // Strictly capped at SMOOTH or MODERATE (allowRed: false — NEVER Red CONGESTED).
+      if (!isFinalTerminusSpan && !isTerminusApproach) {
+        const synSeg = buildSyntheticBusEstSegment(i, i + 1, a, b, segCoords, roadDistKm, tdTruth, {
+          routeNo,
+          company: opts.company || '',
+          isRoadSnapped: Boolean(sliced.isRoadSnapped),
+          cam: tdTruth.cam || busSeg?.cam || null
+        });
+        if (busSeg && (busSeg.source === 'BUS_EST' || busSeg.isSyntheticFallback) && Number.isFinite(Number(busSeg.speedKmh)) && Number(busSeg.speedKmh) > 0) {
+          const clampedSpd = Math.abs(Math.round(Number(busSeg.speedKmh)));
+          synSeg.speedKmh = clampedSpd;
+          synSeg.busInferredSpeedKmh = clampedSpd;
+          synSeg.tier = clampedSpd >= 18 ? 'SMOOTH' : 'MODERATE';
+          synSeg.busInferredTier = synSeg.tier;
+          synSeg.isBottleneck = synSeg.tier === 'MODERATE';
+          synSeg.allowRed = false;
+          synSeg.color = getBusSpeedColorHex(synSeg.tier, clampedSpd);
+        }
+        out.push(synSeg);
+        continue;
+      }
+
+      // Tier 3: TD Camera only (if present along unmonitored terminus span)
       if (tdTruth.cam) {
         out.push({
           fromIdx: i,
@@ -3233,6 +3425,7 @@
     polylineIntersectsBounds: _polylineIntersectsBounds,
     isSegmentCoveredByTdGroundTruth,
     matchTdGroundTruthForSpan,
+    buildSyntheticBusEstSegment,
     inferBusApiSegmentSpeeds,
     buildStopByStopSegmentTraffic,
     selectGlobalBusSpeedRoutes
@@ -3244,6 +3437,7 @@
   globalScope.subdividePolylineMicroSteps = subdividePolylineMicroSteps;
   globalScope.aggregateBusMicroStepsToCorridors = aggregateBusMicroStepsToCorridors;
   globalScope.areRoadNamesCompatible = areRoadNamesCompatible;
+  globalScope.buildSyntheticBusEstSegment = buildSyntheticBusEstSegment;
   globalScope.inferBusApiSegmentSpeeds = inferBusApiSegmentSpeeds;
   globalScope.buildStopByStopSegmentTraffic = buildStopByStopSegmentTraffic;
   globalScope.selectGlobalBusSpeedRoutes = selectGlobalBusSpeedRoutes;

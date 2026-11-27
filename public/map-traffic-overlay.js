@@ -1084,9 +1084,9 @@ function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) 
   coords = effCoords;
   const layers = [];
   const liveDetectors = Array.isArray(window.__LIVE_TRAFFIC_DETECTORS__) ? window.__LIVE_TRAFFIC_DETECTORS__ : [];
-  // When Traffic Overlay is ON, NEVER paint unmonitored route lines in route-brand Red (#FF3B30/#ef4444);
-  // use neutral Slate/Blue (#3b82f6) so unmonitored segments are never mistaken for jammed traffic.
-  const unmonitoredTrafficColor = '#3b82f6';
+  // When Traffic Overlay is ON, NEVER paint blue (#3b82f6) "no TD speed detector" lines or route-brand Red;
+  // every bus segment uses busspeed.js inferred / estimated speeds (TD > BUS_API > BUS_EST, defaulting to Smooth Green #16a34a).
+  const unmonitoredTrafficColor = '#16a34a';
   const solidRouteFallback = window.trafficLayerEnabled ? unmonitoredTrafficColor : (routeAccent || '#2563eb');
   const highContrastCasingColor = '#0f172a';
   const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
@@ -1125,7 +1125,7 @@ function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) 
       renderList = [];
       for (let i = 0; i < busSegs.length; i++) {
         const seg = busSegs[i];
-        if (!seg || (seg.isScheduledOnly && !seg.isScheduledFallback)) continue;
+        if (!seg) continue;
         // Strict TD ground-truth priority (~100m, ±45°): discard BUS_API estimate wherever TD coverage exists
         if (seg.coveredByTd || seg.tdCovered || seg.source === 'TD') continue;
         if (!Array.isArray(seg.coords) || seg.coords.length < 2) continue;
@@ -1137,7 +1137,8 @@ function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) 
     for (let i = 0; i < renderList.length; i++) {
       const seg = renderList[i];
       if (!seg || !Array.isArray(seg.coords) || seg.coords.length < 2) continue;
-      const cappedTier = _capBusApiTierMap(seg.tier, seg.speedKmh, seg);
+      const isSchedOnlyNonFb = Boolean(seg.isScheduledOnly && !seg.isScheduledFallback);
+      const cappedTier = isSchedOnlyNonFb ? 'SMOOTH' : _capBusApiTierMap(seg.tier, seg.speedKmh, seg);
       const cappedColor = cappedTier === 'CONGESTED' ? '#dc2626' : (cappedTier === 'MODERATE' ? '#f59e0b' : '#16a34a');
       // Soft translucent dashed casing + translucent dashed BUS_API stroke (opacity 0.62, dashArray '8, 6', weight 4)
       layers.push(
@@ -1227,6 +1228,7 @@ function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) 
       stops: Array.isArray(stops) ? stops : [],
       stopSegments: effectiveStopSegs,
       ensureStopCoverage: true,
+      preferBusEstFallback: true,
       noDataColor: unmonitoredTrafficColor,
       maxMicroStepKm: 0.15
     });
@@ -1258,11 +1260,10 @@ function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) 
           const p = feat?.properties || {};
           const hasLiveSpeed = p.hasSpeedData !== false && p.speedKmh !== null && p.speedKmh !== undefined && Number.isFinite(Number(p.speedKmh));
           if (!hasLiveSpeed) {
-            // Neutral Slate/Blue (#3b82f6) strictly as a last-resort fallback when neither TD nor BUS_API/BUS_EST exists
             return {
               color: unmonitoredTrafficColor,
-              weight: 4,
-              opacity: 0.95,
+              weight: 4.5,
+              opacity: 0.88,
               dashArray: null,
               smoothFactor: 1.5,
               lineJoin: 'round',
@@ -1289,7 +1290,7 @@ function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) 
           if (!hasLiveSpeed) {
             if (typeof lyr.bindTooltip === 'function') {
               lyr.bindTooltip(
-                isZh ? '實時巴士路線（無運輸署測速段）' : 'Bus route (no TD speed detector)',
+                isZh ? '🚌 路況估算 · 暢通' : '🚌 Bus Est. · Clear',
                 { sticky: true, className: 'kmb-map-stop-label' }
               );
             }

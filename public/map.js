@@ -39,11 +39,21 @@ window.__ROUTE_GEOM_CACHE__ = window.__ROUTE_GEOM_CACHE__ || {};
 var _busGeomInFlight = new Map();
 var _detailGeomToken = 0;
 
+var _BUS_GEOM_STORAGE_KEY = 'transit_bus_geom_v2';
+var _busGeomStoragePurgedOld = false;
+
 function _readBusGeomStorageMap() {
   try {
+    if (!_busGeomStoragePurgedOld) {
+      _busGeomStoragePurgedOld = true;
+      try {
+        if (typeof SafeStorage !== 'undefined' && SafeStorage?.removeItem) SafeStorage.removeItem('transit_bus_geom_v1');
+        else if (typeof localStorage !== 'undefined') localStorage.removeItem('transit_bus_geom_v1');
+      } catch (e) {}
+    }
     const raw = (typeof SafeStorage !== 'undefined' && SafeStorage?.getItem)
-      ? SafeStorage.getItem('transit_bus_geom_v1')
-      : (typeof localStorage !== 'undefined' ? localStorage.getItem('transit_bus_geom_v1') : null);
+      ? SafeStorage.getItem(_BUS_GEOM_STORAGE_KEY)
+      : (typeof localStorage !== 'undefined' ? localStorage.getItem(_BUS_GEOM_STORAGE_KEY) : null);
     if (!raw) return {};
     const parsed = JSON.parse(raw);
     return (parsed && typeof parsed === 'object') ? parsed : {};
@@ -64,17 +74,26 @@ function _writeBusGeomStorageEntry(cacheKey, coords) {
     }
     const serialized = JSON.stringify(store);
     if (typeof SafeStorage !== 'undefined' && SafeStorage?.setItem) {
-      SafeStorage.setItem('transit_bus_geom_v1', serialized);
+      SafeStorage.setItem(_BUS_GEOM_STORAGE_KEY, serialized);
     } else if (typeof localStorage !== 'undefined') {
-      localStorage.setItem('transit_bus_geom_v1', serialized);
+      localStorage.setItem(_BUS_GEOM_STORAGE_KEY, serialized);
     }
   } catch (e) {}
+}
+
+function _resolveBusGeomBound(group) {
+  const explicit = String(group?.tdBound || '').trim().toUpperCase();
+  if (explicit === 'O' || explicit === 'I') return explicit;
+  const rId = String(group?.routeIds?.[0] || group?.key || '').toUpperCase();
+  if (/_I(?:_|$)/.test(rId)) return 'I';
+  if (/_O(?:_|$)/.test(rId)) return 'O';
+  return '';
 }
 
 function buildBusGeomCacheKey(group, stops = []) {
   const co = String(group?.company || 'BUS').toUpperCase();
   const rt = String(group?.routeNo || '').toUpperCase();
-  const bd = String(group?.tdBound || '').toUpperCase();
+  const bd = _resolveBusGeomBound(group);
   const gid = String(group?.gtfsId || '');
   const gk = String(group?.key || '');
   return `${co}|${rt}|${bd}|${gid}|${gk}|${Array.isArray(stops) ? stops.length : 0}`;
@@ -108,7 +127,7 @@ function getCachedBusRoutePolyline(group, stops = []) {
   return null;
 }
 
-function _sampleBusStopCoordsForQuery(stops, maxWaypoints = 36) {
+function _sampleBusStopCoordsForQuery(stops, maxWaypoints = 50) {
   const valid = (Array.isArray(stops) ? stops : [])
     .map(s => [parseFloat(s?.latitude ?? s?.lat), parseFloat(s?.longitude ?? s?.lon)])
     .filter(p => isValidRailOrFerryCoord(p[0], p[1]));
@@ -134,7 +153,7 @@ async function fetchRoadSnappedBusPolyline(group, stops = []) {
 
   const task = (async () => {
     try {
-      const sampled = _sampleBusStopCoordsForQuery(stops, 36);
+      const sampled = _sampleBusStopCoordsForQuery(stops, 50);
       if (sampled.length < 2) return null;
       const stopsParam = sampled.map(p => `${p[0].toFixed(5)},${p[1].toFixed(5)}`).join(';');
       const params = new URLSearchParams({
@@ -142,7 +161,7 @@ async function fetchRoadSnappedBusPolyline(group, stops = []) {
         gtfsId: String(group.gtfsId || ''),
         route: String(group.routeNo || ''),
         company: String(group.company || ''),
-        bound: String(group.tdBound || ''),
+        bound: _resolveBusGeomBound(group),
         stops: stopsParam
       });
       const workerBase = (typeof WORKER_BASE_URL !== 'undefined' && WORKER_BASE_URL) ? WORKER_BASE_URL : '/api/worker';

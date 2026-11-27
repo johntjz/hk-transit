@@ -3109,7 +3109,7 @@ function ensureRoutePolylineCoversStops(coords, stops = [], opts = {}) {
   if (!Array.isArray(coords) || coords.length < 2 || !Array.isArray(stops) || stops.length < 2) {
     return coords;
   }
-  const coverThresholdKm = Number(opts.coverThresholdKm) > 0 ? Number(opts.coverThresholdKm) : 0.14;
+  const coverThresholdKm = Number(opts.coverThresholdKm) > 0 ? Number(opts.coverThresholdKm) : 0.095;
   const maxBridgeHopKm = Number(opts.maxBridgeHopKm) > 0 ? Number(opts.maxBridgeHopKm) : 3.5;
   const bridgeStepKm = Number(opts.bridgeStepKm) > 0 ? Number(opts.bridgeStepKm) : 0.08;
 
@@ -3383,6 +3383,7 @@ function buildRouteSpeedGeoJson(coords, detectors = [], opts = {}) {
     ? ensureRoutePolylineCoversStops(coords, stops)
     : coords;
 
+  const preferBusEstFallback = Boolean(optObj.preferBusEstFallback);
   // Index optional unified stop-by-stop segments (TD / BUS_API / BUS_EST) for merging onto TD-blind stretches
   const stopSegByFromIdx = new Map();
   const stopSegByFromSeq = new Map();
@@ -3396,7 +3397,6 @@ function buildRouteSpeedGeoJson(coords, detectors = [], opts = {}) {
     if (Number.isFinite(fIdx)) knownStopFromIdxs.add(fIdx);
     const src = String(s.source || '').toUpperCase();
     if (src !== 'TD' && src !== 'BUS_API' && src !== 'BUS_EST') continue;
-    if (src === 'BUS_API' && s.isScheduledOnly && !s.isScheduledFallback) continue;
     const spdNum = Number(s.speedKmh);
     if (!Number.isFinite(spdNum) || spdNum <= 0) continue;
     if (Number.isFinite(fIdx)) {
@@ -3699,16 +3699,19 @@ function buildRouteSpeedGeoJson(coords, detectors = [], opts = {}) {
             roadTc = _sanitizeDirectionTyposHardcode(String(stopSeg.roadTc || stopSeg.roadEn || ''));
             roundaboutBottleneck = Boolean(stopSeg.roundaboutBottleneck);
           } else if (stSrc === 'BUS_API') {
-            speedKmh = stSpd;
+            const isSchedOnlyNonFallback = Boolean(stopSeg.isScheduledOnly && !stopSeg.isScheduledFallback);
+            speedKmh = isSchedOnlyNonFallback ? Math.max(18, stSpd) : stSpd;
             hasSpeedData = true;
             source = 'BUS_API';
-            isVerifiedMultiBusStall = Boolean(stopSeg.isVerifiedMultiBusStall);
+            isVerifiedMultiBusStall = isSchedOnlyNonFallback ? false : Boolean(stopSeg.isVerifiedMultiBusStall);
             isScheduledFallback = Boolean(stopSeg.isScheduledFallback);
-            tier = capBusApiTierHardcode(stopSeg.tier, speedKmh, {
-              isTerminusApproach: Boolean(stopSeg.isTerminusApproach),
-              isScheduledFallback,
-              isVerifiedMultiBusStall
-            });
+            tier = isSchedOnlyNonFallback
+              ? 'SMOOTH'
+              : capBusApiTierHardcode(stopSeg.tier, speedKmh, {
+                  isTerminusApproach: Boolean(stopSeg.isTerminusApproach),
+                  isScheduledFallback,
+                  isVerifiedMultiBusStall
+                });
             color = tier === 'CONGESTED' ? '#dc2626' : (tier === 'MODERATE' ? '#f59e0b' : '#16a34a');
           } else if (stSrc === 'BUS_EST') {
             speedKmh = stSpd;
@@ -3732,6 +3735,41 @@ function buildRouteSpeedGeoJson(coords, detectors = [], opts = {}) {
           }
         }
       }
+    }
+
+    // Zero-blue busspeed.js fallback: when preferBusEstFallback is enabled (bus route map), synthesize a
+    // road-class BUS_EST speed from busspeed.js instead of ever painting blue "no TD speed detector" lines.
+    if (!hasSpeedData && preferBusEstFallback) {
+      const fromStopObj = (seg.fromStopIdx !== null && seg.fromStopIdx !== undefined) ? stops[seg.fromStopIdx] : null;
+      const toStopObj = (seg.toStopIdx !== null && seg.toStopIdx !== undefined) ? stops[seg.toStopIdx] : null;
+      const spanDistKm = Math.max(0.08, Number(seg.parentHopKm || seg.hopKm || seg.lenKm) || 0.4);
+      let estSpd = (seg.isBbiSeg || (!seg.isSideStreetSpan && spanDistKm >= 1.8))
+        ? 56
+        : (spanDistKm >= 0.8 ? 35 : 26);
+      if (typeof window !== 'undefined' && window.BusSpeedEngine && typeof window.BusSpeedEngine.classifyBusRoadClass === 'function') {
+        try {
+          const prof = window.BusSpeedEngine.classifyBusRoadClass(spanDistKm, fromStopObj, toStopObj);
+          if (prof && Number.isFinite(Number(prof.expectedKmh)) && Number(prof.expectedKmh) > 0) {
+            estSpd = Math.max(18, Math.round(Number(prof.expectedKmh)));
+          }
+        } catch (e) {}
+      }
+      speedKmh = Math.max(18, estSpd);
+      hasSpeedData = true;
+      source = 'BUS_EST';
+      tier = 'SMOOTH';
+      color = '#16a34a';
+      isSyntheticFallback = true;
+      segFromIdx = seg.fromStopIdx ?? null;
+      segToIdx = seg.toStopIdx ?? null;
+      segFromSeq = seg.betweenStops?.fromSeq ?? (seg.fromStopIdx !== null && seg.fromStopIdx !== undefined ? seg.fromStopIdx + 1 : null);
+      segToSeq = seg.betweenStops?.toSeq ?? (seg.toStopIdx !== null && seg.toStopIdx !== undefined ? seg.toStopIdx + 1 : null);
+      segFromNameEn = String(seg.betweenStops?.fromNameEn || '');
+      segFromNameTc = String(seg.betweenStops?.fromNameTc || segFromNameEn);
+      segToNameEn = String(seg.betweenStops?.toNameEn || '');
+      segToNameTc = String(seg.betweenStops?.toNameTc || segToNameEn);
+      roadEn = (segFromNameEn && segToNameEn) ? `${segFromNameEn} → ${segToNameEn}`.trim() : '';
+      roadTc = (segFromNameTc && segToNameTc) ? `${segFromNameTc} → ${segToNameTc}`.trim() : roadEn;
     }
 
     const ptA = [Number(seg.a[1].toFixed(6)), Number(seg.a[0].toFixed(6))];

@@ -1565,8 +1565,87 @@ function simplifyPolylineCoords(pts, epsDeg = 0.00008, maxPts = 420) {
   return res.map(p => [Number(p[0].toFixed(5)), Number(p[1].toFixed(5))]);
 }
 
-function stitchGeoJsonBusGeometry(geometry, origPt = null, destPt = null) {
+function pointToSegDistKmWorker(lat, lon, aLat, aLon, bLat, bLon) {
+  const cosLat = Math.cos(((aLat + bLat) * 0.5) * Math.PI / 180);
+  const px = (lon - aLon) * cosLat;
+  const py = lat - aLat;
+  const vx = (bLon - aLon) * cosLat;
+  const vy = bLat - aLat;
+  const lenSq = vx * vx + vy * vy;
+  let t = lenSq > 1e-14 ? (px * vx + py * vy) / lenSq : 0;
+  if (t < 0) t = 0;
+  else if (t > 1) t = 1;
+  const cLat = aLat + (bLat - aLat) * t;
+  const cLon = aLon + (bLon - aLon) * t;
+  return { distKm: haversineKmWorker(lat, lon, cLat, cLon), t };
+}
+
+function evaluatePolylineStopCoverage(coords, stopPts = []) {
+  if (!Array.isArray(coords) || coords.length < 2 || !Array.isArray(stopPts) || stopPts.length < 2) {
+    return { meanDistKm: 0, maxDistKm: 0, uncovered90: 0, uncovered120: 0, orderViolations: 0, matchedCount: 0 };
+  }
+  let sumDist = 0;
+  let maxDist = 0;
+  let uncovered90 = 0;
+  let uncovered120 = 0;
+  let orderViolations = 0;
+  let prevPos = -1;
+  let matchedCount = 0;
+
+  // Compute monotonic-aware nearest segment projection for every stop
+  let cursor = 0;
+  for (let i = 0; i < stopPts.length; i++) {
+    const sp = stopPts[i];
+    if (!Array.isArray(sp) || sp.length < 2) continue;
+    // First search globally to detect reverse-direction polylines honestly
+    let globBestD = Infinity;
+    let globBestPos = 0;
+    for (let p = 0; p < coords.length - 1; p++) {
+      const proj = pointToSegDistKmWorker(sp[0], sp[1], coords[p][0], coords[p][1], coords[p + 1][0], coords[p + 1][1]);
+      if (proj.distKm < globBestD) {
+        globBestD = proj.distKm;
+        globBestPos = p + proj.t;
+      }
+    }
+    // Also search forward from cursor so loops/overlapping carriageways pick forward order
+    let fwdBestD = Infinity;
+    let fwdBestPos = cursor;
+    for (let p = cursor; p < coords.length - 1; p++) {
+      const proj = pointToSegDistKmWorker(sp[0], sp[1], coords[p][0], coords[p][1], coords[p + 1][0], coords[p + 1][1]);
+      if (proj.distKm < fwdBestD) {
+        fwdBestD = proj.distKm;
+        fwdBestPos = p + proj.t;
+      }
+    }
+    const useFwd = (fwdBestD <= globBestD + 0.045) || fwdBestD <= 0.095;
+    const effDist = useFwd ? fwdBestD : globBestD;
+    const effPos = useFwd ? fwdBestPos : globBestPos;
+    if (useFwd) {
+      cursor = Math.max(cursor, Math.floor(fwdBestPos));
+    } else if (prevPos >= 0 && effPos + 0.5 < prevPos) {
+      orderViolations++;
+    }
+    prevPos = effPos;
+    sumDist += effDist;
+    if (effDist > maxDist) maxDist = effDist;
+    if (effDist > 0.090) uncovered90++;
+    if (effDist > 0.120) uncovered120++;
+    matchedCount++;
+  }
+
+  return {
+    meanDistKm: matchedCount > 0 ? sumDist / matchedCount : 0,
+    maxDistKm: maxDist,
+    uncovered90,
+    uncovered120,
+    orderViolations,
+    matchedCount
+  };
+}
+
+function stitchGeoJsonBusGeometry(geometry, origPt = null, destPt = null, opts = {}) {
   if (!geometry || !Array.isArray(geometry.coordinates)) return [];
+  const allowReverse = opts?.allowReverse !== false;
   let parts = [];
   if (geometry.type === 'LineString') {
     parts = [geometry.coordinates];
@@ -1601,7 +1680,7 @@ function stitchGeoJsonBusGeometry(geometry, origPt = null, destPt = null) {
     }
   }
 
-  if (merged.length >= 2 && origPt && destPt) {
+  if (allowReverse && merged.length >= 2 && origPt && destPt) {
     const fwdScore = haversineKmWorker(merged[0][0], merged[0][1], origPt[0], origPt[1]) +
       haversineKmWorker(merged[merged.length - 1][0], merged[merged.length - 1][1], destPt[0], destPt[1]);
     const revScore = haversineKmWorker(merged[0][0], merged[0][1], destPt[0], destPt[1]) +
@@ -1613,7 +1692,85 @@ function stitchGeoJsonBusGeometry(geometry, origPt = null, destPt = null) {
   return merged;
 }
 
-async function fetchCsdiBusRouteGeometry({ gtfsId, routeNo, company, bound, origPt, destPt }) {
+function selectBestCsdiBusGeometry(features, { company = '', bound = '', origPt = null, destPt = null, stopPts = [] } = {}) {
+  if (!Array.isArray(features) || !features.length) return null;
+  const cleanCo = String(company || '').toUpperCase().replace(/[^A-Z]/g, '');
+  const cleanBound = String(bound || '').trim().toUpperCase();
+  const targetSeq = cleanBound === 'I' ? 2 : (cleanBound === 'O' ? 1 : 0);
+  const validStops = Array.isArray(stopPts) && stopPts.length >= 2
+    ? stopPts
+    : (origPt && destPt ? [origPt, destPt] : []);
+  const effOrig = origPt || (validStops.length >= 2 ? validStops[0] : null);
+  const effDest = destPt || (validStops.length >= 2 ? validStops[validStops.length - 1] : null);
+
+  let bestCoords = null;
+  let bestScore = Infinity;
+  let bestCoverage = null;
+
+  const scoreCandidate = (coords, feat, isReversed) => {
+    let score = 0;
+    if (effOrig && effDest) {
+      const dStart = haversineKmWorker(coords[0][0], coords[0][1], effOrig[0], effOrig[1]);
+      const dEnd = haversineKmWorker(coords[coords.length - 1][0], coords[coords.length - 1][1], effDest[0], effDest[1]);
+      score += dStart + dEnd;
+    }
+    const featSeq = Number(feat?.properties?.ROUTE_SEQ || 0);
+    // Always factor ROUTE_SEQ when targetSeq is known (prevents reversed ROUTE_SEQ=1 from beating true ROUTE_SEQ=2!)
+    if (targetSeq && featSeq && featSeq !== targetSeq) {
+      score += 2.5;
+    }
+    // Heavily penalize reversing a CSDI feature so natural-direction geometry always wins when endpoints match
+    if (isReversed) {
+      score += 4.0;
+    }
+    const featCo = String(feat?.properties?.COMPANY_CODE || '').toUpperCase();
+    if (cleanCo && featCo && !featCo.includes(cleanCo)) score += 3.0;
+
+    let cov = null;
+    if (validStops.length >= 2) {
+      cov = evaluatePolylineStopCoverage(coords, validStops);
+      score += cov.meanDistKm * 8.0 + cov.uncovered90 * 0.65 + cov.uncovered120 * 0.90 + cov.orderViolations * 1.25;
+    }
+    return { score, cov };
+  };
+
+  for (const feat of features) {
+    const natural = stitchGeoJsonBusGeometry(feat?.geometry, null, null, { allowReverse: false });
+    if (natural.length < 2) continue;
+
+    const fwd = scoreCandidate(natural, feat, false);
+    if (fwd.score < bestScore) {
+      bestScore = fwd.score;
+      bestCoords = natural;
+      bestCoverage = fwd.cov;
+    }
+
+    // Only consider reversed orientation as a penalized fallback (e.g. single-feature routes digitized backwards)
+    if (features.length === 1 || (effOrig && effDest)) {
+      const revCoords = [...natural].reverse();
+      const rev = scoreCandidate(revCoords, feat, true);
+      if (rev.score < bestScore) {
+        bestScore = rev.score;
+        bestCoords = revCoords;
+        bestCoverage = rev.cov;
+      }
+    }
+  }
+
+  if (!bestCoords || bestCoords.length < 2) return null;
+  if (effOrig && effDest) {
+    const dStart = haversineKmWorker(bestCoords[0][0], bestCoords[0][1], effOrig[0], effOrig[1]);
+    const dEnd = haversineKmWorker(bestCoords[bestCoords.length - 1][0], bestCoords[bestCoords.length - 1][1], effDest[0], effDest[1]);
+    if (dStart + dEnd > 3.5) return null;
+  }
+  return {
+    coords: simplifyPolylineCoords(bestCoords, 0.00006, 560),
+    coverage: bestCoverage,
+    score: bestScore
+  };
+}
+
+async function fetchCsdiBusRouteGeometry({ gtfsId, routeNo, company, bound, origPt, destPt, stopPts = [] }) {
   const cleanId = String(gtfsId || '').replace(/\D/g, '');
   const cleanRoute = String(routeNo || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
   const cleanCo = String(company || '').toUpperCase().replace(/[^A-Z]/g, '');
@@ -1627,39 +1784,15 @@ async function fetchCsdiBusRouteGeometry({ gtfsId, routeNo, company, bound, orig
       : `ROUTE_NAMEE='${cleanRoute}'`);
 
   const baseUrl = 'https://portal.csdi.gov.hk/server/rest/services/common/td_rcd_1638844988873_41214/MapServer/0/query';
-  const qs = `where=${encodeURIComponent(where)}&outFields=ROUTE_ID,ROUTE_NAMEE,ROUTE_SEQ,COMPANY_CODE&outSR=4326&maxAllowableOffset=0.00009&f=geojson`;
+  const qs = `where=${encodeURIComponent(where)}&outFields=ROUTE_ID,ROUTE_NAMEE,ROUTE_SEQ,COMPANY_CODE&outSR=4326&maxAllowableOffset=0.00007&f=geojson`;
   const res = await fetchWithTimeout(`${baseUrl}?${qs}`, 4200, { Accept: 'application/json' }, 86400);
   if (!res || !res.ok) return null;
   const data = await res.json().catch(() => null);
   const features = Array.isArray(data?.features) ? data.features : [];
   if (!features.length) return null;
 
-  const targetSeq = bound === 'I' ? 2 : (bound === 'O' ? 1 : 0);
-  let bestCoords = null;
-  let bestScore = Infinity;
-
-  for (const feat of features) {
-    const coords = stitchGeoJsonBusGeometry(feat?.geometry, origPt, destPt);
-    if (coords.length < 2) continue;
-    let score = 0;
-    if (origPt && destPt) {
-      const dStart = haversineKmWorker(coords[0][0], coords[0][1], origPt[0], origPt[1]);
-      const dEnd = haversineKmWorker(coords[coords.length - 1][0], coords[coords.length - 1][1], destPt[0], destPt[1]);
-      score += dStart + dEnd;
-    } else if (targetSeq && Number(feat?.properties?.ROUTE_SEQ) !== targetSeq) {
-      score += 5.0;
-    }
-    const featCo = String(feat?.properties?.COMPANY_CODE || '').toUpperCase();
-    if (cleanCo && featCo && !featCo.includes(cleanCo)) score += 3.0;
-    if (score < bestScore) {
-      bestScore = score;
-      bestCoords = coords;
-    }
-  }
-
-  if (!bestCoords || bestCoords.length < 2) return null;
-  if (origPt && destPt && bestScore > 3.5) return null;
-  return simplifyPolylineCoords(bestCoords, 0.00008, 420);
+  const picked = selectBestCsdiBusGeometry(features, { company: cleanCo, bound, origPt, destPt, stopPts });
+  return picked ? picked.coords : null;
 }
 
 async function fetchOsrmDeterministicBusGeometry(stopPts) {
@@ -1684,7 +1817,7 @@ async function fetchOsrmDeterministicBusGeometry(stopPts) {
     for (let k = skipFirst; k < batchCoords.length; k++) allCoords.push(batchCoords[k]);
   }
   if (allCoords.length < 2) return null;
-  return simplifyPolylineCoords(allCoords, 0.00008, 420);
+  return simplifyPolylineCoords(allCoords, 0.00006, 560);
 }
 
 async function handleBusGeomRequest(urlObj) {
@@ -1706,15 +1839,42 @@ async function handleBusGeomRequest(urlObj) {
 
   let coords = null;
   let source = '';
+  let csdiCov = null;
   try {
-    coords = await fetchCsdiBusRouteGeometry({ gtfsId, routeNo, company, bound, origPt, destPt });
-    if (coords && coords.length >= 2) source = 'CSDI';
+    coords = await fetchCsdiBusRouteGeometry({ gtfsId, routeNo, company, bound, origPt, destPt, stopPts });
+    if (coords && coords.length >= 2) {
+      source = 'CSDI';
+      if (stopPts.length >= 2) {
+        csdiCov = evaluatePolylineStopCoverage(coords, stopPts);
+      }
+    }
   } catch (e) {}
 
-  if (!coords && stopPts.length >= 2) {
+  // Global anti-isolation guard: if CSDI is missing OR leaves isolated/bypassed stops (e.g. outdated CSDI detour),
+  // also query OSRM across all stop waypoints and pick whichever road geometry covers stops more cleanly!
+  const csdiHasIsolatedStops = Boolean(
+    csdiCov && (csdiCov.uncovered120 >= 1 || csdiCov.uncovered90 >= 2 || csdiCov.orderViolations >= 2)
+  );
+  if ((!coords || csdiHasIsolatedStops) && stopPts.length >= 2) {
     try {
-      coords = await fetchOsrmDeterministicBusGeometry(stopPts);
-      if (coords && coords.length >= 2) source = 'OSRM';
+      const osrmCoords = await fetchOsrmDeterministicBusGeometry(stopPts);
+      if (osrmCoords && osrmCoords.length >= 2) {
+        if (!coords) {
+          coords = osrmCoords;
+          source = 'OSRM';
+        } else {
+          const osrmCov = evaluatePolylineStopCoverage(osrmCoords, stopPts);
+          const osrmBetter = (
+            osrmCov.uncovered120 < csdiCov.uncovered120 ||
+            (osrmCov.uncovered120 === csdiCov.uncovered120 && osrmCov.uncovered90 < csdiCov.uncovered90) ||
+            (osrmCov.uncovered90 === csdiCov.uncovered90 && osrmCov.meanDistKm + 0.015 < csdiCov.meanDistKm)
+          );
+          if (osrmBetter) {
+            coords = osrmCoords;
+            source = 'OSRM';
+          }
+        }
+      }
     } catch (e) {}
   }
 

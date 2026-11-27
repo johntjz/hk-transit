@@ -4607,22 +4607,24 @@ test('Commuter Updates 2 & 3: Directional camera bearingDeg & FOV cones on Globa
   assert.ok(iconObj.html.includes(`transform:rotate(${brgTC002F}deg)`), 'Camera marker SVG cone/arrow must rotate to bearingDeg');
   assert.ok(iconObj.html.includes('cam-fov-svg') && iconObj.html.includes('A36 36') && iconObj.html.includes('rgba(37, 99, 235, 0.28)'), 'Camera marker must include 36px 45° radar FOV cone SVG path');
 
-  // 5. Verify neutral Slate/Blue (#3b82f6, NEVER route-brand Red #FF3B30/#ef4444) on unmonitored segments whenever Traffic Overlay is ON
+  // 5. Verify busspeed.js BUS_EST Green (#16a34a, NEVER Blue #3b82f6 or route-brand Red #FF3B30/#ef4444) on TD-blind segments whenever Traffic Overlay is ON
   const sampleRouteCoords = [
-    [22.3712, 113.9562], // Lung Mun Rd Roundabout (unmonitored)
+    [22.3712, 113.9562], // Lung Mun Rd Roundabout (TD-blind -> BUS_EST)
     [22.3735, 113.9555],
     [22.3820, 113.9680], // Wong Chu Rd (monitored by TM_DET1)
     [22.3850, 113.9720],
   ];
   sb.ctx.window.buildDetailBusPolylineLayer = sb.ctx.buildDetailBusPolylineLayer;
   sb.ctx.buildDetailBusPolylineLayer(sampleRouteCoords, [], 0, '#FF3B30');
-  const unmonitoredStyles = geoJsonStyles.filter((x) => x.feat.properties.hasSpeedData === false);
-  const monitoredStyles = geoJsonStyles.filter((x) => x.feat.properties.hasSpeedData === true);
-  assert.ok(unmonitoredStyles.length > 0, 'Route with unmonitored roundabout segment must emit hasSpeedData=false feature');
-  assert.equal(unmonitoredStyles[0].style.color, '#3b82f6', 'Unmonitored segment must use neutral Slate/Blue (#3b82f6) when Traffic Overlay is ON, NEVER Red');
-  assert.equal(unmonitoredStyles[0].style.dashArray, null, 'Unmonitored segment must render as a solid line (no dashed MTR style)');
-  assert.equal(unmonitoredStyles[0].style.weight, 4, 'Unmonitored route line weight must be 4');
-  assert.equal(unmonitoredStyles[0].style.opacity, 0.95, 'Unmonitored route line opacity must be 0.95');
+  const busEstStyles = geoJsonStyles.filter((x) => x.feat.properties.source === 'BUS_EST');
+  const blueStyles = geoJsonStyles.filter((x) => x.style.color === '#3b82f6');
+  const monitoredStyles = geoJsonStyles.filter((x) => x.feat.properties.source === 'TD');
+  assert.equal(blueStyles.length, 0, 'Detail bus polyline must NEVER paint Blue #3b82f6 when Traffic Overlay is ON');
+  assert.ok(busEstStyles.length > 0, 'Route with TD-blind roundabout segment must emit BUS_EST feature from busspeed.js');
+  assert.equal(busEstStyles[0].style.color, '#16a34a', 'TD-blind segment must use BUS_EST Smooth Green (#16a34a) when Traffic Overlay is ON, NEVER Blue or Red');
+  assert.equal(busEstStyles[0].style.dashArray, null, 'BUS_EST segment must render as a solid line (no dashed MTR style)');
+  assert.equal(busEstStyles[0].style.weight, 4.5, 'BUS_EST route line weight must be 4.5');
+  assert.equal(busEstStyles[0].style.opacity, 0.88, 'BUS_EST route line opacity must be 0.88');
   if (monitoredStyles.length > 0) {
     assert.equal(monitoredStyles[0].style.dashArray, null, 'Monitored live speed segment must stay solid');
     assert.equal(monitoredStyles[0].style.weight, 4.5, 'Monitored live TD segment weight must be 4.5');
@@ -5448,7 +5450,7 @@ test('Dedicated busspeed.js Calibration, Rural 1.45x Winding Factor, >=2 Consecu
   assert.equal(timeline[0].camKey, 'CAM_AB');
   assert.equal(timeline[1].source, 'BUS_API', 'Span 1->2 must pick Tier 2 BUS_API when no TD sensor');
   assert.equal(timeline[1].speedKmh, 28);
-  assert.equal(timeline[2].source, 'CAM_ONLY', 'Span 2->3 must pick Tier 3 CAM_ONLY when only camera exists');
+  assert.equal(timeline[2].source, 'BUS_EST', 'Span 2->3 must emit BUS_EST with preserved camera when no TD sensor or live ETA exists');
   assert.equal(timeline[2].camKey, 'CAM_CD');
 
   // 5b. Strict TD ground-truth suppression (~100m, ±45°) against BOTH TD speed links and TD detectors:
@@ -5956,9 +5958,9 @@ test('Side-Road <=45m Highway Leakage Blocking (Kam Ho Rd / Castle Peak Rd), Ter
   const airportCoords = [[22.3080, 113.9185], [22.3120, 113.9260], [22.3160, 113.9340]];
   const detailLayer = zCtx.buildDetailBusPolylineLayer(airportCoords, [], 0, '#FF3B30');
   zCtx._bringLayerGroupToFront(detailLayer);
-  assert.equal(frontOrder.length, 2, 'Expected dark casing + neutral unmonitored top stroke');
+  assert.equal(frontOrder.length, 2, 'Expected dark casing + BUS_EST smooth green top stroke');
   assert.ok(frontOrder[0].startsWith('poly:#0f172a:z0'), `Casing (#0f172a, z0) must be brought forward FIRST (underneath), got ${frontOrder[0]}`);
-  assert.equal(frontOrder[1], 'geo:#3b82f6:op0.95:w4:z1', `Unmonitored route top stroke MUST paint neutral Slate/Blue (#3b82f6, opacity 0.95, weight 4, z1 — NEVER Red) LAST on top of casing, got ${frontOrder[1]}`);
+  assert.equal(frontOrder[1], 'geo:#16a34a:op0.88:w4.5:z1', `TD-blind route top stroke MUST paint BUS_EST Smooth Green (#16a34a, opacity 0.88, weight 4.5, z1 — NEVER Blue or Red) LAST on top of casing, got ${frontOrder[1]}`);
 });
 
 test('Inspectable __BUS_SPEED_DEBUG__ Telemetry, Viewport TD vs Bus-API Counts, Silent SW Auto-Update & Clean Hardcode Config', () => {
@@ -7283,7 +7285,7 @@ test('Unified Traffic Consistency 3: Non-terminus TD-blind spans without live ET
     company: 'LWB',
     includeSyntheticFallback: true,
   });
-  assert.equal(synInferred.length, 2, 'Should emit BUS_EST for the 2 non-terminus spans (excluding final terminus approach)');
+  assert.equal(synInferred.length, 3, 'Should emit BUS_EST across all 3 spans including smooth-clamped final terminus approach');
   for (const seg of synInferred) {
     assert.equal(seg.source, 'BUS_EST');
     assert.equal(seg.isSyntheticFallback, true);
@@ -7292,7 +7294,7 @@ test('Unified Traffic Consistency 3: Non-terminus TD-blind spans without live ET
     assert.equal(seg.speedKmh, 56, `Long highway span (${seg.roadDistKm} km) should use EXPRESSWAY expectedKmh=56`);
   }
 
-  // 2. buildStopByStopSegmentTraffic emits BUS_EST on Stops 10-11 (never NONE/blank) and preserves NONE on final terminus span
+  // 2. buildStopByStopSegmentTraffic emits BUS_EST on ALL spans including smooth-clamped final terminus span (zero NONE/blue gaps)
   const unified = engine.buildStopByStopSegmentTraffic(e36MidStops, null, [], [], [], { routeNo: 'E36' });
   assert.equal(unified[0].source, 'BUS_EST', 'Yu Tung Court -> TM-CLK Tunnel BBI must fall back to BUS_EST');
   assert.equal(unified[0].isSyntheticFallback, true);
@@ -7300,7 +7302,9 @@ test('Unified Traffic Consistency 3: Non-terminus TD-blind spans without live ET
   assert.equal(unified[0].tier, 'SMOOTH');
   assert.equal(unified[0].speedKmh, 56);
   assert.equal(unified[1].source, 'BUS_EST', 'TM-CLK Tunnel BBI -> Yuen Long Plaza must fall back to BUS_EST');
-  assert.equal(unified[2].source, 'NONE', 'Final terminus span without TD/ETA/cam remains NONE');
+  assert.equal(unified[2].source, 'BUS_EST', 'Final terminus span without TD/ETA falls back to smooth BUS_EST (never NONE/blue)');
+  assert.equal(unified[2].tier, 'SMOOTH');
+  assert.equal(unified[2].isTerminusApproach, true);
 
   // 3. Expanded summary & breakdown label BUS_EST cleanly as "Bus Est. • 56 km/h"
   const sum = sb.getDirectionalRoadSummary(e36MidStops, 0, [], false, 40, null, 12000, [], { unifiedSegments: unified });
@@ -7426,7 +7430,8 @@ test('Unified Traffic Consistency 4: buildRouteSpeedGeoJson & buildDetailBusPoly
     'Detail polyline must paint smooth 56 km/h BUS_EST in Green #16a34a');
   assert.ok(tips.some((t) => t.includes('Bus API • 7 km/h')), `Expected Bus API • 7 km/h tooltip, got: ${tips.join(' | ')}`);
   assert.ok(tips.some((t) => t.includes('Bus Est. • 56 km/h')), `Expected Bus Est. • 56 km/h tooltip, got: ${tips.join(' | ')}`);
-  assert.ok(tips.some((t) => t.includes('no TD speed detector')), 'Unmonitored terminus span retains fallback tooltip');
+  assert.ok(!styledFeats.some((f) => f.style.color === '#3b82f6'), 'Detail polyline must NEVER emit Blue #3b82f6 features');
+  assert.ok(!tips.some((t) => t.includes('no TD speed detector')), 'Detail polyline must NEVER emit "no TD speed detector" blue fallback tooltips');
 });
 
 test('E36 Yuen Long Polyline Continuity: upstream truncated CSDI (Stops 12 -> 13 -> 14), bypassed town detour, and 2-3 vertex consecutive stop spans stay connected', () => {
@@ -7698,5 +7703,162 @@ test('E36 Yuen Long Zero Off-By-One Span Projection: Stop 16 -> 17 (7 km/h Red) 
   assert.ok(styledByFromSeq.get(17)?.tip.includes('Kuk Ting Street → Yoho Mall II') && styledByFromSeq.get(17)?.tip.includes('19 km/h'),
     `Unexpected Stop 17 -> 18 tooltip: ${styledByFromSeq.get(17)?.tip}`);
 });
+
+test('Global Zero-Blue & CSDI Direction Fix: Scheduled-only stops (E36 1-6) use busspeed.js Green (zero #3b82f6) and CSDI selects natural ROUTE_SEQ=2 over reversed ROUTE_SEQ=1', () => {
+  // 1. Verify worker.js CSDI direction selector picks true natural ROUTE_SEQ=2 over reversed ROUTE_SEQ=1 when termini match
+  const workerSrc = fs.readFileSync('functions/api/worker.js', 'utf8')
+    .replace(/export async function onRequest/g, 'async function onRequest');
+  const wCtx: any = { Math, Number, String, Array, Map, Set, Object, URL, URLSearchParams, Response, console };
+  vm.createContext(wCtx);
+  vm.runInContext(workerSrc, wCtx);
+  assert.equal(typeof wCtx.selectBestCsdiBusGeometry, 'function');
+  assert.equal(typeof wCtx.evaluatePolylineStopCoverage, 'function');
+
+  // Shared endpoints A (Airport) & B (Pat Heung), but ROUTE_SEQ=1 runs via South road (B->A) while ROUTE_SEQ=2 runs via North detour (A->B)
+  const seq1Outbound = {
+    type: 'Feature',
+    properties: { ROUTE_ID: 1000025, ROUTE_NAMEE: 'E36', ROUTE_SEQ: 1, COMPANY_CODE: 'LWB' },
+    geometry: {
+      type: 'LineString',
+      coordinates: [
+        [114.0623, 22.4203], // Pat Heung (start of outbound)
+        [114.0250, 22.4445], // Castle Peak Rd south
+        [114.0180, 22.4445], // Castle Peak Rd west (skips Fung Chi Tsuen / San Shui House!)
+        [113.9378, 22.3133], // Airport (end of outbound)
+      ],
+    },
+  };
+  const seq2Inbound = {
+    type: 'Feature',
+    properties: { ROUTE_ID: 1000025, ROUTE_NAMEE: 'E36', ROUTE_SEQ: 2, COMPANY_CODE: 'LWB' },
+    geometry: {
+      type: 'LineString',
+      coordinates: [
+        [113.9378, 22.3133], // Airport (start of inbound)
+        [114.0176, 22.4478], // Fung Chi Tsuen (Stop 12)
+        [114.0209, 22.4472], // San Shui House (Stop 13)
+        [114.0355, 22.4465], // Yoho Mall detour (Stop 18/19)
+        [114.0623, 22.4203], // Pat Heung (end of inbound)
+      ],
+    },
+  };
+  const inboundStops: [number, number][] = [
+    [22.3133, 113.9378],
+    [22.4478, 114.0176],
+    [22.4472, 114.0209],
+    [22.4465, 114.0355],
+    [22.4203, 114.0623],
+  ];
+  const pickedInbound = wCtx.selectBestCsdiBusGeometry([seq1Outbound, seq2Inbound], {
+    company: 'LWB',
+    bound: 'I',
+    origPt: inboundStops[0],
+    destPt: inboundStops[inboundStops.length - 1],
+    stopPts: inboundStops,
+  });
+  assert.ok(pickedInbound && Array.isArray(pickedInbound.coords), 'Expected CSDI inbound selection');
+  const covInbound = wCtx.evaluatePolylineStopCoverage(pickedInbound.coords, inboundStops);
+  assert.equal(covInbound.uncovered90, 0, `Inbound ROUTE_SEQ=2 must cover all stops <=90m, got ${covInbound.uncovered90} uncovered (max ${(covInbound.maxDistKm * 1000).toFixed(0)}m)`);
+  // Even without bound hint, natural ROUTE_SEQ=2 + stop coverage must beat reversed ROUTE_SEQ=1!
+  const pickedNoBound = wCtx.selectBestCsdiBusGeometry([seq1Outbound, seq2Inbound], {
+    company: 'LWB',
+    bound: '',
+    origPt: inboundStops[0],
+    destPt: inboundStops[inboundStops.length - 1],
+    stopPts: inboundStops,
+  });
+  const covNoBound = wCtx.evaluatePolylineStopCoverage(pickedNoBound.coords, inboundStops);
+  assert.equal(covNoBound.uncovered90, 0, 'Natural ROUTE_SEQ=2 must win even when bound parameter is omitted');
+
+  // 2. Verify scheduled-only BUS_API segments (e.g. E36 Stops 1-6 late evening) + leading/trailing tails NEVER render Blue #3b82f6
+  const sb = loadHardcodeAndPlannerSandbox();
+  const bsWindow: any = {};
+  const bsSandbox: any = { window: bsWindow, globalThis: bsWindow, Math, Date, Number, String, Array, Map, Set, Object, Uint8Array, parseFloat, isFinite };
+  vm.createContext(bsSandbox);
+  vm.runInContext(readHardcodeBundle(), bsSandbox);
+  vm.runInContext(fs.readFileSync('public/busspeed.js', 'utf8'), bsSandbox);
+  const engine: any = bsWindow.BusSpeedEngine;
+
+  const t0 = Date.UTC(2026, 10, 27, 13, 56, 0);
+  const e36AirportStops = [
+    { seq: 1, stopName_e: 'Airport (Ground Transportation Centre)', latitude: '22.3156', longitude: '113.9369' },
+    { seq: 2, stopName_e: 'Cathay City', latitude: '22.3016', longitude: '113.9333' },
+    { seq: 3, stopName_e: 'Airport Freight Forwarding Centre', latitude: '22.2950', longitude: '113.9278' },
+    { seq: 4, stopName_e: 'Asia Airfreight Terminal', latitude: '22.2932', longitude: '113.9218' },
+    { seq: 5, stopName_e: 'Tung Chung Cable Car Terminal', latitude: '22.2899', longitude: '113.9384' },
+    { seq: 6, stopName_e: 'Pat Heung Road Bus Terminus', latitude: '22.4203', longitude: '114.0623' },
+  ];
+  // Scheduled-only ETAs at Stops 1..4 (like 22:15 Scheduled Bus at Airport)
+  const schedEtas: Record<number, any[]> = {
+    0: [{ eta: new Date(t0 + 19 * 60_000).toISOString(), rmk_en: 'Scheduled Bus' }],
+    1: [{ eta: new Date(t0 + 23 * 60_000).toISOString(), rmk_en: 'Scheduled Bus' }],
+    2: [{ eta: new Date(t0 + 25 * 60_000).toISOString(), rmk_en: 'Scheduled Bus' }],
+    3: [{ eta: new Date(t0 + 27 * 60_000).toISOString(), rmk_en: 'Scheduled Bus' }],
+  };
+  const polyWithTails: [number, number][] = [
+    [22.3168, 113.9375], // Leading tail inside Airport GTC before Stop 1
+    [22.3156, 113.9369],
+    [22.3016, 113.9333],
+    [22.2950, 113.9278],
+    [22.2932, 113.9218],
+    [22.2899, 113.9384],
+    [22.4203, 114.0623],
+    [22.4212, 114.0630], // Trailing tail past last stop
+  ];
+  const inferred = engine.inferBusApiSegmentSpeeds(e36AirportStops, schedEtas, polyWithTails, {
+    routeNo: 'E36',
+    company: 'LWB',
+    includeSyntheticFallback: true,
+    nowMs: t0,
+  });
+  const unified = engine.buildStopByStopSegmentTraffic(e36AirportStops, polyWithTails, [], [], inferred, { routeNo: 'E36', company: 'LWB' });
+  assert.equal(unified.length, e36AirportStops.length - 1);
+  assert.ok(unified.every((u: any) => u.source === 'BUS_API' || u.source === 'BUS_EST'),
+    `Every stop span must be backed by BUS_API or BUS_EST (no NONE), got: ${unified.map((u: any) => u.source).join(',')}`);
+
+  const renderedStyles: { color: string; source: string; speedKmh: number }[] = [];
+  const renderedTips: string[] = [];
+  const mapCtx: any = {
+    window: {
+      trafficLayerEnabled: true,
+      __LIVE_TRAFFIC_DETECTORS__: [],
+      __DETAIL_STOP_SEGMENTS__: unified,
+      __DETAIL_BUS_SPEED_SEGMENTS__: inferred,
+      BusSpeedEngine: engine,
+      buildStopByStopSegmentTraffic: engine.buildStopByStopSegmentTraffic,
+      ensureRoutePolylineCoversStops: sb.ctx.window.ensureRoutePolylineCoversStops,
+      capBusApiTierHardcode: sb.ctx.window.capBusApiTierHardcode,
+      buildRouteSpeedGeoJson: sb.ctx.window.buildRouteSpeedGeoJson,
+    },
+    document: { getElementById: () => null },
+    currentLang: 'en',
+    L: {
+      layerGroup: (arr: any[] = []) => ({ _arr: arr, addTo() { return this; } }),
+      polyline: (c: any, opts: any) => ({ c, opts, addTo() { return this; }, bindTooltip(t: string) { renderedTips.push(t); return this; } }),
+      geoJSON: (geo: any, cfg: any) => {
+        for (const feat of geo?.features || []) {
+          const st = cfg.style(feat);
+          renderedStyles.push({ color: st.color, source: feat.properties?.source, speedKmh: feat.properties?.speedKmh });
+          const lyr: any = { options: {}, bindTooltip(t: string) { renderedTips.push(t); return this; }, on() { return this; } };
+          cfg.onEachFeature(feat, lyr);
+        }
+        return { addTo() { return this; } };
+      },
+    },
+    console, Math, Number, String, Array, Map, Set, Object,
+  };
+  vm.createContext(mapCtx);
+  vm.runInContext(readMapBundle(), mapCtx);
+  mapCtx.buildDetailBusPolylineLayer(polyWithTails, e36AirportStops, 0, '#FF3B30');
+
+  assert.ok(renderedStyles.length >= 5, 'Expected rendered GeoJSON speed segments across all E36 spans + tails');
+  assert.ok(renderedStyles.every((s) => s.color !== '#3b82f6'),
+    `ZERO Blue (#3b82f6) segments permitted on bus routes, got: ${JSON.stringify(renderedStyles)}`);
+  assert.ok(renderedStyles.every((s) => s.color === '#16a34a'),
+    `Scheduled-only & synthetic spans must render Smooth Green (#16a34a), got: ${JSON.stringify(renderedStyles)}`);
+  assert.ok(!renderedTips.some((t) => /no TD speed detector/i.test(t)),
+    `Tooltips must never show "no TD speed detector", got: ${renderedTips.join(' | ')}`);
+});
+
 
 

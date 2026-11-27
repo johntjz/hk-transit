@@ -2606,13 +2606,14 @@
     }
 
     // Pass 1.5 (Detail-route synthetic fallback): whenever requested, emit BUS_EST road-class
-    // estimates for any non-terminus bus span lacking both TD detector coverage and a live ETA delta.
+    // estimates for EVERY bus span lacking both TD detector coverage and a live ETA delta
+    // (including origin layover & final terminus approach, strictly clamped SMOOTH so they never cause false jams).
     if (includeSyntheticFallback) {
       const coveredFromIdx = new Set(rawSegs.map((s) => Number(s.fromIdx)));
       let synCursor = 0;
       const originLat = parseFloat(stops[0]?.latitude ?? stops[0]?.lat);
       const originLon = parseFloat(stops[0]?.longitude ?? stops[0]?.lon);
-      for (let i = 0; i < stops.length - 2; i++) {
+      for (let i = 0; i < stops.length - 1; i++) {
         if (coveredFromIdx.has(i)) continue;
         const a = stops[i], b = stops[i + 1];
         const aLat = parseFloat(a?.latitude ?? a?.lat), aLon = parseFloat(a?.longitude ?? a?.lon);
@@ -2625,14 +2626,14 @@
         const straightKm = _haversineKmLocal(aLat, aLon, bLat, bLon);
         const polyKm = _polylineLengthKm(segCoords);
         const unsnappedDistFactor = isRuralWindingCorridor(a, b) ? 1.45 : 1.18;
-        const roadDistKm = Math.max(0.08, sliced.isRoadSnapped ? polyKm : straightKm * unsnappedDistFactor);
-        if (roadDistKm < 0.06 || roadDistKm > 28) continue;
+        const roadDistKm = Math.max(0.06, sliced.isRoadSnapped ? polyKm : straightKm * unsnappedDistFactor);
+        if (roadDistKm > 28) continue;
 
         const distToOriginEndKm = (Number.isFinite(originLat) && Number.isFinite(originLon))
           ? _haversineKmLocal(originLat, originLon, bLat, bLon)
           : Infinity;
         const isOriginLayoverLoop = Boolean(i === 0 && (distToOriginEndKm <= 0.15 || straightKm <= 0.15));
-        if (isOriginLayoverLoop) continue;
+        const isFinalSpan = (i === stops.length - 2);
 
         const tdTruth = matchTdGroundTruthForSpan(segCoords, tdDetectors, tdCameras, {
           tdSpeedGeoJson,
@@ -2646,11 +2647,23 @@
         const pairFlaggedTd = Boolean(tdCoveredPairs && tdCoveredPairs.has(`${i + 1}_${i + 2}`));
         if (tdTruth.hasTd || pairFlaggedTd) continue;
 
-        rawSegs.push(buildSyntheticBusEstSegment(i, i + 1, a, b, segCoords, roadDistKm, tdTruth, {
+        const synSeg = buildSyntheticBusEstSegment(i, i + 1, a, b, segCoords, roadDistKm, tdTruth, {
           routeNo,
           company,
           isRoadSnapped: Boolean(sliced.isRoadSnapped)
-        }));
+        });
+        if (isFinalSpan || isOriginLayoverLoop) {
+          synSeg.isTerminusApproach = isFinalSpan;
+          synSeg.isOriginLayover = isOriginLayoverLoop;
+          synSeg.speedKmh = Math.max(18, synSeg.speedKmh);
+          synSeg.busInferredSpeedKmh = synSeg.speedKmh;
+          synSeg.tier = 'SMOOTH';
+          synSeg.busInferredTier = 'SMOOTH';
+          synSeg.isBottleneck = false;
+          synSeg.allowRed = false;
+          synSeg.color = getBusSpeedColorHex('SMOOTH', synSeg.speedKmh);
+        }
+        rawSegs.push(synSeg);
       }
       rawSegs.sort((x, y) => Number(x.fromIdx) - Number(y.fromIdx));
     }
@@ -2984,88 +2997,36 @@
         continue;
       }
 
-      // Tier 2.5: Distance + Road-Class Speed Fallback (BUS_EST) on TD-blind non-terminus spans without live ETA delta
-      // Strictly capped at SMOOTH or MODERATE (allowRed: false — NEVER Red CONGESTED).
-      if (!isFinalTerminusSpan && !isTerminusApproach) {
-        const synSeg = buildSyntheticBusEstSegment(i, i + 1, a, b, segCoords, roadDistKm, tdTruth, {
-          routeNo,
-          company: opts.company || '',
-          isRoadSnapped: Boolean(sliced.isRoadSnapped),
-          cam: tdTruth.cam || busSeg?.cam || null
-        });
-        if (busSeg && (busSeg.source === 'BUS_EST' || busSeg.isSyntheticFallback) && Number.isFinite(Number(busSeg.speedKmh)) && Number(busSeg.speedKmh) > 0) {
-          const clampedSpd = Math.abs(Math.round(Number(busSeg.speedKmh)));
-          synSeg.speedKmh = clampedSpd;
-          synSeg.busInferredSpeedKmh = clampedSpd;
-          synSeg.tier = clampedSpd >= 18 ? 'SMOOTH' : 'MODERATE';
-          synSeg.busInferredTier = synSeg.tier;
-          synSeg.isBottleneck = synSeg.tier === 'MODERATE';
-          synSeg.allowRed = false;
-          synSeg.color = getBusSpeedColorHex(synSeg.tier, clampedSpd);
-        }
-        out.push(synSeg);
-        continue;
-      }
-
-      // Tier 3: TD Camera only (if present along unmonitored terminus span)
-      if (tdTruth.cam) {
-        out.push({
-          fromIdx: i,
-          toIdx: i + 1,
-          fromSeq: i + 1,
-          toSeq: i + 2,
-          fromNameEn,
-          fromNameTc,
-          toNameEn,
-          toNameTc,
-          source: 'CAM_ONLY',
-          tier: 'NONE',
-          speedKmh: null,
-          color: '#64748b',
-          occ: 0,
-          detId: '',
-          det: null,
-          roadEn: tdTruth.cam.desc || `${fromNameEn} → ${toNameEn}`.trim(),
-          roadTc: tdTruth.cam.desc || `${fromNameTc || fromNameEn} → ${toNameTc || toNameEn}`.trim(),
-          cam: tdTruth.cam,
-          camKey: tdTruth.cam.camKey || tdTruth.cam.key || '',
-          camDesc: tdTruth.cam.desc || '',
-          roadDistKm,
-          deltaSec: null,
-          expectedKmh: null,
-          isTerminusApproach,
-          coords: segCoords
-        });
-        continue;
-      }
-
-      out.push({
-        fromIdx: i,
-        toIdx: i + 1,
-        fromSeq: i + 1,
-        toSeq: i + 2,
-        fromNameEn,
-        fromNameTc,
-        toNameEn,
-        toNameTc,
-        source: 'NONE',
-        tier: 'NONE',
-        speedKmh: null,
-        color: '#94a3b8',
-        occ: 0,
-        detId: '',
-        det: null,
-        roadEn: `${fromNameEn} → ${toNameEn}`.trim(),
-        roadTc: `${fromNameTc || fromNameEn} → ${toNameTc || toNameEn}`.trim(),
-        cam: null,
-        camKey: '',
-        camDesc: '',
-        roadDistKm,
-        deltaSec: null,
-        expectedKmh: null,
-        isTerminusApproach,
-        coords: segCoords
+      // Tier 2.5: Distance + Road-Class Speed Fallback (BUS_EST) on ALL TD-blind spans without live ETA delta
+      // (including final terminus approach, strictly clamped SMOOTH so terminus arrival padding never causes false slow/red).
+      // Preserves any matched TD camera on the segment and eliminates blue/unmonitored route gaps globally.
+      const synSeg = buildSyntheticBusEstSegment(i, i + 1, a, b, segCoords, roadDistKm, tdTruth, {
+        routeNo,
+        company: opts.company || '',
+        isRoadSnapped: Boolean(sliced.isRoadSnapped),
+        cam: tdTruth.cam || busSeg?.cam || null
       });
+      if (busSeg && (busSeg.source === 'BUS_EST' || busSeg.isSyntheticFallback) && Number.isFinite(Number(busSeg.speedKmh)) && Number(busSeg.speedKmh) > 0) {
+        const clampedSpd = Math.abs(Math.round(Number(busSeg.speedKmh)));
+        synSeg.speedKmh = clampedSpd;
+        synSeg.busInferredSpeedKmh = clampedSpd;
+        synSeg.tier = clampedSpd >= 18 ? 'SMOOTH' : 'MODERATE';
+        synSeg.busInferredTier = synSeg.tier;
+        synSeg.isBottleneck = synSeg.tier === 'MODERATE';
+        synSeg.allowRed = false;
+        synSeg.color = getBusSpeedColorHex(synSeg.tier, clampedSpd);
+      }
+      if (isFinalTerminusSpan || isTerminusApproach) {
+        synSeg.isTerminusApproach = true;
+        synSeg.speedKmh = Math.max(18, synSeg.speedKmh);
+        synSeg.busInferredSpeedKmh = synSeg.speedKmh;
+        synSeg.tier = 'SMOOTH';
+        synSeg.busInferredTier = 'SMOOTH';
+        synSeg.isBottleneck = false;
+        synSeg.allowRed = false;
+        synSeg.color = getBusSpeedColorHex('SMOOTH', synSeg.speedKmh);
+      }
+      out.push(synSeg);
     }
 
     return out;

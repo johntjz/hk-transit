@@ -3166,7 +3166,7 @@ test('map.js: route-scoped traffic filtering hides off-route & opposite-smooth d
   for (const m of addedMarkers) {
     assert.ok(m.opts.zIndexOffset <= 140, `Expected traffic arrow zIndexOffset <= 140, got ${m.opts.zIndexOffset}`);
   }
-  assert.ok(mapCode.includes('zIndexOffset: isAct ? 650 : 320'), 'Stop markers must sit at zIndexOffset 320 (normal) / 650 (active) strictly above traffic arrows');
+  assert.ok(mapCode.includes('zIndexOffset: isAct ? 650 : (isExit ? 620 : 320)'), 'Stop markers must sit at zIndexOffset 320 (normal) / 620 (exit) / 650 (active) strictly above traffic arrows');
 });
 
 test('Decision-first Transit: zero off-route clutter (<=2 bottlenecks on route map), 3-tier Bus-vs-MTR verdicts, and E36 Tuen Mun Rd (TDS90048) + YLH (TDS90067) worst-bottleneck ranking rejecting CPR-*', () => {
@@ -3950,18 +3950,18 @@ test('Architecture Update 2: Route-Level Speed Digital Twin GeoJSON colors (#16a
   vm.createContext(mCtx);
   vm.runInContext(mapCode, mCtx);
   mCtx.buildDetailBusPolylineLayer(coords, [], 0, '#FF3B30');
-  assert.ok(polyCalls.some(p => p.opts?.color === '#1e293b' && p.opts?.weight === 7.5), 'Route speed polyline must render thin dark casing (#1e293b, weight 7.5)');
+  assert.ok(polyCalls.some(p => p.opts?.color === '#0f172a' && p.opts?.weight === 7 && p.opts?.opacity === 0.85), 'Route speed polyline must render high-contrast dark casing (#0f172a, weight 7, opacity 0.85)');
   assert.equal(geoJsonCalls.length, 1, 'Route speed polyline must use L.geoJSON for speed-colored segments');
   const sampleStyle = geoJsonCalls[0].opts.style(fc.features[0]);
-  assert.equal(sampleStyle.weight, 5);
+  assert.equal(sampleStyle.weight, 4);
   assert.ok(sampleStyle.opacity >= 0.9);
   assert.equal(sampleStyle.lineCap, 'round');
   assert.equal(sampleStyle.lineJoin, 'round');
 
-  // Verify worker.js returns speedMapGeoJson + cameras, filters <350m stubs, and keeps sole export
+  // Verify worker.js returns speedMapGeoJson + cameras, keeps 60m-320m 2-point links, and keeps sole export
   const workerSrc = fs.readFileSync('functions/api/worker.js', 'utf8');
   assert.ok(workerSrc.includes('speedMapGeoJson') && workerSrc.includes('buildWorkerSpeedMapGeoJson'), 'worker.js must expose speedMapGeoJson');
-  assert.ok(workerSrc.includes('if (dKm < 0.35 || dKm > 2.2) continue;'), 'worker.js must filter out <350m ramp stubs');
+  assert.ok(workerSrc.includes('if (dKm < 0.06 || dKm > 0.32) continue;'), 'worker.js must keep 60m-320m 2-point links and drop long hillside-cutting chords');
   assert.ok(workerSrc.includes('cameras: cameras.length') && workerSrc.includes('      cameras,'), 'worker.js traffic_live must expose active TD cameras array');
   const exportLines = workerSrc.split('\n').filter((l) => /^\s*export\b/.test(l));
   assert.equal(exportLines.length, 1, 'worker.js must keep exactly one export (onRequest)');
@@ -3975,6 +3975,7 @@ test('Architecture Update 3: Global Map View Traffic Toggle at bottomright, <350
   const geoJsonLayers: any[] = [];
   const casingPolylines: any[] = [];
 
+  let mockZoom = 15;
   const fakeBrowseMap: any = {
     addControl(ctrl: any) { addedControls.push(ctrl); ctrl.onAdd(this); },
     hasLayer(l: any) { return addedToBrowseMap.has(l); },
@@ -3989,15 +3990,26 @@ test('Architecture Update 3: Global Map View Traffic Toggle at bottomright, <350
       getWest: () => 113.98,
       getEast: () => 114.06,
     }),
-    getZoom: () => 15,
+    getZoom: () => mockZoom,
     on() {},
   };
 
+  const directCamMarkers: any[] = [];
   const makeGroup = () => ({
     _layers: [] as any[],
     addTo() { addedToBrowseMap.add(this); return this; },
-    addLayer(l: any) { this._layers.push(l); return this; },
-    clearLayers() { this._layers.length = 0; },
+    addLayer(l: any) {
+      this._layers.push(l);
+      if (l?.opts?.icon?.className === 'global-traffic-cam-icon') directCamMarkers.push(l);
+      return this;
+    },
+    clearLayers() {
+      this._layers.forEach((l: any) => {
+        const idx = directCamMarkers.indexOf(l);
+        if (idx >= 0) directCamMarkers.splice(idx, 1);
+      });
+      this._layers.length = 0;
+    },
   });
 
   const fakeCluster = {
@@ -4023,12 +4035,12 @@ test('Architecture Update 3: Global Map View Traffic Toggle at bottomright, <350
       __LIVE_TRAFFIC_SPEED_GEOJSON__: {
         type: 'FeatureCollection',
         features: [
-          // 560m valid arterial link -> MUST BE KEPT
-          { type: 'Feature', geometry: { type: 'LineString', coordinates: [[113.977, 22.395], [113.978, 22.400]] }, properties: { color: '#dc2626', spd: 16, rot: 15, id: 'AID1', roadEn: 'Tuen Mun Road', rawCoords: [[113.977, 22.395], [113.978, 22.400]] } },
-          // 220m short curved interchange ramp stub -> MUST BE FILTERED OUT (< 350m)
-          { type: 'Feature', geometry: { type: 'LineString', coordinates: [[113.998, 22.442], [113.999, 22.4437]] }, properties: { color: '#16a34a', spd: 55, rot: 45, id: 'TSW_STUB', roadEn: 'Tin Shui Wai West Interchange', rawCoords: [[113.998, 22.442], [113.999, 22.4437]] } },
-          // 580m valid highway link -> MUST BE KEPT
-          { type: 'Feature', geometry: { type: 'LineString', coordinates: [[114.001, 22.432], [114.005, 22.436]] }, properties: { color: '#16a34a', spd: 80, rot: 45, id: 'AID2', roadEn: 'Yuen Long Highway', rawCoords: [[114.001, 22.432], [114.005, 22.436]] } },
+          // 220m valid 2-point arterial link (60m - 320m) -> MUST BE KEPT
+          { type: 'Feature', geometry: { type: 'LineString', coordinates: [[113.9770, 22.3950], [113.9775, 22.3969]] }, properties: { color: '#dc2626', spd: 16, rot: 14, id: 'AID1', roadEn: 'Tuen Mun Road', rawCoords: [[113.9770, 22.3950], [113.9775, 22.3969]] } },
+          // 560m long 2-point straight chord -> MUST BE FILTERED OUT (> 320m hillside-cutting chord)
+          { type: 'Feature', geometry: { type: 'LineString', coordinates: [[113.998, 22.442], [113.999, 22.447]] }, properties: { color: '#16a34a', spd: 55, rot: 11, id: 'LONG_CHORD', roadEn: 'Tuen Mun Road near Tai Lam', rawCoords: [[113.998, 22.442], [113.999, 22.447]] } },
+          // 3-point curved polyline > 400m -> MUST BE KEPT (coords.length >= 3)
+          { type: 'Feature', geometry: { type: 'LineString', coordinates: [[114.001, 22.432], [114.003, 22.434], [114.005, 22.436]] }, properties: { color: '#16a34a', spd: 80, rot: 45, id: 'AID2', roadEn: 'Yuen Long Highway', rawCoords: [[114.001, 22.432], [114.003, 22.434], [114.005, 22.436]] } },
         ],
       },
       syncTrafficToggleButtonsUI() {},
@@ -4057,7 +4069,7 @@ test('Architecture Update 3: Global Map View Traffic Toggle at bottomright, <350
       },
       DomUtil: {
         create(_tag: string, cls: string) {
-          return { className: cls, id: '', type: '', innerHTML: '', classList: { toggle() {}, add() {}, remove() {} }, setAttribute() {}, addEventListener() {} };
+          return { className: cls, id: '', type: '', innerHTML: '', style: {}, classList: { toggle() {}, add() {}, remove() {} }, setAttribute() {}, addEventListener() {} };
         },
       },
       DomEvent: { disableClickPropagation() {}, disableScrollPropagation() {}, stop() {}, on() {} },
@@ -4085,36 +4097,43 @@ test('Architecture Update 3: Global Map View Traffic Toggle at bottomright, <350
   assert.equal(addedControls[0].options?.position, 'bottomright', 'Global Traffic control must be positioned at bottomright');
   assert.equal(ctx.window.globalTrafficLayerEnabled, false, 'Global traffic toggle must default to OFF so stops browse normally');
 
-  // High-zoom lane offset reduction check (z >= 15 uses tight 1.8m offset vs 3.5m at z < 15)
-  assert.equal(ctx.window.getGlobalTrafficLaneOffsetMeters(15), 1.8, 'High zoom (z >= 15) must use tight 1.8m HK keep-left offset');
-  assert.equal(ctx.window.getGlobalTrafficLaneOffsetMeters(13), 3.5, 'Lower zoom (z < 15) must use 3.5m HK keep-left offset');
+  // High-zoom lane offset reduction check (z >= 15 uses tight 1.5m offset vs 2.5m at z < 15)
+  assert.equal(ctx.window.getGlobalTrafficLaneOffsetMeters(15), 1.5, 'High zoom (z >= 15) must use tight 1.5m HK keep-left offset');
+  assert.equal(ctx.window.getGlobalTrafficLaneOffsetMeters(13), 2.5, 'Lower zoom (z < 15) must use 2.5m HK keep-left offset');
   assert.ok(ctx.window.getGlobalTrafficLaneOffsetMeters(15) < ctx.window.getGlobalTrafficLaneOffsetMeters(13), 'High zoom offset must be strictly tighter than z13');
 
-  // Toggle ON -> bus stops hidden, <350m ramp stubs filtered out, 5px dark casing + 3px speed GeoJSON + cameras rendered
+  // Overview zoom (z=12) -> ZERO camera markers and ZERO numbered cluster bubbles
+  mockZoom = 12;
   ctx.toggleGlobalTrafficLayer(true);
   assert.equal(ctx.window.globalTrafficLayerEnabled, true);
   assert.equal(ctx.activeBrowseMarkersByKey.size, 0, 'Turning Global Traffic ON must immediately hide all bus stop markers');
   assert.equal(addedToBrowseMap.has(initialStopMarker), false, 'Bus stop marker must be removed from browseMapInstance while Global Traffic is ON');
   assert.equal(geoJsonLayers.length, 2, 'Global Traffic ON must render 2 L.geoJSON layers (5px dark casing + 3px speed-colored lines)');
-  assert.equal(geoJsonLayers[1].fc.features.length, 2, 'Short <350m interchange ramp stub must be filtered out leaving only 2 valid >=350m arterial links');
-  assert.ok(!geoJsonLayers[1].fc.features.some((f: any) => f.properties.id === 'TSW_STUB'), 'TSW_STUB (<350m) must be stripped');
+  assert.equal(geoJsonLayers[1].fc.features.length, 2, 'Long >320m 2-point chord must be filtered out while keeping valid 60-320m 2-point link and >=3-point polyline');
+  assert.ok(!geoJsonLayers[1].fc.features.some((f: any) => f.properties.id === 'LONG_CHORD'), 'LONG_CHORD (>320m 2-point) must be stripped');
   const casingStyle = typeof geoJsonLayers[0].opts.style === 'function' ? geoJsonLayers[0].opts.style(geoJsonLayers[0].fc.features[0]) : geoJsonLayers[0].opts.style;
   assert.equal(casingStyle.color, '#0f172a', 'Global Traffic casing GeoJSON must use 5px dark slate casing (#0f172a)');
   assert.equal(casingStyle.weight, 5, 'Global Traffic casing weight must be 5px');
-  assert.equal(casingStyle.opacity, 0.6, 'Global Traffic casing opacity must be 0.6');
   const topStyle = geoJsonLayers[1].opts.style(geoJsonLayers[1].fc.features[0]);
   assert.equal(topStyle.color, '#ef4444', 'Global Traffic speed GeoJSON must apply vivid congested color (#ef4444)');
   assert.equal(topStyle.weight, 3, 'Global Traffic top stroke weight must be 3px');
-  assert.equal(clusterMarkers.length, 2, 'Global Traffic ON must plot active TD cameras into L.markerClusterGroup');
+  assert.equal(clusterMarkers.length, 0, 'Global Traffic must NEVER use numbered L.markerClusterGroup bubbles');
+  assert.equal(directCamMarkers.length, 0, 'Overview zoom (z=12 < 14) must render ZERO camera markers');
+
+  // Zoom in (z=15 >= 14) -> individual directional cameras appear directly (still zero cluster bubbles)
+  mockZoom = 15;
+  ctx.renderGlobalTrafficDashboard(fakeBrowseMap);
+  assert.equal(clusterMarkers.length, 0, 'Zoomed-in cameras must render directly without numbered cluster bubbles');
+  assert.equal(directCamMarkers.length, 2, 'Zoomed-in view (z=15 >= 14) must plot individual viewport TD cameras');
 
   // Calling renderBrowseMapVisiblePins() while Global Traffic is ON must keep bus stops hidden
   ctx.renderBrowseMapVisiblePins();
   assert.equal(ctx.activeBrowseMarkersByKey.size, 0, 'Bus stops must remain hidden during pan/zoom while Global Traffic is ON');
 
-  // Toggle OFF -> clears global traffic + camera clusters and restores bus stops
+  // Toggle OFF -> clears global traffic + cameras and restores bus stops
   ctx.toggleGlobalTrafficLayer(false);
   assert.equal(ctx.window.globalTrafficLayerEnabled, false);
-  assert.equal(clusterMarkers.length, 0, 'Turning Global Traffic OFF must clear camera clusters');
+  assert.equal(directCamMarkers.length, 0, 'Turning Global Traffic OFF must clear cameras');
   assert.equal(ctx.activeBrowseMarkersByKey.size, 1, 'Turning Global Traffic OFF must immediately restore bus stop markers');
 });
 
@@ -4545,7 +4564,7 @@ test('Commuter Updates 2 & 3: Directional camera bearingDeg & FOV cones on Globa
   assert.ok(iconObj.html.includes(`transform:rotate(${brgTC002F}deg)`), 'Camera marker SVG cone/arrow must rotate to bearingDeg');
   assert.ok(iconObj.html.includes('cam-fov-svg') && iconObj.html.includes('A36 36') && iconObj.html.includes('rgba(37, 99, 235, 0.28)'), 'Camera marker must include 36px 45° radar FOV cone SVG path');
 
-  // 5. Verify dashed slate-blue styling (#3b82f6, dashArray: '6, 6') on unmonitored segments vs crisp solid speed segments
+  // 5. Verify solid vivid route styling (routeAccent or #2563eb, dashArray: null, weight: 4, opacity: 0.95) on unmonitored segments
   const sampleRouteCoords = [
     [22.3712, 113.9562], // Lung Mun Rd Roundabout (unmonitored)
     [22.3735, 113.9555],
@@ -4557,13 +4576,15 @@ test('Commuter Updates 2 & 3: Directional camera bearingDeg & FOV cones on Globa
   const unmonitoredStyles = geoJsonStyles.filter((x) => x.feat.properties.hasSpeedData === false);
   const monitoredStyles = geoJsonStyles.filter((x) => x.feat.properties.hasSpeedData === true);
   assert.ok(unmonitoredStyles.length > 0, 'Route with unmonitored roundabout segment must emit hasSpeedData=false feature');
-  assert.equal(unmonitoredStyles[0].style.color, '#3b82f6', 'Unmonitored segment must use slate-blue #3b82f6');
-  assert.equal(unmonitoredStyles[0].style.dashArray, '6, 6', 'Unmonitored segment must render with dashed line (6, 6)');
+  assert.equal(unmonitoredStyles[0].style.color, '#FF3B30', 'Unmonitored segment must use solid vivid routeAccent color');
+  assert.equal(unmonitoredStyles[0].style.dashArray, null, 'Unmonitored segment must render as a solid line (no dashed MTR style)');
+  assert.equal(unmonitoredStyles[0].style.weight, 4, 'Unmonitored route line weight must be 4');
+  assert.equal(unmonitoredStyles[0].style.opacity, 0.95, 'Unmonitored route line opacity must be 0.95');
   if (monitoredStyles.length > 0) {
     assert.equal(monitoredStyles[0].style.dashArray, null, 'Monitored live speed segment must stay solid');
   }
 
-  // 6. Verify Route Map renders clickable directional camera markers within 350m (e.g. TC002F) and excludes distant cameras
+  // 6. Verify Route Map renders clickable directional camera markers within <= 120m of forward route corridor (e.g. TC002F) and excludes distant cameras
   sb.ctx.window.mapInstance = mockMap;
   sb.ctx.window.__LIVE_TRAFFIC_DETECTORS__ = dets;
   sb.ctx.window.__LIVE_TRAFFIC_CAMERAS__ = [
@@ -4576,14 +4597,15 @@ test('Commuter Updates 2 & 3: Directional camera bearingDeg & FOV cones on Globa
       isRoadSnapped: true,
       hasHighwaySpan: true,
       coords: ${JSON.stringify(sampleRouteCoords)},
+      forwardCameraCoords: ${JSON.stringify(sampleRouteCoords)},
       bboxes: [{ minLat: 22.36, maxLat: 22.39, minLon: 113.94, maxLon: 113.98 }]
     };
     renderTrafficOverlayOnMap(window.mapInstance, true);
   `, sb.ctx);
   const tc002fMarker = markersAdded.find((m) => String(m.opts?.icon?.html || '').includes('data-cam-key="TC002F"'));
   const farCamMarker = markersAdded.find((m) => String(m.opts?.icon?.html || '').includes('data-cam-key="FAR_CAM"'));
-  assert.ok(tc002fMarker, 'TC002F within 350m of route corridor must render as a directional camera marker on Route Map');
-  assert.equal(farCamMarker, undefined, 'Distant camera >350m away must NOT render on Route Map');
+  assert.ok(tc002fMarker, 'TC002F within 120m of forward route corridor must render as a directional camera marker on Route Map');
+  assert.equal(farCamMarker, undefined, 'Distant camera >120m away must NOT render on Route Map');
   tc002fMarker._handlers.click?.({});
   assert.equal(modalOpenedCams.length, 1, 'Clicking route camera marker must invoke openTrafficCameraModal');
   assert.equal(modalOpenedCams[0].key, 'TC002F');
@@ -4716,18 +4738,24 @@ test('Camera FOV & Corridor Geometry Fix: Verified azimuth overrides, speed-link
   );
   assert.ok(snappedEbBearing >= 70 && snappedEbBearing <= 88, `Directional EB camera near NLH must snap to EB speed-link tangent (~82°), got ${snappedEbBearing}°`);
 
-  // Worker speed map must NOT emit leapfrogging duplicate chord AID08118 -> AID08120 across AID08119, and MUST include rotA & rotB
-  const detMetaMap = new Map(nlhDetectors.map((d) => [d.id, d]));
-  const liveMap = new Map(nlhDetectors.map((d) => [d.id, { speed: d.spd, occ: 18 }]));
+  // Worker speed map emits 60-320m 2-point links cleanly (excluding >320m hillside chords);
+  // short gaps (320-600m) with same speed tier are bridged in filterAndOffsetGlobalSpeedGeoJson at ~0.55 opacity.
+  const closeNlhDetectors = [
+    { id: 'AID_S1', lat: 22.28960, lon: 113.94466, roadEn: 'North Lantau Highway - Eastbound', spd: 90, rot: 82, dir: 'EB' },
+    { id: 'AID_S2', lat: 22.28988, lon: 113.94690, roadEn: 'North Lantau Highway - Eastbound', spd: 92, rot: 82, dir: 'EB' }, // ~233m
+    { id: 'AID_W1', lat: 22.29010, lon: 113.94690, roadEn: 'North Lantau Highway - Westbound', spd: 88, rot: 262, dir: 'WB' },
+    { id: 'AID_W2', lat: 22.28982, lon: 113.94466, roadEn: 'North Lantau Highway - Westbound', spd: 86, rot: 262, dir: 'WB' }, // ~233m
+  ];
+  const detMetaMap = new Map([...nlhDetectors, ...closeNlhDetectors].map((d) => [d.id, d]));
+  const liveMap = new Map([...nlhDetectors, ...closeNlhDetectors].map((d) => [d.id, { speed: d.spd, occ: 18 }]));
   const workerGeo = workerCtx.buildWorkerSpeedMapGeoJson(detMetaMap, liveMap);
-  assert.ok(!workerGeo.features.some((f: any) => f.properties.id === 'AID08118' && f.properties.toId === 'AID08120'), 'Worker speed GeoJSON must skip leapfrogging chord AID08118 -> AID08120 over intermediate detector AID08119');
-  assert.ok(workerGeo.features.length >= 2, 'Worker speed GeoJSON must keep valid non-leapfrogged EB and WB links');
+  assert.ok(!workerGeo.features.some((f: any) => f.properties.id === 'AID08118' && f.properties.toId === 'AID08120'), 'Worker speed GeoJSON must skip leapfrogging chord');
+  assert.ok(workerGeo.features.length >= 2, 'Worker speed GeoJSON must keep valid 60m-320m EB and WB links');
   for (const feat of workerGeo.features) {
-    assert.equal(typeof feat.properties.rotA, 'number', 'Worker speed feature must include rotA for smooth Hermite curve interpolation');
-    assert.equal(typeof feat.properties.rotB, 'number', 'Worker speed feature must include rotB for smooth Hermite curve interpolation');
+    assert.ok(feat.properties.lenM >= 60 && feat.properties.lenM <= 320, `Worker 2-point link must be 60m-320m, got ${feat.properties.lenM}m`);
   }
 
-  // 2. Load map.js in sandbox to verify client camera icon, overrides, Hermite curve smoothing, non-crossing guard, and no raw chords on detail route map
+  // 2. Load map.js in sandbox to verify client camera icon, overrides, strictly parallel non-crossing links, and no raw chords on detail route map
   const detailOverlayPolylines: any[] = [];
   const mockMap: any = {
     getZoom: () => 16,
@@ -4776,36 +4804,36 @@ test('Camera FOV & Corridor Geometry Fix: Verified azimuth overrides, speed-link
   assert.ok(iconSpec.html.includes('transform:rotate(175deg)'), 'TC003F FOV cone must rotate to 175deg');
   assert.ok(iconSpec.html.includes('A36 36') && iconSpec.html.includes('fill="rgba(37, 99, 235, 0.28)"') && iconSpec.html.includes('stroke="#2563eb"') && iconSpec.html.includes('stroke-width="1.5"'), 'FOV cone must match 36px radius, rgba(37, 99, 235, 0.28) fill, and 1.5px #2563eb border');
 
-  // Check vivid Global Map speed color palette & tight keep-left offsets
+  // Check vivid Global Map speed color palette & tight keep-left offsets (1.5m at z>=15, 2.5m at z<15)
   assert.equal(sb.ctx.window.getGlobalTrafficSpeedColorHex(65), '#22c55e', 'Smooth traffic must use #22c55e');
   assert.equal(sb.ctx.window.getGlobalTrafficSpeedColorHex(35), '#f59e0b', 'Moderate traffic must use #f59e0b');
   assert.equal(sb.ctx.window.getGlobalTrafficSpeedColorHex(15), '#ef4444', 'Congested traffic must use #ef4444');
-  assert.equal(sb.ctx.window.getGlobalTrafficLaneOffsetMeters(16), 1.8);
-  assert.equal(sb.ctx.window.getGlobalTrafficLaneOffsetMeters(14), 3.5);
+  assert.equal(sb.ctx.window.getGlobalTrafficLaneOffsetMeters(16), 1.5);
+  assert.equal(sb.ctx.window.getGlobalTrafficLaneOffsetMeters(14), 2.5);
 
-  // Check Hermite curve smoothing + opposite-carriageway non-crossing guard on real North Lantau Highway WB vs EB crossing case
+  // Check strictly parallel 2-point links (NO Hermite bending!) + opposite-carriageway non-crossing guard
   const crossingGeo = {
     type: 'FeatureCollection',
     features: [
       {
         type: 'Feature',
-        properties: { id: 'AID08120', roadEn: 'North Lantau Highway - Westbound', spd: 90, rot: 263, rotA: 250, rotB: 270, distKm: 0.54 },
-        geometry: { type: 'LineString', coordinates: [[113.94986, 22.290244], [113.944664, 22.289695]] },
+        properties: { id: 'TMR_WB', roadEn: 'Tuen Mun Road - Westbound', spd: 58, rot: 263, rotA: 250, rotB: 270 },
+        geometry: { type: 'LineString', coordinates: [[113.9800, 22.3712], [113.9778, 22.3709]] }, // ~228m
       },
       {
         type: 'Feature',
-        properties: { id: 'AID08203', roadEn: 'North Lantau Highway - Eastbound', spd: 92, rot: 82, rotA: 82, rotB: 68, distKm: 0.54 },
-        geometry: { type: 'LineString', coordinates: [[113.94468, 22.28978], [113.94989, 22.29009]] }, // Intentionally crosses WB!
+        properties: { id: 'TMR_EB', roadEn: 'Tuen Mun Road - Eastbound', spd: 60, rot: 83, rotA: 80, rotB: 70 },
+        geometry: { type: 'LineString', coordinates: [[113.9778, 22.37105], [113.9800, 22.37105]] }, // ~226m, intentionally crosses WB!
       },
     ],
   };
-  const smoothedGeo = sb.ctx.filterAndOffsetGlobalSpeedGeoJson(crossingGeo, 16);
-  assert.equal(smoothedGeo.features.length, 2, 'Both smoothed NLH carriageways should be retained after separation');
-  assert.ok(smoothedGeo.features[0].geometry.coordinates.length >= 5, 'Curved Hermite link must emit smooth multi-point geometry instead of raw 2-point chord');
+  const parallelGeo = sb.ctx.filterAndOffsetGlobalSpeedGeoJson(crossingGeo, 16, []);
+  assert.equal(parallelGeo.features.length, 2, 'Both parallel carriageways should be retained after keep-left separation');
+  assert.equal(parallelGeo.features[0].geometry.coordinates.length, 2, '2-point TD speed links must stay strictly 2-point straight parallel lines (NO Hermite bending)');
   assert.equal(
-    sb.ctx._polylinesIntersect2D(smoothedGeo.features[0].geometry.coordinates, smoothedGeo.features[1].geometry.coordinates),
+    sb.ctx._polylinesIntersect2D(parallelGeo.features[0].geometry.coordinates, parallelGeo.features[1].geometry.coordinates),
     false,
-    'Opposite-direction WB and EB lines on North Lantau Highway must NEVER cross over each other after keep-left separation'
+    'Opposite-direction WB and EB lines must NEVER cross over each other after keep-left separation'
   );
 
   // Check Route Detail Map uses ~150m road-snapped slicing and NEVER draws raw 2-point TD chords on top
@@ -4957,4 +4985,185 @@ test('Global Camera Orientation, Full-Frame Camera Modal & 7-App HK Ecosystem Li
   assert.ok(html.includes('switchToOppositeTrafficCamera('), 'Traffic modal must allow 1-tap switching to opposite carriageway camera');
   assert.ok(html.includes('.global-traffic-cam-marker.cam-selected'), 'Map camera markers must style active selected camera highlight');
 });
+
+test('Issues 1-4: Zoom-Gated Global Cameras, Upstream Jam & Time-Decay Corridor Ranking, Short-Gap Bridging, Forward-Only Exit Clamp & Road Ahead Chip, and Separate Bus Speed Layer', () => {
+  const sb = loadHardcodeAndPlannerSandbox();
+  const mapSrc = fs.readFileSync('public/map.js', 'utf8');
+  const html = fs.readFileSync('index.html', 'utf8');
+
+  // --- Issue 2: Upstream Jam Before Stop + Time-to-Reach Decay Ranking + HK Time-of-Day Context ---
+  const getHongKongTimeOfDayContext = sb.ctx.window.getHongKongTimeOfDayContext;
+  const computeTimeToReachDecayWeight = sb.ctx.window.computeTimeToReachDecayWeight;
+  const getDirectionalRoadSummary = sb.ctx.window.getDirectionalRoadSummary;
+
+  // Verify time-to-reach decay weights (0-15m -> 1.0x, 15-30m -> 0.65x, >30m or >15km -> 0.3x)
+  assert.equal(computeTimeToReachDecayWeight(5, 1.5), 1.0, 'Immediate jam (5 min) must get 1.0x weight');
+  assert.equal(computeTimeToReachDecayWeight(22, 9.0), 0.65, 'Mid-distance jam (22 min) must get 0.65x weight');
+  assert.equal(computeTimeToReachDecayWeight(36, 12.0), 0.3, 'Far jam (>30 min) must get 0.3x weight');
+  assert.equal(computeTimeToReachDecayWeight(18, 16.5), 0.3, 'Far jam (>15 km) must get 0.3x weight');
+
+  // Verify HK time-of-day context (UTC+8): Mon 08:30 HKT = AM Peak, Mon 23:15 HKT = Late Evening dissipating, Sun 14:00 HKT = Weekend
+  const monAmPeakMs = Date.UTC(2026, 10, 23, 0, 30, 0); // Mon 08:30 HKT
+  const monLateMs = Date.UTC(2026, 10, 23, 15, 15, 0);  // Mon 23:15 HKT
+  const sunMidMs = Date.UTC(2026, 10, 22, 6, 0, 0);     // Sun 14:00 HKT
+  assert.equal(getHongKongTimeOfDayContext(monAmPeakMs).period, 'AM_PEAK');
+  assert.equal(getHongKongTimeOfDayContext(monAmPeakMs).trend, 'BUILDING');
+  assert.equal(getHongKongTimeOfDayContext(monLateMs).period, 'LATE_NIGHT');
+  assert.equal(getHongKongTimeOfDayContext(monLateMs).trend, 'DISSIPATING');
+  assert.equal(getHongKongTimeOfDayContext(sunMidMs).period, 'WEEKEND');
+
+  // Build synthetic northbound corridor with:
+  // - Stop 0 (origin, 22.300), Stop 1 (boarding stop, 22.318 = 2.0km), Stop 2 (22.340 = +2.4km), Stop 3 (exit stop, 22.365 = +5.2km), Stop 4 (far terminus, 22.520 = +22.4km)
+  const corridorStops = [
+    { stopKey: 'S0', stopName_e: 'Airport Cargo', latitude: '22.3000', longitude: '114.0000' },
+    { stopKey: 'S1', stopName_e: 'Tung Chung Cable Car', latitude: '22.3180', longitude: '114.0000' },
+    { stopKey: 'S2', stopName_e: 'North Lantau BBI', latitude: '22.3400', longitude: '114.0000' },
+    { stopKey: 'S3', stopName_e: 'Tuen Mun Road Portal', latitude: '22.3650', longitude: '114.0000' },
+    { stopKey: 'S4', stopName_e: 'Yuen Long Terminus', latitude: '22.5200', longitude: '114.0000' },
+  ];
+  const corridorPoly: [number, number][] = [];
+  for (let lat = 22.300; lat <= 22.5201; lat += 0.004) {
+    corridorPoly.push([Number(lat.toFixed(4)), 114.0000]);
+  }
+  const corridorDets = [
+    // Upstream jam 1.1km BEFORE Stop 1 (inside 0-2.5km approaching window)
+    { id: 'DET_UP', lat: 22.3080, lon: 114.0001, rot: 0, spd: 14, occ: 78, tier: 'JAMMED', roadEn: 'Tat Tung Road Approach', camKey: 'CAM_UP' },
+    // Immediate downstream bottleneck 1.8km AHEAD of Stop 1 (~3 min away, 1.0x weight)
+    { id: 'DET_NEAR', lat: 22.3340, lon: 114.0001, rot: 0, spd: 22, occ: 62, tier: 'SLOW', roadEn: 'Shun Long Road', camKey: 'CAM_NEAR' },
+    // Far downstream minor jam 20km AHEAD of Stop 1 (>15km -> 0.3x weight, must NOT outrank DET_NEAR)
+    { id: 'DET_FAR', lat: 22.5000, lon: 114.0001, rot: 0, spd: 18, occ: 55, tier: 'JAMMED', roadEn: 'Yuen Long Highway Far', camKey: 'CAM_FAR' },
+  ];
+  const corridorCams = [
+    { key: 'CAM_UP', lat: 22.3080, lon: 114.0001, desc: 'Tat Tung Rd - Northbound', bearingDeg: 0 },
+    { key: 'CAM_AHEAD_650', lat: 22.3238, lon: 114.0001, desc: 'Shun Long Rd Entrance - Northbound', bearingDeg: 0 },
+    { key: 'CAM_OPP', lat: 22.3240, lon: 114.0001, desc: 'Shun Long Rd - Southbound', bearingDeg: 180 },
+    { key: 'CAM_FAR_BEYOND_EXIT', lat: 22.4500, lon: 114.0001, desc: 'Yuen Long Hwy Mid - Northbound', bearingDeg: 0 },
+  ];
+
+  const sumFull = getDirectionalRoadSummary(corridorStops, 1, corridorDets, false, 40, corridorPoly, 28000, corridorCams, { nowMs: monLateMs });
+  assert.ok(sumFull, 'Must return directional road summary');
+  assert.ok(sumFull.approaching && sumFull.approaching.detectorId === 'DET_UP', 'Must detect upstream Jam Before Stop within 0-2.5km');
+  assert.ok(sumFull.aheadCam && sumFull.aheadCam.key === 'CAM_AHEAD_650', 'Must expose nearest forward Road Ahead camera excluding opposite-bound and upstream cameras');
+  assert.ok(Array.isArray(sumFull.rankedBottlenecks) && sumFull.rankedBottlenecks.length >= 2, 'Must return ranked segment-by-segment bottlenecks');
+  const nearIdx = sumFull.rankedBottlenecks.findIndex((r: any) => r.detectorId === 'DET_NEAR');
+  const farIdx = sumFull.rankedBottlenecks.findIndex((r: any) => r.detectorId === 'DET_FAR');
+  assert.ok(nearIdx >= 0 && farIdx >= 0 && nearIdx < farIdx, 'Immediate 1.8km bottleneck (1.0x) must outrank distant 20km jam (0.3x)');
+  const farRow = sumFull.rankedBottlenecks[farIdx];
+  assert.ok(farRow && farRow.isFarAhead && farRow.timeDecayWeight === 0.3, 'Far downstream jam must be discounted (0.3x) and flagged isFarAhead');
+
+  // Exit stop clamp (clamped to Stop 3) -> MUST exclude DET_FAR and CAM_FAR_BEYOND_EXIT beyond Stop 3
+  const sumClamped = getDirectionalRoadSummary(corridorStops, 1, corridorDets, false, 40, corridorPoly, 28000, corridorCams, { exitStopIdx: 3, nowMs: monAmPeakMs });
+  assert.ok(!sumClamped.rankedBottlenecks.some((r: any) => r.detectorId === 'DET_FAR'), 'Clamping Exit to Stop 3 must exclude downstream bottlenecks past Stop 3');
+  assert.equal(sumClamped.timeOfDayContext.period, 'AM_PEAK', 'Summary must include HK time-of-day context');
+
+  // --- Issue 3A: Short-gap bridging (<=600m same-tier at ~0.55 opacity) vs >600m / mismatched-tier uncolored ---
+  const mapCtx: any = {
+    window: {
+      trafficLayerEnabled: true,
+      busSpeedLayerEnabled: false,
+      __LIVE_TRAFFIC_DETECTORS__: [],
+      __LIVE_TRAFFIC_CAMERAS__: [],
+      sliceForwardPolylineFromStop: sb.ctx.window.sliceForwardPolylineFromStop,
+      pointToSegmentDistanceKm: sb.ctx.window.pointToSegmentDistanceKm,
+      inferBusApiSegmentSpeeds: sb.ctx.window.inferBusApiSegmentSpeeds,
+      buildRouteSpeedGeoJson: sb.ctx.window.buildRouteSpeedGeoJson,
+    },
+    document: { getElementById: () => null },
+    currentLang: 'en',
+    escapeHtml: (s: any) => String(s ?? ''),
+    calculateDistanceKm: sb.ctx.window.calculateDistanceKm,
+    L: {
+      layerGroup: (arr: any[] = []) => ({ _layers: arr, addTo() { return this; }, addLayer(l: any) { this._layers.push(l); }, clearLayers() { this._layers.length = 0; } }),
+      polyline: (c: any, opts: any) => ({ c, opts, addTo(g: any) { g?.addLayer?.(this); return this; }, bindTooltip() { return this; } }),
+      divIcon: (o: any) => o,
+      marker: (ll: any, opts: any) => ({ ll, opts, addTo(g: any) { g?.addLayer?.(this); return this; }, bindTooltip() { return this; }, on() { return this; } }),
+      geoJSON: () => ({ addTo() { return this; } }),
+    },
+    console, Math, Number, String, Array, Map, Set,
+  };
+  vm.createContext(mapCtx);
+  vm.runInContext(mapSrc, mapCtx);
+
+  const bridgeDets = [
+    // Pair 1: 450m apart, same road, same direction, BOTH SMOOTH -> MUST bridge at opacity 0.55
+    { id: 'B1', lat: 22.3500, lon: 114.0000, rot: 0, spd: 62, tier: 'SMOOTH', roadEn: 'Castle Peak Road' },
+    { id: 'B2', lat: 22.3540, lon: 114.0000, rot: 0, spd: 66, tier: 'SMOOTH', roadEn: 'Castle Peak Road' },
+    // Pair 2: 450m apart, same road, MISMATCHED tier (SMOOTH vs CONGESTED) -> MUST NOT bridge
+    { id: 'M1', lat: 22.3800, lon: 114.0200, rot: 0, spd: 60, tier: 'SMOOTH', roadEn: 'Tolo Highway' },
+    { id: 'M2', lat: 22.3840, lon: 114.0200, rot: 0, spd: 12, tier: 'JAMMED', roadEn: 'Tolo Highway' },
+    // Pair 3: 780m apart (> 600m), same tier -> MUST NOT bridge
+    { id: 'G1', lat: 22.4100, lon: 114.0400, rot: 0, spd: 70, tier: 'SMOOTH', roadEn: 'Fanling Highway' },
+    { id: 'G2', lat: 22.4170, lon: 114.0400, rot: 0, spd: 72, tier: 'SMOOTH', roadEn: 'Fanling Highway' },
+  ];
+  const bridgedFc = mapCtx.filterAndOffsetGlobalSpeedGeoJson({ type: 'FeatureCollection', features: [] }, 14, bridgeDets);
+  assert.equal(bridgedFc.features.length, 1, 'Only the <=600m same-road same-tier gap should be bridged');
+  assert.equal(bridgedFc.features[0].properties.isGapBridge, true);
+  assert.equal(bridgedFc.features[0].properties.opacity, 0.55);
+
+  // --- Issue 3C: Forward-only route camera filter (<=120m, <=55deg, 1.0 opacity <=8km vs 0.55 opacity >8km, no upstream cams) ---
+  const routeMarkers: any[] = [];
+  const detailMockMap: any = {
+    getZoom: () => 15,
+    getBounds: () => ({ pad: () => ({ contains: () => true }), contains: () => true }),
+    latLngToContainerPoint: (ll: [number, number]) => ({ x: ll[1] * 10000, y: ll[0] * 10000 }),
+    removeLayer: () => {},
+    on: () => {},
+  };
+  mapCtx.L.marker = (ll: any, opts: any) => {
+    const m: any = { ll, opts, addTo() { routeMarkers.push(m); return m; }, bindTooltip() { return m; }, on() { return m; } };
+    return m;
+  };
+  mapCtx.window.mapInstance = detailMockMap;
+  mapCtx.window.__LIVE_TRAFFIC_DETECTORS__ = corridorDets;
+  mapCtx.window.__LIVE_TRAFFIC_CAMERAS__ = [
+    { key: 'CAM_BEHIND', lat: 22.3050, lon: 114.0000, desc: 'Airport Behind - Northbound', bearingDeg: 0 }, // upstream behind Stop 1
+    { key: 'CAM_NEAR_FWD', lat: 22.3300, lon: 114.0001, desc: 'Forward 1.3km - Northbound', bearingDeg: 0 }, // <=120m, <=8km -> opacity 1.0
+    { key: 'CAM_FAR_FWD', lat: 22.4150, lon: 114.0001, desc: 'Forward 10.8km - Northbound', bearingDeg: 0 }, // <=120m, >8km -> opacity 0.55
+    { key: 'CAM_WRONG_DIR', lat: 22.3360, lon: 114.0001, desc: 'Opposite - Southbound', bearingDeg: 180 }, // >55deg -> excluded
+    { key: 'CAM_TOO_WIDE', lat: 22.3450, lon: 114.0028, desc: 'Side Road 280m - Northbound', bearingDeg: 0 }, // >120m -> excluded
+  ];
+  const fwdSlice = sb.ctx.window.sliceForwardPolylineFromStop(corridorPoly, corridorStops, 1, 45.0, null);
+  mapCtx.currentDetailCorridorMeta = {
+    isBusRoute: true,
+    isRoadSnapped: true,
+    hasHighwaySpan: true,
+    coords: corridorPoly,
+    forwardCoords: fwdSlice,
+    forwardCameraCoords: fwdSlice,
+  };
+  mapCtx.renderTrafficOverlayOnMap(detailMockMap, true);
+  const camMarkers = routeMarkers.filter(m => m.opts?.icon?.className === 'global-traffic-cam-icon');
+  const findCam = (k: string) => camMarkers.find(m => String(m.opts?.icon?.html || '').includes(`data-cam-key="${k}"`));
+  assert.equal(findCam('CAM_BEHIND'), undefined, 'Upstream camera behind expanded boarding stop must NEVER render');
+  assert.equal(findCam('CAM_WRONG_DIR'), undefined, 'Opposite-direction camera (>55 deg) must NEVER render');
+  assert.equal(findCam('CAM_TOO_WIDE'), undefined, 'Off-corridor camera (>120 m) must NEVER render');
+  assert.ok(findCam('CAM_NEAR_FWD'), 'Forward camera within 8 km must render');
+  assert.equal(findCam('CAM_NEAR_FWD').opts.opacity, 1.0, 'Forward camera <= 8 km must have 1.0 opacity');
+  assert.ok(findCam('CAM_FAR_FWD'), 'Forward camera > 8 km must render');
+  assert.equal(findCam('CAM_FAR_FWD').opts.opacity, 0.55, 'Forward camera > 8 km must have 0.55 opacity');
+
+  // --- Issue 4: Separate API-Driven Bus Speed Layer & TD Gap Filling ---
+  const inferBusApiSegmentSpeeds = sb.ctx.window.inferBusApiSegmentSpeeds;
+  const t0 = Date.UTC(2026, 10, 23, 2, 0, 0);
+  // Stop 0 -> Stop 1: 2.0 km in 10 min (minus dwell => ~12 km/h CONGESTED)
+  // Stop 1 -> Stop 2: 2.44 km highway span in 2.5 min (minus dwell => ~64 km/h SMOOTH)
+  const busEtas = {
+    0: [{ eta: new Date(t0).toISOString() }],
+    1: [{ eta: new Date(t0 + 10 * 60000).toISOString() }],
+    2: [{ eta: new Date(t0 + 12.5 * 60000).toISOString() }],
+  };
+  const busSegs = inferBusApiSegmentSpeeds(corridorStops.slice(0, 3), busEtas, corridorPoly, { tdDetectors: [], nowMs: t0 });
+  assert.equal(busSegs.length, 2, 'Must infer speed for both stop-to-stop spans from live bus ETAs');
+  assert.equal(busSegs[0].tier, 'CONGESTED', `Slow inter-stop bus span (~12 km/h) must classify as CONGESTED, got ${busSegs[0].speedKmh} km/h (${busSegs[0].tier})`);
+  assert.equal(busSegs[1].tier, 'SMOOTH', `Fast highway bus span (~64 km/h) must classify as SMOOTH, got ${busSegs[1].speedKmh} km/h (${busSegs[1].tier})`);
+  assert.equal(busSegs[0].source, 'BUS_API');
+  assert.equal(busSegs[0].coveredByTd, false);
+
+  // Verify separate UI controls & chips in index.html
+  assert.ok(html.includes('id="detailMapBusSpeedBtn"') && html.includes('toggleBusSpeedLayer()'), 'Detail map must include separate Bus Speed Layer toggle button');
+  assert.ok(html.includes('class="stop-exit-pill') && html.includes('toggleDetailExitStop('), 'Downstream stop rows must include compact 1-tap Exit pill button');
+  assert.ok(html.includes('class="traffic-ahead-cam-chip"') && html.includes('Road Ahead'), 'Expanded stop traffic card must include compact Road Ahead camera chip');
+  assert.ok(html.includes('class="traffic-approaching-strip') && html.includes('class="traffic-segment-list"'), 'Expanded stop traffic card must render upstream Jam Before Stop and segment-by-segment bottlenecks');
+});
+
 

@@ -38,10 +38,19 @@ var _trafficMarkersByMap = new WeakMap();
 var _trafficMoveTimerByMap = new WeakMap();
 window.trafficLayerEnabled = true;
 window.globalTrafficLayerEnabled = false;
+window.busSpeedLayerEnabled = false;
+window.__DETAIL_BUS_SPEED_SEGMENTS__ = [];
+window.__GLOBAL_BUS_SPEED_SEGMENTS__ = null;
+window.__GLOBAL_BUS_SPEED_CACHE__ = window.__GLOBAL_BUS_SPEED_CACHE__ || new Map();
 var _globalTrafficLayerGroup = null;
 var _globalCameraClusterGroup = null;
+var _globalBusSpeedLayerGroup = null;
 var _globalTrafficControl = null;
+var _globalTrafficMoveTimer = null;
+var _globalBusSpeedFetchToken = 0;
+var _detailBusSpeedSyncToken = 0;
 var _detailFocusedAwayFromStop = false;
+const GLOBAL_CAMERA_MIN_ZOOM = 14;
 window.__ROUTE_GEOM_CACHE__ = window.__ROUTE_GEOM_CACHE__ || {};
 var _busGeomInFlight = new Map();
 var _detailGeomToken = 0;
@@ -729,10 +738,15 @@ function renderTrafficOverlayOnMap(targetMap, forceRedraw = false) {
     }
   });
 
-  // Render clickable directional TD traffic camera markers within 350 m of active route corridor
-  // (including roundabouts and tunnel portals like TC002F & TC001F where speed telemetry cuts off)
+  // Render clickable directional TD traffic camera markers strictly along the forward route slice
+  // from activeStopIdx to exitStopIdx (or terminus): <= 120 m road-snapped, <= 55° bearing for directional cams,
+  // 1.0 opacity within 8 km ahead and 0.55 opacity beyond 8 km.
   if (isDetailMap && isDetailBusScoped && Array.isArray(currentDetailCorridorMeta?.coords) && currentDetailCorridorMeta.coords.length >= 2) {
-    const routeCoords = currentDetailCorridorMeta.coords;
+    const forwardCamCoords = (Array.isArray(currentDetailCorridorMeta.forwardCameraCoords) && currentDetailCorridorMeta.forwardCameraCoords.length >= 2)
+      ? currentDetailCorridorMeta.forwardCameraCoords
+      : ((Array.isArray(currentDetailCorridorMeta.forwardCoords) && currentDetailCorridorMeta.forwardCoords.length >= 2)
+        ? currentDetailCorridorMeta.forwardCoords
+        : currentDetailCorridorMeta.coords);
     let routeCamPool = Array.isArray(window.__LIVE_TRAFFIC_CAMERAS__) && window.__LIVE_TRAFFIC_CAMERAS__.length
       ? window.__LIVE_TRAFFIC_CAMERAS__
       : [];
@@ -754,7 +768,8 @@ function renderTrafficOverlayOnMap(targetMap, forceRedraw = false) {
       }
     }
 
-    const MAX_ROUTE_CAM_DIST_KM = 0.35;
+    const MAX_ROUTE_CAM_DIST_KM = 0.12;
+    const MAX_ROUTE_CAM_BEARING_DIFF = 55;
     const camBounds = targetMap.getBounds ? targetMap.getBounds().pad(0.18) : null;
     const matchedRouteCams = [];
     for (let cIdx = 0; cIdx < routeCamPool.length; cIdx++) {
@@ -762,17 +777,32 @@ function renderTrafficOverlayOnMap(targetMap, forceRedraw = false) {
       const cLat = Number(cam?.lat), cLon = Number(cam?.lon);
       if (!cam?.key || !Number.isFinite(cLat) || !Number.isFinite(cLon)) continue;
       if (camBounds && typeof camBounds.contains === 'function' && !camBounds.contains([cLat, cLon])) continue;
-      const distKm = _minPointToPolylineDistKm(cLat, cLon, routeCoords);
-      if (distKm <= MAX_ROUTE_CAM_DIST_KM) {
-        matchedRouteCams.push({ cam, distKm });
+      const proj = _projectPointOntoPolylineDetailed(cLat, cLon, forwardCamCoords);
+      if (proj.distKm > MAX_ROUTE_CAM_DIST_KM) continue;
+
+      const hasExplicitDir = Boolean(
+        (cam.bearingDeg !== undefined && cam.bearingDeg !== null && Number.isFinite(Number(cam.bearingDeg))) ||
+        String(cam.dir || '').trim() ||
+        /\b(?:northbound|southbound|eastbound|westbound|nb|sb|eb|wb)\b|北行|南行|東行|西行/i.test(String(cam.desc || ''))
+      );
+      const bearingDeg = resolveCameraBearingDeg(cam, detectors, forwardCamCoords);
+      if (hasExplicitDir && Number.isFinite(proj.segBrg) && Number.isFinite(bearingDeg)) {
+        if (_mapAngDiffDeg(bearingDeg, proj.segBrg) > MAX_ROUTE_CAM_BEARING_DIFF) continue;
       }
+
+      matchedRouteCams.push({
+        cam,
+        distKm: proj.distKm,
+        alongKm: proj.alongKm,
+        bearingDeg
+      });
     }
 
-    matchedRouteCams.sort((a, b) => a.distKm - b.distKm);
+    matchedRouteCams.sort((a, b) => (a.alongKm - b.alongKm) || (a.distKm - b.distKm));
     const placedRouteCamPts = [];
     const MIN_ROUTE_CAM_PX = zoom >= 16 ? 20 : 28;
     for (let i = 0; i < matchedRouteCams.length; i++) {
-      const { cam } = matchedRouteCams[i];
+      const { cam, alongKm, bearingDeg } = matchedRouteCams[i];
       const cLat = Number(cam.lat), cLon = Number(cam.lon);
       const ptPx = projectDetectorToScreenPx(targetMap, cLat, cLon, zoom);
       let tooCloseCam = false;
@@ -785,16 +815,18 @@ function renderTrafficOverlayOnMap(targetMap, forceRedraw = false) {
       if (tooCloseCam) continue;
       placedRouteCamPts.push(ptPx);
 
-      const bearingDeg = resolveCameraBearingDeg(cam, detectors, routeCoords);
+      const camOpacity = alongKm <= 8.0 ? 1.0 : 0.55;
       const compassTxt = formatCompassFromBearingDeg(bearingDeg, isZh);
       const cleanDesc = sanitizeBottleneckLabel(cam.desc || cam.key);
-      const camIcon = buildDirectionalCameraDivIcon(cam, bearingDeg, isZh, true);
+      const camIcon = buildDirectionalCameraDivIcon(cam, bearingDeg, isZh, true, camOpacity, alongKm);
       const camMarker = L.marker([cLat, cLon], {
         icon: camIcon,
-        zIndexOffset: 240
+        opacity: camOpacity,
+        zIndexOffset: alongKm <= 8.0 ? 245 : 220
       }).addTo(layerGroup);
       if (typeof camMarker.bindTooltip === 'function') {
-        camMarker.bindTooltip(`📷 ${cleanDesc}${compassTxt ? ` (${compassTxt})` : ''}`, {
+        const distLbl = alongKm < 1 ? `${Math.round(alongKm * 1000)}m` : `${alongKm.toFixed(1)}km`;
+        camMarker.bindTooltip(`📷 ${cleanDesc}${compassTxt ? ` (${compassTxt})` : ''} · ${distLbl}`, {
           direction: 'top',
           offset: [0, -10],
           className: 'kmb-map-stop-label'
@@ -835,14 +867,39 @@ function bindTrafficRefreshOnMapMove(targetMap) {
   });
 }
 
+function _getDetailStopsForGroup(group) {
+  if (!group || typeof getStopsForGroup !== 'function') return [];
+  const boardKey = (typeof detailBoardStopKey !== 'undefined' && detailBoardStopKey)
+    ? detailBoardStopKey
+    : ((typeof detailTargetStopKey !== 'undefined' && detailTargetStopKey) ? detailTargetStopKey : null);
+  return getStopsForGroup(group, boardKey) || [];
+}
+
+function _resolveActiveExitStopIdx(stops, activeStopIdx = 0) {
+  const exitKey = (typeof window !== 'undefined' && window.detailTargetStopKey)
+    ? window.detailTargetStopKey
+    : ((typeof detailTargetStopKey !== 'undefined') ? detailTargetStopKey : null);
+  if (!exitKey || !Array.isArray(stops) || !stops.length) return null;
+  const idx = stops.findIndex(s => s && (s.stopKey === exitKey || s.stopId === exitKey));
+  return (idx > activeStopIdx) ? idx : null;
+}
+
 function _refreshDetailBusSpeedPolylineIfActive() {
   if (!window.mapInstance || !currentDetailCorridorMeta?.isBusRoute) return;
   if (!Array.isArray(currentDetailRoadCoords) || currentDetailRoadCoords.length < 2) return;
   if (typeof detailRouteGroup === 'undefined' || !detailRouteGroup) return;
-  const stops = (typeof getStopsForGroup === 'function')
-    ? getStopsForGroup(detailRouteGroup, typeof detailTargetStopKey !== 'undefined' ? detailTargetStopKey : null)
-    : [];
+  const stops = _getDetailStopsForGroup(detailRouteGroup);
   const activeIdx = (typeof detailExpandedStopIdx === 'number' && detailExpandedStopIdx >= 0) ? detailExpandedStopIdx : 0;
+  const exitIdx = _resolveActiveExitStopIdx(stops, activeIdx);
+  if (currentDetailCorridorMeta && typeof window.sliceForwardPolylineFromStop === 'function') {
+    currentDetailCorridorMeta = {
+      ...currentDetailCorridorMeta,
+      activeStopIdx: activeIdx,
+      exitStopIdx: exitIdx,
+      forwardCoords: window.sliceForwardPolylineFromStop(currentDetailRoadCoords, stops, activeIdx, 12.0, exitIdx),
+      forwardCameraCoords: window.sliceForwardPolylineFromStop(currentDetailRoadCoords, stops, activeIdx, 45.0, exitIdx)
+    };
+  }
   const routeAccent = detailRouteGroup?.colorHex ||
     (typeof window.__GET_ROUTE_COLOR_HEX__ === 'function'
       ? window.__GET_ROUTE_COLOR_HEX__(detailRouteGroup?.mode, detailRouteGroup?.company, detailRouteGroup?.routeNo)
@@ -865,6 +922,9 @@ function syncTrafficOverlaysAllMaps() {
   if (window.browseMapInstance) {
     if (window.globalTrafficLayerEnabled) {
       renderGlobalTrafficDashboard(window.browseMapInstance);
+    }
+    if (window.busSpeedLayerEnabled) {
+      renderGlobalBusSpeedOverlay(window.browseMapInstance);
     }
   }
   if (window.xferMapInstance) {
@@ -889,7 +949,7 @@ function toggleTrafficLayerOverlay(forceState = null) {
 
 function _getActiveDetailStopContext() {
   if (typeof detailRouteGroup === 'undefined' || !detailRouteGroup || typeof getStopsForGroup !== 'function') return null;
-  const stops = getStopsForGroup(detailRouteGroup, typeof detailTargetStopKey !== 'undefined' ? detailTargetStopKey : null);
+  const stops = _getDetailStopsForGroup(detailRouteGroup);
   if (!Array.isArray(stops) || !stops.length) return null;
   const idx = (typeof detailExpandedStopIdx === 'number' && detailExpandedStopIdx >= 0 && detailExpandedStopIdx < stops.length)
     ? detailExpandedStopIdx
@@ -1555,8 +1615,54 @@ function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) 
   if (!Array.isArray(coords) || coords.length < 2) return null;
   const layers = [];
   const liveDetectors = Array.isArray(window.__LIVE_TRAFFIC_DETECTORS__) ? window.__LIVE_TRAFFIC_DETECTORS__ : [];
-  const localStreetFallback = '#3b82f6';
-  const thinCasingColor = '#1e293b';
+  const solidRouteFallback = routeAccent || '#2563eb';
+  const highContrastCasingColor = '#0f172a';
+  const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
+
+  const appendBusSpeedOverlay = () => {
+    if (!window.busSpeedLayerEnabled) return;
+    const busSegs = Array.isArray(window.__DETAIL_BUS_SPEED_SEGMENTS__) ? window.__DETAIL_BUS_SPEED_SEGMENTS__ : [];
+    if (!busSegs.length) return;
+    for (let i = 0; i < busSegs.length; i++) {
+      const seg = busSegs[i];
+      // Strictly fill stop-to-stop gaps not covered by TD speed feeds when TD Traffic is also enabled
+      if (window.trafficLayerEnabled && (seg.coveredByTd || seg.tdCovered)) continue;
+      if (!Array.isArray(seg.coords) || seg.coords.length < 2) continue;
+      layers.push(
+        L.polyline(seg.coords, {
+          color: highContrastCasingColor,
+          weight: 7,
+          opacity: 0.85,
+          dashArray: null,
+          smoothFactor: 1.5,
+          lineJoin: 'round',
+          lineCap: 'round',
+          interactive: false
+        })
+      );
+      const busLine = L.polyline(seg.coords, {
+        color: seg.color || '#2563eb',
+        weight: 4,
+        opacity: 0.96,
+        dashArray: null,
+        smoothFactor: 1.5,
+        lineJoin: 'round',
+        lineCap: 'round'
+      });
+      if (typeof busLine.bindTooltip === 'function') {
+        const rawFrom = isZh ? (seg.fromNameTc || seg.fromNameEn) : (seg.fromNameEn || seg.fromNameTc);
+        const rawTo = isZh ? (seg.toNameTc || seg.toNameEn) : (seg.toNameEn || seg.toNameTc);
+        const fromNm = sanitizeBottleneckLabel(rawFrom || `Stop ${seg.fromSeq || ((seg.fromIdx || 0) + 1)}`);
+        const toNm = sanitizeBottleneckLabel(rawTo || `Stop ${seg.toSeq || ((seg.toIdx || 0) + 2)}`);
+        busLine.bindTooltip(
+          `🚌 ${isZh ? '巴士車速' : 'Bus Speed'} · ${Math.round(seg.speedKmh)} km/h (${fromNm} → ${toNm})`,
+          { sticky: true, className: 'kmb-map-stop-label' }
+        );
+      }
+      layers.push(busLine);
+    }
+  };
+
   const hasGeoJsonTwin = Boolean(
     window.trafficLayerEnabled &&
     typeof window.buildRouteSpeedGeoJson === 'function' &&
@@ -1570,66 +1676,50 @@ function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) 
     const speedGeoJson = window.buildRouteSpeedGeoJson(coords, liveDetectors, {
       isRoadSnapped,
       hasHighwaySpan,
-      noDataColor: localStreetFallback,
+      noDataColor: solidRouteFallback,
       maxMicroStepKm: 0.15
     });
     window.__LAST_DETAIL_SPEED_GEOJSON__ = speedGeoJson;
 
     if (speedGeoJson && Array.isArray(speedGeoJson.features) && speedGeoJson.features.length > 0) {
-      // Thin dark casing (#1e293b, weight 7.5) underneath live green/amber/red speed segments,
-      // and clean white dashed halo underneath unmonitored dashed slate-blue (#3b82f6) feeder segments
+      // High-contrast dark casing (#0f172a, weight 7, opacity 0.85) underneath ALL route segments
+      // so green speed segments (#16a34a) and solid vivid unmonitored roads pop against green map tiles.
       speedGeoJson.features.forEach((feat) => {
         const gCoords = feat?.geometry?.coordinates;
         if (!Array.isArray(gCoords) || gCoords.length < 2) return;
         const latlngs = gCoords.map(c => [c[1], c[0]]);
-        const p = feat?.properties || {};
-        const hasLiveSpeed = p.hasSpeedData !== false && p.speedKmh !== null && p.speedKmh !== undefined && Number.isFinite(Number(p.speedKmh));
-        if (hasLiveSpeed) {
-          layers.push(
-            L.polyline(latlngs, {
-              color: thinCasingColor,
-              weight: 7.5,
-              opacity: 0.72,
-              smoothFactor: 1.5,
-              lineJoin: 'round',
-              lineCap: 'round',
-              interactive: false
-            })
-          );
-        } else {
-          layers.push(
-            L.polyline(latlngs, {
-              color: '#FFFFFF',
-              weight: 7.0,
-              opacity: 0.85,
-              dashArray: '6, 6',
-              smoothFactor: 1.5,
-              lineJoin: 'round',
-              lineCap: 'butt',
-              interactive: false
-            })
-          );
-        }
+        layers.push(
+          L.polyline(latlngs, {
+            color: highContrastCasingColor,
+            weight: 7,
+            opacity: 0.85,
+            dashArray: null,
+            smoothFactor: 1.5,
+            lineJoin: 'round',
+            lineCap: 'round',
+            interactive: false
+          })
+        );
       });
-      const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
       const geoLayer = L.geoJSON(speedGeoJson, {
         style: (feat) => {
           const p = feat?.properties || {};
           const hasLiveSpeed = p.hasSpeedData !== false && p.speedKmh !== null && p.speedKmh !== undefined && Number.isFinite(Number(p.speedKmh));
           if (!hasLiveSpeed) {
+            // Solid vivid route line on unmonitored local/airport roads (never dashed like MTR lines)
             return {
-              color: '#3b82f6',
-              weight: 4.5,
-              opacity: 0.92,
-              dashArray: '6, 6',
+              color: solidRouteFallback,
+              weight: 4,
+              opacity: 0.95,
+              dashArray: null,
               smoothFactor: 1.5,
               lineJoin: 'round',
-              lineCap: 'butt'
+              lineCap: 'round'
             };
           }
           return {
-            color: p.color || localStreetFallback,
-            weight: 5,
+            color: p.color || solidRouteFallback,
+            weight: 4,
             opacity: 0.96,
             dashArray: null,
             smoothFactor: 1.5,
@@ -1643,7 +1733,7 @@ function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) 
           if (!hasLiveSpeed) {
             if (typeof lyr.bindTooltip === 'function') {
               lyr.bindTooltip(
-                isZh ? '未覆蓋實時車速路段 · 可點擊附近鏡頭' : 'No live speed detector · Tap nearby camera markers',
+                isZh ? '實時巴士路線（無測速段 · 可開啟巴士車速圖層）' : 'Bus route (no TD detector · toggle Bus Speed layer for ETA speed)',
                 { sticky: true, className: 'kmb-map-stop-label' }
               );
             }
@@ -1667,6 +1757,7 @@ function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) 
         }
       });
       layers.push(geoLayer);
+      appendBusSpeedOverlay();
       return L.layerGroup(layers);
     }
   }
@@ -1677,23 +1768,24 @@ function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) 
   const splitIdx = (activeStopIdx > 0 && Number.isFinite(actLat) && Number.isFinite(actLon))
     ? findNearestPolylineIndex(coords, actLat, actLon, 0)
     : 0;
-  const fallbackColor = routeAccent || localStreetFallback;
+  const fallbackColor = solidRouteFallback;
 
   if (splitIdx > 1 && splitIdx < coords.length - 1) {
     const upstreamCoords = coords.slice(0, splitIdx + 1);
     const activeCoords = coords.slice(splitIdx);
     layers.push(
-      L.polyline(upstreamCoords, { color: thinCasingColor, weight: 6, opacity: 0.40, lineJoin: 'round', lineCap: 'round', interactive: false }),
-      L.polyline(upstreamCoords, { color: fallbackColor, weight: 3.8, opacity: 0.48, lineJoin: 'round', lineCap: 'round', interactive: false }),
-      L.polyline(activeCoords, { color: thinCasingColor, weight: 7.5, opacity: 0.72, lineJoin: 'round', lineCap: 'round', interactive: false }),
-      L.polyline(activeCoords, { color: fallbackColor, weight: 5, opacity: 0.94, lineJoin: 'round', lineCap: 'round' })
+      L.polyline(upstreamCoords, { color: highContrastCasingColor, weight: 6, opacity: 0.45, dashArray: null, lineJoin: 'round', lineCap: 'round', interactive: false }),
+      L.polyline(upstreamCoords, { color: fallbackColor, weight: 3.5, opacity: 0.50, dashArray: null, lineJoin: 'round', lineCap: 'round', interactive: false }),
+      L.polyline(activeCoords, { color: highContrastCasingColor, weight: 7, opacity: 0.85, dashArray: null, lineJoin: 'round', lineCap: 'round', interactive: false }),
+      L.polyline(activeCoords, { color: fallbackColor, weight: 4, opacity: 0.95, dashArray: null, lineJoin: 'round', lineCap: 'round' })
     );
   } else {
     layers.push(
-      L.polyline(coords, { color: thinCasingColor, weight: 7.5, opacity: 0.72, lineJoin: 'round', lineCap: 'round', interactive: false }),
-      L.polyline(coords, { color: fallbackColor, weight: 5, opacity: 0.94, lineJoin: 'round', lineCap: 'round' })
+      L.polyline(coords, { color: highContrastCasingColor, weight: 7, opacity: 0.85, dashArray: null, lineJoin: 'round', lineCap: 'round', interactive: false }),
+      L.polyline(coords, { color: fallbackColor, weight: 4, opacity: 0.95, dashArray: null, lineJoin: 'round', lineCap: 'round' })
     );
   }
+  appendBusSpeedOverlay();
   return L.layerGroup(layers);
 }
 
@@ -1732,7 +1824,7 @@ function drawRouteOnMap(group, activeStopIdx = 0) {
   Object.values(mapMarkers).forEach(m => { try { window.mapInstance.removeLayer(m); } catch (e) {} });
   mapMarkers = {};
 
-  const stops = getStopsForGroup(group, detailTargetStopKey);
+  const stops = _getDetailStopsForGroup(group);
   if (!stops.length) return;
 
   const isLight = document.documentElement.classList.contains('light-mode');
@@ -1746,11 +1838,16 @@ function drawRouteOnMap(group, activeStopIdx = 0) {
   currentDetailRoadCoords = cachedRoadCoords || polyPts;
   if (currentDetailCorridorMeta?.groupKey !== (group?.key || '')) {
     window.__FOCUSED_TRAFFIC_DET_ID__ = '';
+    window.__DETAIL_BUS_SPEED_SEGMENTS__ = [];
   }
   const hasHighwaySpan = isBusRoute && _stopsHaveHighwaySpan(stops);
+  const exitStopIdx = _resolveActiveExitStopIdx(stops, activeStopIdx);
   const initialForwardCoords = (isBusRoute && typeof window.sliceForwardPolylineFromStop === 'function')
-    ? window.sliceForwardPolylineFromStop(currentDetailRoadCoords, stops, activeStopIdx, 12.0)
+    ? window.sliceForwardPolylineFromStop(currentDetailRoadCoords, stops, activeStopIdx, 12.0, exitStopIdx)
     : currentDetailRoadCoords;
+  const initialForwardCameraCoords = (isBusRoute && typeof window.sliceForwardPolylineFromStop === 'function')
+    ? window.sliceForwardPolylineFromStop(currentDetailRoadCoords, stops, activeStopIdx, 45.0, exitStopIdx)
+    : initialForwardCoords;
   currentDetailCorridorMeta = {
     groupKey: group?.key || '',
     mode: group?.mode || 'BUS',
@@ -1758,8 +1855,10 @@ function drawRouteOnMap(group, activeStopIdx = 0) {
     hasHighwaySpan,
     isRoadSnapped: Boolean(cachedRoadCoords && cachedRoadCoords.length >= 2),
     activeStopIdx,
+    exitStopIdx,
     coords: currentDetailRoadCoords,
-    forwardCoords: initialForwardCoords
+    forwardCoords: initialForwardCoords,
+    forwardCameraCoords: initialForwardCameraCoords
   };
 
   const lineStyle = { color: routeAccent, weight: 5, opacity: 0.92, lineJoin: 'round', lineCap: 'round' };
@@ -1798,13 +1897,17 @@ function drawRouteOnMap(group, activeStopIdx = 0) {
         if (!roadCoords || myGeomToken !== _detailGeomToken || !window.mapInstance) return;
         if (typeof detailRouteGroup !== 'undefined' && detailRouteGroup?.key !== group.key) return;
         const curActive = (typeof detailExpandedStopIdx === 'number' && detailExpandedStopIdx >= 0) ? detailExpandedStopIdx : activeStopIdx;
+        const curExit = _resolveActiveExitStopIdx(stops, curActive);
         if (detailPolylineLayer) {
           try { window.mapInstance.removeLayer(detailPolylineLayer); } catch (e) {}
         }
         currentDetailRoadCoords = roadCoords;
         const snappedForward = (typeof window.sliceForwardPolylineFromStop === 'function')
-          ? window.sliceForwardPolylineFromStop(roadCoords, stops, curActive, 12.0)
+          ? window.sliceForwardPolylineFromStop(roadCoords, stops, curActive, 12.0, curExit)
           : roadCoords;
+        const snappedForwardCam = (typeof window.sliceForwardPolylineFromStop === 'function')
+          ? window.sliceForwardPolylineFromStop(roadCoords, stops, curActive, 45.0, curExit)
+          : snappedForward;
         currentDetailCorridorMeta = {
           groupKey: group?.key || '',
           mode: group?.mode || 'BUS',
@@ -1812,12 +1915,17 @@ function drawRouteOnMap(group, activeStopIdx = 0) {
           hasHighwaySpan,
           isRoadSnapped: true,
           activeStopIdx: curActive,
+          exitStopIdx: curExit,
           coords: roadCoords,
-          forwardCoords: snappedForward
+          forwardCoords: snappedForward,
+          forwardCameraCoords: snappedForwardCam
         };
         detailPolylineLayer = buildDetailBusPolylineLayer(roadCoords, stops, curActive, routeAccent).addTo(window.mapInstance);
-        // Re-run strict forward-only route traffic filtering against the exact road-snapped polyline
+        // Re-run strict forward-only route traffic & camera filtering against the exact road-snapped polyline
         renderTrafficOverlayOnMap(window.mapInstance, true);
+        if (window.busSpeedLayerEnabled) {
+          syncDetailRouteBusSpeedSegments(group, stops);
+        }
         if (typeof window.onBusRouteGeometryReady === 'function') {
           window.onBusRouteGeometryReady(group.key);
         }
@@ -1829,18 +1937,22 @@ function drawRouteOnMap(group, activeStopIdx = 0) {
     const lat = parseFloat(s.latitude), lon = parseFloat(s.longitude);
     if (!isValidRailOrFerryCoord(lat, lon)) return;
     const isAct = (idx === activeStopIdx);
-    const bgCol = isAct ? routeAccent : (isLight ? '#FFFFFF' : '#2C2C2E');
-    const fgCol = isAct ? '#FFFFFF' : (isLight ? '#1C1C1E' : '#FFFFFF');
-    const bdrCol = isAct ? '#FFFFFF' : routeAccent;
+    const isExit = (exitStopIdx !== null && idx === exitStopIdx);
+    const bgCol = isAct ? routeAccent : (isExit ? '#16a34a' : (isLight ? '#FFFFFF' : '#2C2C2E'));
+    const fgCol = (isAct || isExit) ? '#FFFFFF' : (isLight ? '#1C1C1E' : '#FFFFFF');
+    const bdrCol = (isAct || isExit) ? '#FFFFFF' : routeAccent;
+    const pinSz = (isAct || isExit) ? 22 : 16;
     const m = L.marker([lat, lon], {
       icon: L.divIcon({
         className: 'custom-stop-icon',
-        html: `<div style="width:${isAct ? 22 : 16}px;height:${isAct ? 22 : 16}px;background:${bgCol};color:${fgCol};border:2.5px solid ${bdrCol};border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:0.56rem;font-weight:800;box-shadow:0 2px 6px rgba(0,0,0,0.35);">${idx + 1}</div>`,
+        html: `<div style="width:${pinSz}px;height:${pinSz}px;background:${bgCol};color:${fgCol};border:2.5px solid ${bdrCol};border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:0.56rem;font-weight:800;box-shadow:0 2px 6px rgba(0,0,0,0.35);">${idx + 1}</div>`,
         iconSize: [22, 22], iconAnchor: [11, 11]
       }),
-      zIndexOffset: isAct ? 650 : 320
+      zIndexOffset: isAct ? 650 : (isExit ? 620 : 320)
     }).addTo(window.mapInstance);
-    m.bindTooltip(`${idx + 1}. ${getStopName(s)}`, { direction: 'top', offset: [0, -8], className: 'kmb-map-stop-label' });
+    const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
+    const exitSuffix = isExit ? (isZh ? ' · 下車站' : ' · Exit') : '';
+    m.bindTooltip(`${idx + 1}. ${getStopName(s)}${exitSuffix}`, { direction: 'top', offset: [0, -8], className: 'kmb-map-stop-label' });
     m.on('click', () => expandStop(idx, false, false, false));
     mapMarkers[idx] = m;
   });
@@ -1857,22 +1969,32 @@ function drawRouteOnMap(group, activeStopIdx = 0) {
     } catch (e) {}
   }
   renderTrafficOverlayOnMap(window.mapInstance, true);
+  if (isBusRoute && window.busSpeedLayerEnabled) {
+    syncDetailRouteBusSpeedSegments(group, stops);
+  }
 }
 
 function highlightActiveStopMarkerOnMap(activeIdx) {
   if (!window.mapInstance || !detailRouteGroup) return;
-  const stops = getStopsForGroup(detailRouteGroup, detailTargetStopKey);
+  const stops = _getDetailStopsForGroup(detailRouteGroup);
+  const exitStopIdx = _resolveActiveExitStopIdx(stops, activeIdx);
   const isLight = document.documentElement.classList.contains('light-mode');
   const routeAccent = detailRouteGroup?.colorHex || window.__GET_ROUTE_COLOR_HEX__(detailRouteGroup?.mode, detailRouteGroup?.company, detailRouteGroup?.routeNo);
   const isBusRoute = !detailRouteGroup?.mode || detailRouteGroup.mode === 'BUS';
   if (isBusRoute && Array.isArray(currentDetailRoadCoords) && currentDetailRoadCoords.length >= 2) {
     if (currentDetailCorridorMeta) {
+      const fwdCoords = (typeof window.sliceForwardPolylineFromStop === 'function')
+        ? window.sliceForwardPolylineFromStop(currentDetailRoadCoords, stops, activeIdx, 12.0, exitStopIdx)
+        : currentDetailRoadCoords;
+      const fwdCamCoords = (typeof window.sliceForwardPolylineFromStop === 'function')
+        ? window.sliceForwardPolylineFromStop(currentDetailRoadCoords, stops, activeIdx, 45.0, exitStopIdx)
+        : fwdCoords;
       currentDetailCorridorMeta = {
         ...currentDetailCorridorMeta,
         activeStopIdx: activeIdx,
-        forwardCoords: (typeof window.sliceForwardPolylineFromStop === 'function')
-          ? window.sliceForwardPolylineFromStop(currentDetailRoadCoords, stops, activeIdx, 12.0)
-          : currentDetailRoadCoords
+        exitStopIdx,
+        forwardCoords: fwdCoords,
+        forwardCameraCoords: fwdCamCoords
       };
     }
     if (detailPolylineLayer) {
@@ -1885,15 +2007,17 @@ function highlightActiveStopMarkerOnMap(activeIdx) {
   Object.entries(mapMarkers).forEach(([idxStr, m]) => {
     const idx = Number(idxStr);
     const isAct = (idx === activeIdx);
-    const bgCol = isAct ? routeAccent : (isLight ? '#FFFFFF' : '#2C2C2E');
-    const fgCol = isAct ? '#FFFFFF' : (isLight ? '#1C1C1E' : '#FFFFFF');
-    const bdrCol = isAct ? '#FFFFFF' : routeAccent;
+    const isExit = (exitStopIdx !== null && idx === exitStopIdx);
+    const bgCol = isAct ? routeAccent : (isExit ? '#16a34a' : (isLight ? '#FFFFFF' : '#2C2C2E'));
+    const fgCol = (isAct || isExit) ? '#FFFFFF' : (isLight ? '#1C1C1E' : '#FFFFFF');
+    const bdrCol = (isAct || isExit) ? '#FFFFFF' : routeAccent;
+    const pinSz = (isAct || isExit) ? 22 : 16;
     m.setIcon(L.divIcon({
       className: 'custom-stop-icon',
-      html: `<div style="width:${isAct ? 22 : 16}px;height:${isAct ? 22 : 16}px;background:${bgCol};color:${fgCol};border:2.5px solid ${bdrCol};border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:0.56rem;font-weight:800;box-shadow:0 2px 6px rgba(0,0,0,0.35);">${idx + 1}</div>`,
+      html: `<div style="width:${pinSz}px;height:${pinSz}px;background:${bgCol};color:${fgCol};border:2.5px solid ${bdrCol};border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:0.56rem;font-weight:800;box-shadow:0 2px 6px rgba(0,0,0,0.35);">${idx + 1}</div>`,
       iconSize: [22, 22], iconAnchor: [11, 11]
     }));
-    if (typeof m.setZIndexOffset === 'function') m.setZIndexOffset(isAct ? 650 : 320);
+    if (typeof m.setZIndexOffset === 'function') m.setZIndexOffset(isAct ? 650 : (isExit ? 620 : 320));
     if (isAct && stops[idx]) m.openTooltip();
   });
 }
@@ -1994,8 +2118,8 @@ function clearAllActiveBrowseMarkers() {
 
 function getGlobalTrafficLaneOffsetMeters(zoom = 13) {
   const z = Number.isFinite(Number(zoom)) ? Number(zoom) : 13;
-  // Tight HK keep-left offset: 1.8m at z >= 15 and 3.5m at z < 15 so opposite carriageways never crisscross
-  return z >= 15 ? 1.8 : 3.5;
+  // Tight HK keep-left offset: 1.5m at z >= 15 and 2.5m at z < 15 so opposite carriageways stay strictly parallel and never cross
+  return z >= 15 ? 1.5 : 2.5;
 }
 
 function getGlobalTrafficSpeedColorHex(spd, fallback = '#3b82f6') {
@@ -2011,34 +2135,17 @@ function getGlobalTrafficSpeedColorHex(spd, fallback = '#3b82f6') {
   return fallback || '#3b82f6';
 }
 
-function _buildHermiteSpeedCurveCoords(lonA, latA, rotA, lonB, latB, rotB, steps = 6) {
-  const midLat = (latA + latB) * 0.5;
-  const cosLat = Math.max(0.2, Math.cos(midLat * Math.PI / 180));
-  const x0 = 0, y0 = 0;
-  const x1 = (lonB - lonA) * 111111 * cosLat;
-  const y1 = (latB - latA) * 111111;
-  const L = Math.hypot(x1, y1);
-  if (!Number.isFinite(L) || L < 10) return [[lonA, latA], [lonB, latB]];
-  const rA = (Number(rotA) || 0) * Math.PI / 180;
-  const rB = (Number(rotB) || 0) * Math.PI / 180;
-  const tx0 = Math.sin(rA) * L, ty0 = Math.cos(rA) * L;
-  const tx1 = Math.sin(rB) * L, ty1 = Math.cos(rB) * L;
-  const pts = [];
-  for (let i = 0; i <= steps; i++) {
-    const t = i / steps;
-    const t2 = t * t, t3 = t2 * t;
-    const h00 = 2 * t3 - 3 * t2 + 1;
-    const h10 = t3 - 2 * t2 + t;
-    const h01 = -2 * t3 + 3 * t2;
-    const h11 = t3 - t2;
-    const x = h00 * x0 + h10 * tx0 + h01 * x1 + h11 * tx1;
-    const y = h00 * y0 + h10 * ty0 + h01 * y1 + h11 * ty1;
-    pts.push([
-      Number((lonA + x / (111111 * cosLat)).toFixed(6)),
-      Number((latA + y / 111111).toFixed(6))
-    ]);
+function _normalizeGlobalSpeedTier(spd, tierRaw = '') {
+  if (spd !== null && spd !== undefined && Number.isFinite(Number(spd))) {
+    const n = Number(spd);
+    if (n < 20) return 'CONGESTED';
+    if (n <= 40) return 'MODERATE';
+    return 'SMOOTH';
   }
-  return pts;
+  const t = String(tierRaw || '').toUpperCase();
+  if (t === 'JAMMED' || t === 'CONGESTED') return 'CONGESTED';
+  if (t === 'SLOW' || t === 'MODERATE') return 'MODERATE';
+  return 'SMOOTH';
 }
 
 function _applyKeepLeftOffsetAlongCoords(coords, offsetM) {
@@ -2102,64 +2209,56 @@ function _nearestPointOnPolylineMeters(pLon, pLat, coords) {
   return { distM: bestDistM, proj: bestProj };
 }
 
-function filterAndOffsetGlobalSpeedGeoJson(speedGeo, zoom = 13) {
-  if (!speedGeo || speedGeo.type !== 'FeatureCollection' || !Array.isArray(speedGeo.features)) {
-    return { type: 'FeatureCollection', features: [] };
-  }
+function filterAndOffsetGlobalSpeedGeoJson(speedGeo, zoom = 13, detectors = null) {
+  const rawFeatures = (speedGeo && speedGeo.type === 'FeatureCollection' && Array.isArray(speedGeo.features))
+    ? speedGeo.features
+    : [];
   const offsetM = getGlobalTrafficLaneOffsetMeters(zoom);
   const roadCoreOf = (s) => String(s || '').split(/\s+near\s+|\s+-\s+|\s*\/\s*|\s*\(/i)[0].trim().toLowerCase();
 
   const staged = [];
-  for (let i = 0; i < speedGeo.features.length; i++) {
-    const feat = speedGeo.features[i];
+  const existingPairKeys = new Set();
+
+  for (let i = 0; i < rawFeatures.length; i++) {
+    const feat = rawFeatures[i];
     const coords = feat?.geometry?.coordinates;
     if (!Array.isArray(coords) || coords.length < 2) continue;
     const p = feat.properties || {};
     const refCoords = (Array.isArray(p.rawCoords) && p.rawCoords.length >= 2) ? p.rawCoords : coords;
 
-    // Filter out short/curved 2-point interchange ramp stubs (< 350 m straight-line distance)
+    // Keep multi-point polylines (coords.length >= 3) of any length.
+    // For 2-point links, NEVER bend with Hermite curves (coarse 10° rot causes opposite carriageways to bow and cross in an X).
+    // Filter out short stubs (< 60 m) AND long 2-point hillside-cutting chords (> 320 m).
     let straightM = Infinity;
-    if (refCoords.length === 2) {
+    const isTwoPoint = refCoords.length === 2;
+    if (isTwoPoint) {
       straightM = _distanceMetersFast(refCoords[0][1], refCoords[0][0], refCoords[1][1], refCoords[1][0]);
-      if (!Number.isFinite(straightM) || straightM < 350) continue;
+      if (!Number.isFinite(straightM) || straightM < 60 || straightM > 320) continue;
     }
 
     const rotA = Number.isFinite(Number(p.rotA)) ? Number(p.rotA) : Number(p.rot);
     const rotB = Number.isFinite(Number(p.rotB)) ? Number(p.rotB) : NaN;
-    let baseCoords = refCoords;
-    let curveDevM = 0;
-
-    if (refCoords.length === 2 && Number.isFinite(rotA)) {
+    if (isTwoPoint && Number.isFinite(rotA)) {
       const linkBrg = _mapBearingDeg(refCoords[0][1], refCoords[0][0], refCoords[1][1], refCoords[1][0]);
       const angA = _mapAngDiffDeg(rotA, linkBrg);
+      if (angA > 28) continue;
       if (Number.isFinite(rotB)) {
         const angB = _mapAngDiffDeg(rotB, linkBrg);
         const turnDeg = _mapAngDiffDeg(rotA, rotB);
-        // Reject raw chords whose endpoint headings severely disagree with the chord (sharp flyover/interchange cuts)
-        if (angA > 24 || angB > 24 || turnDeg > 36) continue;
-        if (turnDeg >= 3) {
-          baseCoords = _buildHermiteSpeedCurveCoords(refCoords[0][0], refCoords[0][1], rotA, refCoords[1][0], refCoords[1][1], rotB, 6);
-          const midRawLat = (refCoords[0][1] + refCoords[1][1]) * 0.5;
-          const midRawLon = (refCoords[0][0] + refCoords[1][0]) * 0.5;
-          const midCurve = baseCoords[Math.floor(baseCoords.length / 2)];
-          curveDevM = _distanceMetersFast(midRawLat, midRawLon, midCurve[1], midCurve[0]);
-        }
-      } else {
-        // Without endpoint tangent rotB, filter out long straight 2-point chords whose heading deviates across curved roads
-        if (straightM > 650 && angA > 18) continue;
-        if (angA > 26) continue;
+        if (angB > 28 || turnDeg > 36) continue;
       }
     }
 
-    let finalCoords = baseCoords;
+    // Strictly parallel HK keep-left offset (1.5m at z>=15, 2.5m at z<15)
+    let finalCoords = refCoords;
     if (Array.isArray(p.rawCoords) && p.rawCoords.length >= 2) {
-      finalCoords = _applyKeepLeftOffsetAlongCoords(baseCoords, offsetM);
-    } else if (baseCoords.length >= 2 && Number.isFinite(rotA)) {
-      // Shift legacy pre-offset 6m links cleanly to tight keep-left offset while preserving Hermite curve points
-      const pullBackM = Math.max(0, 6 - offsetM);
-      if (pullBackM > 0) {
-        finalCoords = _applyKeepLeftOffsetAlongCoords(baseCoords, -pullBackM);
-      }
+      finalCoords = _applyKeepLeftOffsetAlongCoords(refCoords, offsetM);
+    } else if (refCoords.length >= 2) {
+      // Pre-offset legacy coordinates or raw multi-point polylines
+      const pullBackM = (isTwoPoint && Number.isFinite(rotA) && p.appliedOffsetM === undefined && p.preOffset6m)
+        ? -(6 - offsetM)
+        : offsetM;
+      finalCoords = _applyKeepLeftOffsetAlongCoords(refCoords, pullBackM);
     }
 
     let minLat = 90, maxLat = -90, minLon = 180, maxLon = -180;
@@ -2171,24 +2270,149 @@ function filterAndOffsetGlobalSpeedGeoJson(speedGeo, zoom = 13) {
       if (lo > maxLon) maxLon = lo;
     }
 
+    if (p.id && p.toId) existingPairKeys.add(`${p.id}->${p.toId}`);
+    if (refCoords.length >= 2) {
+      const sig = `${Number(refCoords[0][1]).toFixed(4)},${Number(refCoords[0][0]).toFixed(4)}->${Number(refCoords[refCoords.length - 1][1]).toFixed(4)},${Number(refCoords[refCoords.length - 1][0]).toFixed(4)}`;
+      existingPairKeys.add(sig);
+    }
+
     staged.push({
       feat,
-      p,
+      p: { ...p, isGapBridge: Boolean(p.isGapBridge), opacity: p.isGapBridge ? 0.55 : 0.95 },
       roadCore: roadCoreOf(p.roadEn),
       rot: Number.isFinite(rotA) ? rotA : null,
       straightM,
-      curveDevM,
-      isUncurvedTwoPt: finalCoords.length === 2,
+      isTwoPoint,
       coords: finalCoords,
       bbox: { minLat, maxLat, minLon, maxLon },
       dropped: false
     });
   }
 
+  // Short-gap bridging (<= 600 m) between two same-direction speed detectors on the same road
+  // sharing the same speed tier (SMOOTH / MODERATE / CONGESTED), rendered at ~0.55 opacity.
+  // Longer (> 600 m) or mismatched-tier gaps stay uncolored/neutral.
+  const detPool = Array.isArray(detectors)
+    ? detectors
+    : (Array.isArray(window.__LIVE_TRAFFIC_DETECTORS__) ? window.__LIVE_TRAFFIC_DETECTORS__ : []);
+  if (detPool.length >= 2) {
+    const byRoad = new Map();
+    for (let i = 0; i < detPool.length; i++) {
+      const d = detPool[i];
+      if (!d || !Number.isFinite(Number(d.lat)) || !Number.isFinite(Number(d.lon))) continue;
+      if (!Number.isFinite(Number(d.rot))) continue;
+      const rk = roadCoreOf(d.roadEn);
+      if (!rk) continue;
+      if (!byRoad.has(rk)) byRoad.set(rk, []);
+      byRoad.get(rk).push(d);
+    }
+
+    for (const [rk, list] of byRoad.entries()) {
+      for (let i = 0; i < list.length; i++) {
+        const a = list[i];
+        const aLat = Number(a.lat), aLon = Number(a.lon), aRot = Number(a.rot);
+        let bestNext = null;
+        let bestIdx = -1;
+        let bestDistM = Infinity;
+        for (let j = 0; j < list.length; j++) {
+          if (i === j) continue;
+          const b = list[j];
+          const bRot = Number(b.rot);
+          if (_mapAngDiffDeg(aRot, bRot) > 28) continue;
+          const dM = _distanceMetersFast(aLat, aLon, Number(b.lat), Number(b.lon));
+          if (dM < 60 || dM > 600) continue;
+          const linkBrg = _mapBearingDeg(aLat, aLon, Number(b.lat), Number(b.lon));
+          if (_mapAngDiffDeg(aRot, linkBrg) > 22 || _mapAngDiffDeg(bRot, linkBrg) > 22) continue;
+          if (dM < bestDistM) {
+            bestDistM = dM;
+            bestNext = b;
+            bestIdx = j;
+          }
+        }
+        if (!bestNext) continue;
+
+        const bLat = Number(bestNext.lat), bLon = Number(bestNext.lon);
+        const pairIdKey = (a.id && bestNext.id) ? `${a.id}->${bestNext.id}` : '';
+        const pairCoordSig = `${aLat.toFixed(4)},${aLon.toFixed(4)}->${bLat.toFixed(4)},${bLon.toFixed(4)}`;
+        if ((pairIdKey && existingPairKeys.has(pairIdKey)) || existingPairKeys.has(pairCoordSig)) continue;
+
+        // Ensure no intermediate same-direction detector lies between a and bestNext
+        let hasMid = false;
+        for (let k = 0; k < list.length; k++) {
+          if (k === i || k === bestIdx) continue;
+          const c = list[k];
+          if (_mapAngDiffDeg(aRot, Number(c.rot)) > 28) continue;
+          const cLat = Number(c.lat), cLon = Number(c.lon);
+          const dAC = _distanceMetersFast(aLat, aLon, cLat, cLon);
+          const dCB = _distanceMetersFast(cLat, cLon, bLat, bLon);
+          if (dAC >= 40 && dCB >= 40 && dAC < bestDistM - 30 && dCB < bestDistM - 30) {
+            if (_mapPointToSegDistKm(cLat, cLon, aLat, aLon, bLat, bLon) <= 0.09) {
+              hasMid = true;
+              break;
+            }
+          }
+        }
+        if (hasMid) continue;
+
+        const tierA = _normalizeGlobalSpeedTier(a.spd, a.tier);
+        const tierB = _normalizeGlobalSpeedTier(bestNext.spd, bestNext.tier);
+        const isGapBridge = bestDistM > 320;
+        // For short gaps (320m - 600m), require matching speed tier before bridging
+        if (isGapBridge && tierA !== tierB) continue;
+
+        const avgSpd = (Number.isFinite(Number(a.spd)) && Number.isFinite(Number(bestNext.spd)))
+          ? Math.round((Number(a.spd) + Number(bestNext.spd)) * 0.5)
+          : (a.spd ?? bestNext.spd ?? null);
+        const rawBridgeCoords = [[aLon, aLat], [bLon, bLat]];
+        const finalCoords = _applyKeepLeftOffsetAlongCoords(rawBridgeCoords, offsetM);
+        existingPairKeys.add(pairCoordSig);
+        if (pairIdKey) existingPairKeys.add(pairIdKey);
+
+        const minLat = Math.min(finalCoords[0][1], finalCoords[1][1]);
+        const maxLat = Math.max(finalCoords[0][1], finalCoords[1][1]);
+        const minLon = Math.min(finalCoords[0][0], finalCoords[1][0]);
+        const maxLon = Math.max(finalCoords[0][0], finalCoords[1][0]);
+
+        staged.push({
+          feat: {
+            type: 'Feature',
+            geometry: { type: 'LineString', coordinates: finalCoords },
+            properties: {}
+          },
+          p: {
+            id: a.id || '',
+            toId: bestNext.id || '',
+            roadEn: a.roadEn || '',
+            roadTc: a.roadTc || a.roadEn || '',
+            dir: a.dir || '',
+            rot: aRot,
+            rotA: aRot,
+            rotB: Number(bestNext.rot) || aRot,
+            spd: avgSpd,
+            occ: a.occ || 0,
+            tier: tierA,
+            color: getGlobalTrafficSpeedColorHex(avgSpd, a.color),
+            camKey: a.camKey || '',
+            lenM: Math.round(bestDistM),
+            rawCoords: rawBridgeCoords,
+            isGapBridge,
+            opacity: isGapBridge ? 0.55 : 0.95
+          },
+          roadCore: rk,
+          rot: aRot,
+          straightM: bestDistM,
+          isTwoPoint: true,
+          coords: finalCoords,
+          bbox: { minLat, maxLat, minLon, maxLon },
+          dropped: false
+        });
+      }
+    }
+  }
+
   // Opposite-carriageway crossing guard:
-  // Prevent opposite-direction speed links on the same highway from ever crisscrossing on gentle curves
-  // (e.g., North Lantau Highway at Tung Chung Eastern Interchange where TD detector pins have ~10m cross-median jitter).
-  const minSepM = Math.max(2.2, offsetM * 1.4);
+  // Ensure opposite-direction links on the same highway never crisscross in an X shape.
+  const minSepM = Math.max(2.0, offsetM * 1.4);
   for (let i = 0; i < staged.length; i++) {
     const a = staged[i];
     if (a.dropped || !a.roadCore || a.rot === null) continue;
@@ -2196,25 +2420,16 @@ function filterAndOffsetGlobalSpeedGeoJson(speedGeo, zoom = 13) {
       const b = staged[j];
       if (b.dropped || b.roadCore !== a.roadCore || b.rot === null) continue;
       if (_mapAngDiffDeg(a.rot, b.rot) < 135) continue;
-      // Fast bbox overlap check (~35m pad)
       const pad = 0.00035;
       if (a.bbox.maxLat + pad < b.bbox.minLat || b.bbox.maxLat + pad < a.bbox.minLat) continue;
       if (a.bbox.maxLon + pad < b.bbox.minLon || b.bbox.maxLon + pad < a.bbox.minLon) continue;
 
       if (!_polylinesIntersect2D(a.coords, b.coords)) continue;
 
-      // If both are raw un-curved 2-point chords intersecting each other, filter out the longer/more deviating chord
-      if (a.isUncurvedTwoPt && b.isUncurvedTwoPt) {
-        if (a.straightM >= b.straightM) a.dropped = true;
-        else b.dropped = true;
-        if (a.dropped) break;
-        continue;
-      }
-
-      // Otherwise enforce simultaneous symmetric HK keep-left carriageway separation around the shared centerline
+      // Enforce simultaneous symmetric HK keep-left carriageway separation around the shared centerline
       const origA = a.coords.slice();
       const origB = b.coords.slice();
-      const halfSepM = Math.max(1.8, minSepM * 0.6);
+      const halfSepM = Math.max(1.6, minSepM * 0.6);
       const projectToKeepLeft = (srcCoords, oppCoords) => {
         const last = srcCoords.length - 1;
         return srcCoords.map((pt, idx) => {
@@ -2228,7 +2443,6 @@ function filterAndOffsetGlobalSpeedGeoJson(speedGeo, zoom = 13) {
           const cosLat = Math.max(0.2, Math.cos(pt[1] * Math.PI / 180));
           const dxM = (pt[0] - near.proj.lon) * 111111 * cosLat;
           const dyM = (pt[1] - near.proj.lat) * 111111;
-          // Signed meters to the LEFT of travel direction relative to opposite carriageway
           const signedLeftM = dxM * Math.sin(leftRad) + dyM * Math.cos(leftRad);
           if (signedLeftM < minSepM) {
             const midLat = (pt[1] + near.proj.lat) * 0.5;
@@ -2241,6 +2455,14 @@ function filterAndOffsetGlobalSpeedGeoJson(speedGeo, zoom = 13) {
       };
       a.coords = projectToKeepLeft(origA, origB);
       b.coords = projectToKeepLeft(origB, origA);
+      // If still intersecting after symmetric keep-left push, drop the longer/bridge segment
+      if (_polylinesIntersect2D(a.coords, b.coords)) {
+        if (a.p.isGapBridge && !b.p.isGapBridge) a.dropped = true;
+        else if (b.p.isGapBridge && !a.p.isGapBridge) b.dropped = true;
+        else if (a.straightM >= b.straightM) a.dropped = true;
+        else b.dropped = true;
+        if (a.dropped) break;
+      }
     }
   }
 
@@ -2287,13 +2509,13 @@ function buildGlobalSpeedMapGeoJsonFallback(detectors = []) {
         if (i === j) continue;
         const b = list[j];
         const bRot = Number(b.rot) || 0;
-        if (_mapAngDiffDeg(aRot, bRot) > 32) continue;
+        if (_mapAngDiffDeg(aRot, bRot) > 28) continue;
         const dM = _distanceMetersFast(aLat, aLon, Number(b.lat), Number(b.lon));
-        if (dM < 350 || dM > 2200) continue;
+        // Keep parallel 2-point links between 60m and 320m; short gaps (320-600m) are bridged in filterAndOffsetGlobalSpeedGeoJson
+        if (dM < 60 || dM > 320) continue;
         const linkBrg = _mapBearingDeg(aLat, aLon, Number(b.lat), Number(b.lon));
-        const maxLinkAng = dM > 1000 ? 16 : 24;
-        if (_mapAngDiffDeg(aRot, linkBrg) > maxLinkAng) continue;
-        if (_mapAngDiffDeg(bRot, linkBrg) > maxLinkAng) continue;
+        if (_mapAngDiffDeg(aRot, linkBrg) > 22) continue;
+        if (_mapAngDiffDeg(bRot, linkBrg) > 22) continue;
         if (dM < bestDistM) {
           bestDistM = dM;
           bestNext = b;
@@ -2301,18 +2523,17 @@ function buildGlobalSpeedMapGeoJsonFallback(detectors = []) {
         }
       }
       if (!bestNext) continue;
-      // Skip duplicate chords that leapfrog over an intermediate same-direction detector
       const bLat = Number(bestNext.lat), bLon = Number(bestNext.lon);
       let hasMid = false;
       for (let k = 0; k < list.length; k++) {
         if (k === i || k === bestNextIdx) continue;
         const c = list[k];
-        if (!c || _mapAngDiffDeg(aRot, Number(c.rot) || 0) > 32) continue;
+        if (!c || _mapAngDiffDeg(aRot, Number(c.rot) || 0) > 28) continue;
         const cLat = Number(c.lat), cLon = Number(c.lon);
         const dAC = _distanceMetersFast(aLat, aLon, cLat, cLon);
         const dCB = _distanceMetersFast(cLat, cLon, bLat, bLon);
-        if (dAC >= 80 && dCB >= 80 && dAC < bestDistM - 50 && dCB < bestDistM - 50) {
-          if (_mapPointToSegDistKm(cLat, cLon, aLat, aLon, bLat, bLon) <= 0.11) {
+        if (dAC >= 40 && dCB >= 40 && dAC < bestDistM - 30 && dCB < bestDistM - 30) {
+          if (_mapPointToSegDistKm(cLat, cLon, aLat, aLon, bLat, bLon) <= 0.09) {
             hasMid = true;
             break;
           }
@@ -2328,6 +2549,7 @@ function buildGlobalSpeedMapGeoJsonFallback(detectors = []) {
         },
         properties: {
           id: a.id || '',
+          toId: bestNext.id || '',
           roadEn: a.roadEn || '',
           roadTc: a.roadTc || a.roadEn || '',
           dir: a.dir || '',
@@ -2340,7 +2562,9 @@ function buildGlobalSpeedMapGeoJsonFallback(detectors = []) {
           color: getGlobalTrafficSpeedColorHex(a.spd),
           camKey: a.camKey || '',
           lenM: Math.round(bestDistM),
-          rawCoords: [[aLon, aLat], [bLon, bLat]]
+          rawCoords: [[aLon, aLat], [bLon, bLat]],
+          isGapBridge: false,
+          opacity: 0.95
         }
       });
     }
@@ -2373,7 +2597,7 @@ function renderGlobalTrafficDashboard(targetMap = window.browseMapInstance) {
     return;
   }
 
-  // De-cluttering Logic: immediately hide all bus/MTR/ferry stop markers so macro traffic lines are unobstructed
+  // De-cluttering Logic: hide bus/MTR/ferry stop markers so macro traffic speed lines are unobstructed
   clearAllActiveBrowseMarkers();
   clearGlobalTrafficDashboard(targetMap);
 
@@ -2386,7 +2610,7 @@ function renderGlobalTrafficDashboard(targetMap = window.browseMapInstance) {
   const rawSpeedGeo = (workerGeo && workerGeo.type === 'FeatureCollection' && Array.isArray(workerGeo.features) && workerGeo.features.length > 0)
     ? workerGeo
     : buildGlobalSpeedMapGeoJsonFallback(detectors);
-  const speedGeo = filterAndOffsetGlobalSpeedGeoJson(rawSpeedGeo, zoom);
+  const speedGeo = filterAndOffsetGlobalSpeedGeoJson(rawSpeedGeo, zoom, detectors);
   window.__LAST_GLOBAL_SPEED_GEOJSON__ = speedGeo;
 
   const casingWeight = 5;
@@ -2394,25 +2618,24 @@ function renderGlobalTrafficDashboard(targetMap = window.browseMapInstance) {
 
   if (speedGeo && Array.isArray(speedGeo.features) && speedGeo.features.length > 0) {
     if (typeof L.geoJSON === 'function') {
-      // Crisp 5px dark casing (#0f172a, opacity 0.6) underneath vivid 3px top stroke
+      // Crisp 5px dark casing (#0f172a) underneath vivid 3px top stroke; gap-bridges render at softer opacity
       L.geoJSON(speedGeo, {
         interactive: false,
-        style: () => ({
+        style: (feat) => ({
           color: '#0f172a',
           weight: casingWeight,
-          opacity: 0.6,
+          opacity: feat?.properties?.isGapBridge ? 0.34 : 0.62,
           smoothFactor: 1.5,
           lineCap: 'round',
           lineJoin: 'round'
         })
       }).addTo(_globalTrafficLayerGroup);
 
-      // Vivid Google-Maps-style live speed GeoJSON segments on top (#22c55e / #f59e0b / #ef4444)
       L.geoJSON(speedGeo, {
         style: (feat) => ({
           color: feat?.properties?.color || '#3b82f6',
           weight: flowWeight,
-          opacity: 0.95,
+          opacity: feat?.properties?.isGapBridge ? 0.55 : 0.95,
           smoothFactor: 1.5,
           lineCap: 'round',
           lineJoin: 'round'
@@ -2424,8 +2647,9 @@ function renderGlobalTrafficDashboard(targetMap = window.browseMapInstance) {
           const spdTxt = (p.spd !== null && p.spd !== undefined && Number.isFinite(Number(p.spd)))
             ? `${Math.round(Number(p.spd))} km/h`
             : (isZh ? '無實時數據' : 'No live speed');
+          const bridgeNote = p.isGapBridge ? (isZh ? ' · 路段推算' : ' · bridged gap') : '';
           if (typeof lyr.bindTooltip === 'function') {
-            lyr.bindTooltip(`${cleanName} · ${spdTxt}`, { sticky: true, className: 'kmb-map-stop-label' });
+            lyr.bindTooltip(`${cleanName} · ${spdTxt}${bridgeNote}`, { sticky: true, className: 'kmb-map-stop-label' });
           }
           if (p.id && typeof lyr.on === 'function') {
             lyr.on('click', (ev) => {
@@ -2439,18 +2663,23 @@ function renderGlobalTrafficDashboard(targetMap = window.browseMapInstance) {
         }
       }).addTo(_globalTrafficLayerGroup);
     } else {
-      // Safe fallback for headless/mock Leaflet environments without L.geoJSON
       speedGeo.features.forEach((feat) => {
         const coords = feat?.geometry?.coordinates || [];
         if (coords.length < 2) return;
         const latlngs = coords.map(c => [c[1], c[0]]);
-        L.polyline(latlngs, { color: '#0f172a', weight: casingWeight, opacity: 0.6, smoothFactor: 1.5, lineCap: 'round', lineJoin: 'round', interactive: false }).addTo(_globalTrafficLayerGroup);
-        L.polyline(latlngs, { color: feat?.properties?.color || '#3b82f6', weight: flowWeight, opacity: 0.95, smoothFactor: 1.5, lineCap: 'round', lineJoin: 'round' }).addTo(_globalTrafficLayerGroup);
+        const isBridge = Boolean(feat?.properties?.isGapBridge);
+        L.polyline(latlngs, { color: '#0f172a', weight: casingWeight, opacity: isBridge ? 0.34 : 0.62, smoothFactor: 1.5, lineCap: 'round', lineJoin: 'round', interactive: false }).addTo(_globalTrafficLayerGroup);
+        L.polyline(latlngs, { color: feat?.properties?.color || '#3b82f6', weight: flowWeight, opacity: isBridge ? 0.55 : 0.95, smoothFactor: 1.5, lineCap: 'round', lineJoin: 'round' }).addTo(_globalTrafficLayerGroup);
       });
     }
   }
 
-  // Build active TD traffic cameras list (prefer full worker cameras list, fallback to detector-bound cameras)
+  // Issue 1: Clean overview without numbered camera cluster bubbles!
+  // Only show individual directional cameras when zoomed in (zoom >= 14), filtered to current viewport with de-overlap.
+  if (zoom < GLOBAL_CAMERA_MIN_ZOOM) {
+    return;
+  }
+
   let cameras = Array.isArray(window.__LIVE_TRAFFIC_CAMERAS__) && window.__LIVE_TRAFFIC_CAMERAS__.length
     ? window.__LIVE_TRAFFIC_CAMERAS__
     : [];
@@ -2472,27 +2701,36 @@ function renderGlobalTrafficDashboard(targetMap = window.browseMapInstance) {
   }
 
   if (cameras.length) {
-    const useCluster = typeof L.markerClusterGroup === 'function';
-    _globalCameraClusterGroup = useCluster
-      ? L.markerClusterGroup({
-          maxClusterRadius: 48,
-          spiderfyOnMaxZoom: true,
-          showCoverageOnHover: false,
-          disableClusteringAtZoom: 16
-        })
-      : L.layerGroup();
+    _globalCameraClusterGroup = L.layerGroup();
+    const rawBounds = targetMap.getBounds ? targetMap.getBounds() : null;
+    const viewBounds = (rawBounds && typeof rawBounds.pad === 'function') ? rawBounds.pad(0.15) : rawBounds;
+    const placedCamPts = [];
+    const MIN_GLOBAL_CAM_PX = zoom >= 16 ? 22 : 34;
 
     for (let i = 0; i < cameras.length; i++) {
       const cam = cameras[i];
       const cLat = Number(cam.lat), cLon = Number(cam.lon);
       if (!Number.isFinite(cLat) || !Number.isFinite(cLon)) continue;
+      if (viewBounds && typeof viewBounds.contains === 'function' && !viewBounds.contains([cLat, cLon])) continue;
+
+      const ptPx = projectDetectorToScreenPx(targetMap, cLat, cLon, zoom);
+      let tooClose = false;
+      for (let p = 0; p < placedCamPts.length; p++) {
+        if (Math.hypot(ptPx.x - placedCamPts[p].x, ptPx.y - placedCamPts[p].y) < MIN_GLOBAL_CAM_PX) {
+          tooClose = true;
+          break;
+        }
+      }
+      if (tooClose) continue;
+      placedCamPts.push(ptPx);
+
       const bearingDeg = resolveCameraBearingDeg(cam, detectors, null);
       const compassTxt = formatCompassFromBearingDeg(bearingDeg, isZh);
       const dirMeta = (typeof window.extractCardinalDirectionMeta === 'function')
         ? window.extractCardinalDirectionMeta(cam, isZh)
         : null;
       const boundBadge = dirMeta?.code ? `${dirMeta.arrowGlyph} ${dirMeta.code}` : '';
-      const camIcon = buildDirectionalCameraDivIcon(cam, bearingDeg, isZh, false);
+      const camIcon = buildDirectionalCameraDivIcon(cam, bearingDeg, isZh, false, 1.0);
       const m = L.marker([cLat, cLon], { icon: camIcon, zIndexOffset: 240 });
       const cleanDesc = sanitizeBottleneckLabel(cam.desc || cam.key);
       const orientTag = [boundBadge, compassTxt].filter(Boolean).join(' · ');
@@ -2520,15 +2758,6 @@ function renderGlobalTrafficDashboard(targetMap = window.browseMapInstance) {
       _globalCameraClusterGroup.addLayer ? _globalCameraClusterGroup.addLayer(m) : m.addTo(_globalCameraClusterGroup);
     }
     _globalCameraClusterGroup.addTo(targetMap);
-
-    // If markercluster plugin hasn't loaded yet, fetch asynchronously and re-render with real clustering
-    if (!useCluster && typeof window.ensureMarkerClusterLoaded === 'function') {
-      window.ensureMarkerClusterLoaded().then((loaded) => {
-        if (loaded && window.globalTrafficLayerEnabled && window.browseMapInstance === targetMap) {
-          renderGlobalTrafficDashboard(targetMap);
-        }
-      });
-    }
   }
 }
 
@@ -2591,6 +2820,39 @@ function _minPointToPolylineDistKm(lat, lon, coords) {
     if (dKm < best) best = dKm;
   }
   return best;
+}
+
+function _projectPointOntoPolylineDetailed(lat, lon, coords) {
+  if (!Array.isArray(coords) || coords.length < 2) {
+    return { distKm: Infinity, alongKm: Infinity, segBrg: NaN };
+  }
+  let bestDistKm = Infinity;
+  let bestAlongKm = Infinity;
+  let bestSegBrg = NaN;
+  let cumKm = 0;
+  const useSegFn = typeof window !== 'undefined' && typeof window.pointToSegmentDistanceKm === 'function';
+  for (let i = 0; i < coords.length - 1; i++) {
+    const a = coords[i], b = coords[i + 1];
+    if (!a || !b) continue;
+    const segKm = _camHaversineKm(a[0], a[1], b[0], b[1]);
+    let dKm = Infinity;
+    let t = 0;
+    if (useSegFn) {
+      const res = window.pointToSegmentDistanceKm(lat, lon, a[0], a[1], b[0], b[1]);
+      dKm = res.distKm;
+      t = Number.isFinite(res.t) ? res.t : 0;
+    } else {
+      dKm = _camHaversineKm(lat, lon, (a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5);
+      t = 0.5;
+    }
+    if (dKm < bestDistKm) {
+      bestDistKm = dKm;
+      bestAlongKm = cumKm + t * segKm;
+      bestSegBrg = _camBearingDeg(a[0], a[1], b[0], b[1]);
+    }
+    cumKm += segKm;
+  }
+  return { distKm: bestDistKm, alongKm: bestAlongKm, segBrg: bestSegBrg };
 }
 
 const _CLIENT_VERIFIED_CAMERA_AZIMUTHS = {
@@ -2809,12 +3071,14 @@ function formatCompassFromBearingDeg(deg, isZh = false) {
   return `Facing ${dirs[Math.round(d / 45) % 8]}`;
 }
 
-function buildDirectionalCameraDivIcon(cam, bearingDeg, isZh = false, isRouteView = false) {
+function buildDirectionalCameraDivIcon(cam, bearingDeg, isZh = false, isRouteView = false, opacity = 1.0, alongKm = null) {
   const deg = ((Math.round(Number(bearingDeg) || 0) % 360) + 360) % 360;
   const titleTxt = escapeHtml(cam?.desc || cam?.key || (isZh ? '運輸署實時鏡頭' : 'TD Live Traffic Camera'));
+  const op = Number.isFinite(Number(opacity)) ? Math.max(0.2, Math.min(1, Number(opacity))) : 1.0;
+  const alongAttr = Number.isFinite(Number(alongKm)) ? ` data-along-km="${Number(alongKm).toFixed(2)}"` : '';
   // High-contrast 45° radar FOV sector (36px radius wedge centered at 40,40) rotated clockwise by bearingDeg
   const html = `
-    <div class="cam-fov-marker-wrap${isRouteView ? ' is-route-cam' : ''}" data-cam-key="${escapeHtml(cam?.key || '')}" data-bearing="${deg}" title="${titleTxt}">
+    <div class="cam-fov-marker-wrap${isRouteView ? ' is-route-cam' : ''}" data-cam-key="${escapeHtml(cam?.key || '')}" data-bearing="${deg}" data-opacity="${op}"${alongAttr} style="opacity:${op};" title="${titleTxt}">
       <svg class="cam-fov-svg" width="80" height="80" viewBox="0 0 80 80" aria-hidden="true" style="transform:rotate(${deg}deg);">
         <path d="M40 40 L26.22 6.74 A36 36 0 0 1 53.78 6.74 Z" fill="rgba(37, 99, 235, 0.28)" stroke="#2563eb" stroke-width="1.5" stroke-linejoin="round"/>
         <path d="M40 2.6 L43.4 9.2 L40 7.6 L36.6 9.2 Z" fill="#2563eb" stroke="#FFFFFF" stroke-width="0.9" stroke-linejoin="round"/>
@@ -2836,6 +3100,280 @@ if (typeof window !== 'undefined') {
   window.buildDirectionalCameraDivIcon = buildDirectionalCameraDivIcon;
 }
 
+function clearGlobalBusSpeedOverlay(targetMap = window.browseMapInstance) {
+  if (_globalBusSpeedLayerGroup) {
+    try { _globalBusSpeedLayerGroup.clearLayers?.(); } catch (e) {}
+    if (targetMap) {
+      try { targetMap.removeLayer(_globalBusSpeedLayerGroup); } catch (e) {}
+    }
+    _globalBusSpeedLayerGroup = null;
+  }
+}
+
+function _drawBusSpeedSegmentsIntoLayer(segments, layerGroup, routeLabel = '') {
+  if (!layerGroup || typeof L === 'undefined' || !Array.isArray(segments) || !segments.length) return 0;
+  const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
+  let drawn = 0;
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    if (window.globalTrafficLayerEnabled && (seg.coveredByTd || seg.tdCovered)) continue;
+    if (!Array.isArray(seg.coords) || seg.coords.length < 2) continue;
+    // Never draw long straight 2-point stop-to-stop chords cutting across buildings or hillsides
+    if (seg.coords.length === 2 && typeof calculateDistanceKm === 'function') {
+      const chordKm = calculateDistanceKm(seg.coords[0][0], seg.coords[0][1], seg.coords[1][0], seg.coords[1][1]);
+      if (chordKm > 0.28) continue;
+    }
+    L.polyline(seg.coords, {
+      color: '#0f172a',
+      weight: 5.5,
+      opacity: 0.62,
+      smoothFactor: 1.5,
+      lineCap: 'round',
+      lineJoin: 'round',
+      interactive: false
+    }).addTo(layerGroup);
+    const line = L.polyline(seg.coords, {
+      color: seg.color || '#2563eb',
+      weight: 3.4,
+      opacity: 0.94,
+      smoothFactor: 1.5,
+      lineCap: 'round',
+      lineJoin: 'round'
+    }).addTo(layerGroup);
+    if (typeof line.bindTooltip === 'function') {
+      const prefix = routeLabel ? `${routeLabel} · ` : '';
+      const rawFrom = isZh ? (seg.fromNameTc || seg.fromNameEn) : (seg.fromNameEn || seg.fromNameTc);
+      const rawTo = isZh ? (seg.toNameTc || seg.toNameEn) : (seg.toNameEn || seg.toNameTc);
+      const fromNm = sanitizeBottleneckLabel(rawFrom || `Stop ${seg.fromSeq || ((seg.fromIdx || 0) + 1)}`);
+      const toNm = sanitizeBottleneckLabel(rawTo || `Stop ${seg.toSeq || ((seg.toIdx || 0) + 2)}`);
+      line.bindTooltip(
+        `🚌 ${prefix}${Math.round(seg.speedKmh)} km/h (${fromNm} → ${toNm})`,
+        { sticky: true, className: 'kmb-map-stop-label' }
+      );
+    }
+    drawn++;
+  }
+  return drawn;
+}
+
+function _extractKmbEtaByStopIdx(group, stops, bulkMap) {
+  if (!bulkMap || !bulkMap.size || !Array.isArray(stops)) return null;
+  const rId = group?.routeIds?.[0] || '';
+  const parts = rId.split('_');
+  const dirChar = parts[2] || (String(group?.bound || '').toUpperCase().startsWith('I') ? 'I' : 'O');
+  const out = {};
+  for (let i = 0; i < stops.length; i++) {
+    const seq = stops[i]?.seq ?? (i + 1);
+    const arr = bulkMap.get(`${dirChar}_${seq}`) || bulkMap.get(String(seq)) || bulkMap.get(Number(seq));
+    if (Array.isArray(arr) && arr.length) out[i] = arr;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+async function syncDetailRouteBusSpeedSegments(group, stops, preloadedEtaByStopIdx = null) {
+  if (!group || !Array.isArray(stops) || stops.length < 2) {
+    window.__DETAIL_BUS_SPEED_SEGMENTS__ = [];
+    return [];
+  }
+  const isBusRoute = !group.mode || group.mode === 'BUS';
+  if (!isBusRoute || typeof window.inferBusApiSegmentSpeeds !== 'function') {
+    window.__DETAIL_BUS_SPEED_SEGMENTS__ = [];
+    return [];
+  }
+  const myToken = ++_detailBusSpeedSyncToken;
+  const tdDetectors = Array.isArray(window.__LIVE_TRAFFIC_DETECTORS__) ? window.__LIVE_TRAFFIC_DETECTORS__ : [];
+  const roadCoords = (Array.isArray(currentDetailRoadCoords) && currentDetailRoadCoords.length >= 2)
+    ? currentDetailRoadCoords
+    : stops.map(s => [parseFloat(s.latitude), parseFloat(s.longitude)]).filter(p => Number.isFinite(p[0]) && Number.isFinite(p[1]));
+
+  let etaByStopIdx = preloadedEtaByStopIdx;
+  if (!etaByStopIdx) {
+    const rId = group.routeIds?.[0] || '';
+    const parts = rId.split('_');
+    const svcType = parts[3] || group.serviceType || '1';
+    const dirChar = parts[2] || (String(group.bound || '').toUpperCase().startsWith('I') ? 'I' : 'O');
+    const cacheKey = `${group.company || ''}|${group.routeNo || ''}|${dirChar}|${svcType}`;
+    const cached = window.__GLOBAL_BUS_SPEED_CACHE__?.get(cacheKey);
+    if (cached && (Date.now() - cached.ts) < 45000 && cached.etaByStopIdx) {
+      etaByStopIdx = cached.etaByStopIdx;
+    } else if ((group.company === 'KMB' || group.company === 'LWB' || rId.startsWith('KMB_') || rId.startsWith('LWB_')) && typeof fetchKmbRouteBulkEta === 'function') {
+      try {
+        const bulkMap = await fetchKmbRouteBulkEta(parts[1] || group.routeNo, svcType, false);
+        if (myToken !== _detailBusSpeedSyncToken) return window.__DETAIL_BUS_SPEED_SEGMENTS__ || [];
+        etaByStopIdx = _extractKmbEtaByStopIdx(group, stops, bulkMap);
+        if (etaByStopIdx) {
+          window.__GLOBAL_BUS_SPEED_CACHE__?.set(cacheKey, { ts: Date.now(), etaByStopIdx });
+        }
+      } catch (e) {}
+    } else if (typeof fetchEtaRaw === 'function') {
+      // Sample up to 6 stops around the expanded stop for CTB / NLB / GMB routes
+      const centerIdx = (typeof detailExpandedStopIdx === 'number' && detailExpandedStopIdx >= 0) ? detailExpandedStopIdx : 0;
+      const startIdx = Math.max(0, centerIdx - 1);
+      const endIdx = Math.min(stops.length - 1, startIdx + 5);
+      const indices = [];
+      for (let i = startIdx; i <= endIdx; i++) indices.push(i);
+      try {
+        const nowMs = Date.now();
+        const results = await Promise.all(indices.map(async (idx) => {
+          const s = stops[idx];
+          const stKey = s?.stopKey || (typeof getGlobalStopKey === 'function' ? getGlobalStopKey(s) : '');
+          if (!stKey) return [idx, []];
+          const arr = await fetchEtaRaw(group, stKey, true, nowMs, idx);
+          return [idx, Array.isArray(arr) ? arr : []];
+        }));
+        if (myToken !== _detailBusSpeedSyncToken) return window.__DETAIL_BUS_SPEED_SEGMENTS__ || [];
+        etaByStopIdx = {};
+        results.forEach(([idx, arr]) => {
+          if (Array.isArray(arr) && arr.length) etaByStopIdx[idx] = arr;
+        });
+        if (Object.keys(etaByStopIdx).length) {
+          window.__GLOBAL_BUS_SPEED_CACHE__?.set(cacheKey, { ts: Date.now(), etaByStopIdx });
+        }
+      } catch (e) {}
+    }
+  }
+
+  if (!etaByStopIdx || !Object.keys(etaByStopIdx).length) {
+    window.__DETAIL_BUS_SPEED_SEGMENTS__ = [];
+    return [];
+  }
+
+  const segs = window.inferBusApiSegmentSpeeds(stops, etaByStopIdx, roadCoords, {
+    tdDetectors,
+    nowMs: Date.now()
+  });
+  window.__DETAIL_BUS_SPEED_SEGMENTS__ = segs;
+  if (window.busSpeedLayerEnabled && window.mapInstance && currentDetailCorridorMeta?.groupKey === (group?.key || '')) {
+    _refreshDetailBusSpeedPolylineIfActive();
+  }
+  if (typeof window.onDetailBusSpeedReady === 'function') {
+    window.onDetailBusSpeedReady(group?.key || '');
+  }
+  return segs;
+}
+
+function renderGlobalBusSpeedOverlay(targetMap = window.browseMapInstance) {
+  if (!targetMap || typeof L === 'undefined') return;
+  clearGlobalBusSpeedOverlay(targetMap);
+  if (!window.busSpeedLayerEnabled) return;
+
+  _globalBusSpeedLayerGroup = L.layerGroup().addTo(targetMap);
+
+  // Render any pre-computed / injected bus speed segments immediately
+  if (Array.isArray(window.__GLOBAL_BUS_SPEED_SEGMENTS__) && window.__GLOBAL_BUS_SPEED_SEGMENTS__.length) {
+    _drawBusSpeedSegmentsIntoLayer(window.__GLOBAL_BUS_SPEED_SEGMENTS__, _globalBusSpeedLayerGroup);
+  }
+
+  const routePool = (typeof groupedRoutes !== 'undefined' && Array.isArray(groupedRoutes) && groupedRoutes.length)
+    ? groupedRoutes
+    : ((typeof routeGroups !== 'undefined' && Array.isArray(routeGroups)) ? routeGroups : []);
+  if (typeof window.inferBusApiSegmentSpeeds !== 'function' || typeof fetchKmbRouteBulkEta !== 'function' || !routePool.length) return;
+
+  const bounds = targetMap.getBounds ? targetMap.getBounds() : null;
+  if (!bounds || typeof bounds.contains !== 'function') return;
+  const tdDetectors = Array.isArray(window.__LIVE_TRAFFIC_DETECTORS__) ? window.__LIVE_TRAFFIC_DETECTORS__ : [];
+
+  // Select up to 6 visible KMB/LWB bus routes in the current viewport (prioritizing corridors with TD gaps)
+  const candidates = [];
+  for (let i = 0; i < routePool.length && candidates.length < 28; i++) {
+    const g = routePool[i];
+    if (!g || (g.mode && g.mode !== 'BUS')) continue;
+    const rId = g.routeIds?.[0] || '';
+    if (g.company !== 'KMB' && g.company !== 'LWB' && !rId.startsWith('KMB_') && !rId.startsWith('LWB_')) continue;
+    const stops = (typeof getStopsForGroup === 'function') ? getStopsForGroup(g, null) : [];
+    if (!Array.isArray(stops) || stops.length < 4) continue;
+    let inBoundsCount = 0;
+    for (let s = 0; s < stops.length; s += 2) {
+      const la = parseFloat(stops[s]?.latitude), lo = parseFloat(stops[s]?.longitude);
+      if (Number.isFinite(la) && Number.isFinite(lo) && bounds.contains([la, lo])) {
+        inBoundsCount++;
+      }
+    }
+    if (inBoundsCount >= 2) {
+      candidates.push({ group: g, stops, inBoundsCount });
+    }
+  }
+  candidates.sort((a, b) => b.inBoundsCount - a.inBoundsCount);
+  const picked = candidates.slice(0, 6);
+  if (!picked.length) return;
+
+  const myToken = ++_globalBusSpeedFetchToken;
+  Promise.all(picked.map(async ({ group, stops }) => {
+    const rId = group.routeIds?.[0] || '';
+    const parts = rId.split('_');
+    const svcType = parts[3] || group.serviceType || '1';
+    const dirChar = parts[2] || (String(group.bound || '').toUpperCase().startsWith('I') ? 'I' : 'O');
+    const cacheKey = `${group.company || ''}|${group.routeNo || ''}|${dirChar}|${svcType}`;
+    const cached = window.__GLOBAL_BUS_SPEED_CACHE__?.get(cacheKey);
+    let etaByStopIdx = (cached && (Date.now() - cached.ts) < 45000) ? cached.etaByStopIdx : null;
+    const [etaRes, snappedRoad] = await Promise.all([
+      (async () => {
+        if (etaByStopIdx) return etaByStopIdx;
+        try {
+          const bulkMap = await fetchKmbRouteBulkEta(parts[1] || group.routeNo, svcType, false);
+          const extracted = _extractKmbEtaByStopIdx(group, stops, bulkMap);
+          if (extracted) {
+            window.__GLOBAL_BUS_SPEED_CACHE__?.set(cacheKey, { ts: Date.now(), etaByStopIdx: extracted });
+          }
+          return extracted;
+        } catch (e) {
+          return null;
+        }
+      })(),
+      (async () => {
+        const cachedPoly = getCachedBusRoutePolyline(group, stops);
+        if (Array.isArray(cachedPoly) && cachedPoly.length >= stops.length + 2) return cachedPoly;
+        if (typeof fetchRoadSnappedBusPolyline === 'function') {
+          try {
+            const poly = await fetchRoadSnappedBusPolyline(group, stops);
+            if (Array.isArray(poly) && poly.length >= 3) return poly;
+          } catch (e) {}
+        }
+        return null;
+      })()
+    ]);
+    if (!etaRes || !Array.isArray(snappedRoad) || snappedRoad.length < 3) return null;
+    const segs = window.inferBusApiSegmentSpeeds(stops, etaRes, snappedRoad, {
+      tdDetectors,
+      nowMs: Date.now()
+    });
+    return { routeLabel: `${group.routeNo}`, segs };
+  })).then((batches) => {
+    if (myToken !== _globalBusSpeedFetchToken || !window.busSpeedLayerEnabled || !_globalBusSpeedLayerGroup) return;
+    batches.forEach((b) => {
+      if (b && Array.isArray(b.segs) && b.segs.length) {
+        _drawBusSpeedSegmentsIntoLayer(b.segs, _globalBusSpeedLayerGroup, b.routeLabel);
+      }
+    });
+  }).catch(() => {});
+}
+
+function toggleBusSpeedLayer(forceState = null) {
+  if (typeof triggerHaptic === 'function') triggerHaptic(10);
+  window.busSpeedLayerEnabled = (typeof forceState === 'boolean') ? forceState : !window.busSpeedLayerEnabled;
+  if (typeof window.syncTrafficToggleButtonsUI === 'function') {
+    window.syncTrafficToggleButtonsUI();
+  }
+  const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
+
+  if (window.browseMapInstance) {
+    if (window.busSpeedLayerEnabled) renderGlobalBusSpeedOverlay(window.browseMapInstance);
+    else clearGlobalBusSpeedOverlay(window.browseMapInstance);
+  }
+  if (window.mapInstance && currentDetailCorridorMeta?.isBusRoute) {
+    if (window.busSpeedLayerEnabled && typeof detailRouteGroup !== 'undefined' && detailRouteGroup) {
+      const stops = _getDetailStopsForGroup(detailRouteGroup);
+      syncDetailRouteBusSpeedSegments(detailRouteGroup, stops);
+    }
+    _refreshDetailBusSpeedPolylineIfActive();
+  }
+  if (typeof showToast === 'function') {
+    showToast(window.busSpeedLayerEnabled
+      ? (isZh ? '🚌 已開啟巴士實時車速圖層（填補運輸署無測速路段）' : '🚌 Live Bus Speed Layer ON (fills non-TD corridor gaps)')
+      : (isZh ? '🚌 已關閉巴士車速圖層' : '🚌 Live Bus Speed Layer OFF'));
+  }
+}
+
 function toggleGlobalTrafficLayer(forceState = null) {
   if (typeof triggerHaptic === 'function') triggerHaptic(10);
   window.globalTrafficLayerEnabled = (typeof forceState === 'boolean') ? forceState : !window.globalTrafficLayerEnabled;
@@ -2854,7 +3392,7 @@ function toggleGlobalTrafficLayer(forceState = null) {
       syncEdgeTrafficCorridors();
     }
     if (typeof showToast === 'function') {
-      showToast(isZh ? '🚦 全港實時路況及鏡頭圖層已開啟（已隱藏巴士站）' : '🚦 City-Wide Live Traffic & Cameras ON (Bus stops hidden)');
+      showToast(isZh ? '🚦 全港實時路況已開啟（放大至街道即可查看鏡頭）' : '🚦 City-Wide Live Traffic ON (Zoom in to view cameras)');
     }
   } else {
     clearGlobalTrafficDashboard(window.browseMapInstance);
@@ -2873,17 +3411,39 @@ function attachGlobalTrafficControlToBrowseMap(mapInst) {
     options: { position: 'bottomright' },
     onAdd: function() {
       const container = L.DomUtil.create('div', 'leaflet-control-global-traffic');
+      if (container && container.style) {
+        container.style.display = 'flex';
+        container.style.flexDirection = 'column';
+        container.style.gap = '6px';
+        container.style.alignItems = 'flex-end';
+      }
+
+      const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
+
+      const busBtn = L.DomUtil.create('button', 'map-traffic-chip-btn map-bus-speed-toggle global-bus-speed-btn', container);
+      busBtn.type = 'button';
+      busBtn.id = 'browseMapBusSpeedBtn';
+      busBtn.innerText = window.busSpeedLayerEnabled
+        ? (isZh ? '🚌 巴士車速 開' : '🚌 Bus Speed ON')
+        : (isZh ? '🚌 巴士車速' : '🚌 Bus Speed');
+      busBtn.classList.toggle('active', Boolean(window.busSpeedLayerEnabled));
+      busBtn.setAttribute('aria-pressed', window.busSpeedLayerEnabled ? 'true' : 'false');
+
       const btn = L.DomUtil.create('button', 'map-traffic-chip-btn map-traffic-toggle global-traffic-btn', container);
       btn.type = 'button';
       btn.id = 'browseMapTrafficBtn';
-      const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
       btn.innerText = window.globalTrafficLayerEnabled
         ? (isZh ? '🚦 全港路況 開' : '🚦 Traffic ON')
         : (isZh ? '🚦 全港路況' : '🚦 Traffic');
       btn.classList.toggle('active', Boolean(window.globalTrafficLayerEnabled));
       btn.setAttribute('aria-pressed', window.globalTrafficLayerEnabled ? 'true' : 'false');
+
       L.DomEvent.disableClickPropagation(container);
       L.DomEvent.disableScrollPropagation(container);
+      L.DomEvent.on(busBtn, 'click', (e) => {
+        L.DomEvent.preventDefault(e);
+        toggleBusSpeedLayer();
+      });
       L.DomEvent.on(btn, 'click', (e) => {
         L.DomEvent.preventDefault(e);
         toggleGlobalTrafficLayer();
@@ -2895,12 +3455,20 @@ function attachGlobalTrafficControlToBrowseMap(mapInst) {
   _globalTrafficControl.addTo(mapInst);
 }
 
+window.GLOBAL_CAMERA_MIN_ZOOM = GLOBAL_CAMERA_MIN_ZOOM;
 window.getGlobalTrafficLaneOffsetMeters = getGlobalTrafficLaneOffsetMeters;
 window.filterAndOffsetGlobalSpeedGeoJson = filterAndOffsetGlobalSpeedGeoJson;
 window.buildGlobalSpeedMapGeoJsonFallback = buildGlobalSpeedMapGeoJsonFallback;
 window.renderGlobalTrafficDashboard = renderGlobalTrafficDashboard;
 window.clearGlobalTrafficDashboard = clearGlobalTrafficDashboard;
 window.toggleGlobalTrafficLayer = toggleGlobalTrafficLayer;
+window.toggleBusSpeedLayer = toggleBusSpeedLayer;
+window.renderGlobalBusSpeedOverlay = renderGlobalBusSpeedOverlay;
+window.clearGlobalBusSpeedOverlay = clearGlobalBusSpeedOverlay;
+window.syncDetailRouteBusSpeedSegments = syncDetailRouteBusSpeedSegments;
+window.buildDetailBusPolylineLayer = buildDetailBusPolylineLayer;
+window._projectPointOntoPolylineDetailed = _projectPointOntoPolylineDetailed;
+window._polylinesIntersect2D = _polylinesIntersect2D;
 
 function initAndRenderBrowseMap() {
   if (typeof L === 'undefined') {
@@ -2919,15 +3487,32 @@ function initAndRenderBrowseMap() {
     window.browseMapInstance = L.map('browse-map-canvas', { zoomControl: false, preferCanvas: true }).setView([centerLat, centerLon], 15);
     window.attachStandardMapLayers(window.browseMapInstance);
     attachGlobalTrafficControlToBrowseMap(window.browseMapInstance);
-    window.browseMapInstance.on('moveend', scheduleBrowseMapPinDiff);
+    window.browseMapInstance.on('moveend', () => {
+      scheduleBrowseMapPinDiff();
+      clearTimeout(_globalTrafficMoveTimer);
+      _globalTrafficMoveTimer = setTimeout(() => {
+        if (!window.browseMapInstance) return;
+        const z = window.browseMapInstance.getZoom ? (window.browseMapInstance.getZoom() || 13) : 13;
+        if (window.globalTrafficLayerEnabled && z >= GLOBAL_CAMERA_MIN_ZOOM) {
+          renderGlobalTrafficDashboard(window.browseMapInstance);
+        }
+        if (window.busSpeedLayerEnabled) {
+          renderGlobalBusSpeedOverlay(window.browseMapInstance);
+        }
+      }, 140);
+    });
     window.browseMapInstance.on('zoomend', () => {
       if (window.globalTrafficLayerEnabled) {
         renderGlobalTrafficDashboard(window.browseMapInstance);
+      }
+      if (window.busSpeedLayerEnabled) {
+        renderGlobalBusSpeedOverlay(window.browseMapInstance);
       }
     });
     attachMapResizeObserver('browse-map-canvas', window.browseMapInstance, () => {
       if (window.globalTrafficLayerEnabled) renderGlobalTrafficDashboard(window.browseMapInstance);
       else renderBrowseMapVisiblePins();
+      if (window.busSpeedLayerEnabled) renderGlobalBusSpeedOverlay(window.browseMapInstance);
     });
 
     window.browseMapInstance.on('contextmenu', (e) => {

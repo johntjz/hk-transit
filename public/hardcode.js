@@ -3168,7 +3168,7 @@ function _matchCamerasAlongForwardSegments(segments, cameras) {
     minLon = Math.min(minLon, s.lo1, s.lo2);
     maxLon = Math.max(maxLon, s.lo1, s.lo2);
   }
-  const pad = isRoadSnapped ? 0.0022 : 0.0035;
+  const pad = isRoadSnapped ? 0.0020 : 0.0035;
   const matched = [];
   for (let i = 0; i < cameras.length; i++) {
     const cam = cameras[i];
@@ -3176,6 +3176,8 @@ function _matchCamerasAlongForwardSegments(segments, cameras) {
     if (!Number.isFinite(cLat) || !Number.isFinite(cLon)) continue;
     if (cLat < minLat - pad || cLat > maxLat + pad || cLon < minLon - pad || cLon > maxLon + pad) continue;
     const camDir = extractCardinalDirectionMeta(cam, false).code;
+    const rawCamBrg = Number(cam?.bearingDeg);
+    const hasCamBrg = cam?.bearingDeg !== null && cam?.bearingDeg !== undefined && Number.isFinite(rawCamBrg);
 
     let bestDistKm = Infinity;
     let bestAheadKm = 0;
@@ -3185,10 +3187,12 @@ function _matchCamerasAlongForwardSegments(segments, cameras) {
       const proj = pointToSegmentDistanceKm(cLat, cLon, seg.la1, seg.lo1, seg.la2, seg.lo2);
       const minT = seg.segIdx === 0 ? -0.02 : -0.15;
       if (proj.t < minT || proj.t > 1.15) continue;
+      // Strict <= 120m corridor lock when road-snapped
       const maxCamRadius = seg.isRoadSnapped
-        ? 0.15
-        : (seg.hopKm >= 2.0 ? Math.min(1.6, Math.max(0.35, seg.hopKm * 0.18)) : 0.15);
+        ? 0.12
+        : (seg.hopKm >= 2.0 ? Math.min(1.6, Math.max(0.35, seg.hopKm * 0.18)) : 0.12);
       if (proj.distKm > maxCamRadius) continue;
+      if (hasCamBrg && angularDiffDeg(rawCamBrg, seg.brg) > 55) continue;
       const segDir = extractCardinalDirectionMeta({ rot: seg.brg }, false).code;
       if (camDir && segDir && _isOppositeCardinalHardcode(camDir, segDir)) continue;
       if (proj.distKm < bestDistKm) {
@@ -3198,7 +3202,13 @@ function _matchCamerasAlongForwardSegments(segments, cameras) {
       }
     }
     if (bestSeg) {
-      matched.push({ cam, distKm: bestDistKm, aheadKm: bestAheadKm, betweenStops: bestSeg.betweenStops });
+      matched.push({
+        cam,
+        distKm: bestDistKm,
+        aheadKm: bestAheadKm,
+        segBrg: bestSeg.brg,
+        betweenStops: bestSeg.betweenStops
+      });
     }
   }
   matched.sort((a, b) => (a.aheadKm + a.distKm * 2.0) - (b.aheadKm + b.distKm * 2.0));
@@ -3330,18 +3340,34 @@ function _mapStopsToRoadPolylineIndices(stops, roadPolylinePoints) {
   return stopPolyIdx;
 }
 
-// Slice the active route's road polyline strictly forward starting AT activeStopIdx up to maxLookaheadKm (default 12 km).
-function sliceForwardPolylineFromStop(coords, stops = [], activeStopIdx = 0, maxLookaheadKm = 12.0) {
+// Slice the active route's road polyline strictly forward starting AT activeStopIdx
+// up to exitStopIdx (if provided and > activeStopIdx) or maxLookaheadKm (default 12 km).
+function sliceForwardPolylineFromStop(coords, stops = [], activeStopIdx = 0, maxLookaheadKm = 12.0, exitStopIdx = null) {
   if (!Array.isArray(coords) || coords.length < 2) return [];
-  const limitKm = Math.max(0.5, Number(maxLookaheadKm) || 12.0);
   const idx = Math.max(0, Number(activeStopIdx) || 0);
   if (Array.isArray(stops) && stops.length >= 2 && idx >= stops.length - 1) {
     return [];
   }
+  const hasExitClamp = (
+    exitStopIdx !== null &&
+    exitStopIdx !== undefined &&
+    Number.isFinite(Number(exitStopIdx)) &&
+    Number(exitStopIdx) > idx &&
+    Array.isArray(stops) &&
+    Number(exitStopIdx) < stops.length
+  );
+  const clampedExitIdx = hasExitClamp ? Number(exitStopIdx) : null;
+  const limitKm = hasExitClamp
+    ? Math.max(Number(maxLookaheadKm) || 12.0, 60.0)
+    : Math.max(0.5, Number(maxLookaheadKm) || 12.0);
 
   let startPolyIdx = 0;
+  let endPolyIdx = coords.length - 1;
+  const mapped = (Array.isArray(stops) && stops.length >= 2)
+    ? _mapStopsToRoadPolylineIndices(stops, coords)
+    : new Map();
+
   if (Array.isArray(stops) && stops.length >= 2 && idx > 0) {
-    const mapped = _mapStopsToRoadPolylineIndices(stops, coords);
     if (mapped.has(idx)) {
       startPolyIdx = mapped.get(idx);
     } else {
@@ -3359,9 +3385,27 @@ function sliceForwardPolylineFromStop(coords, stops = [], activeStopIdx = 0, max
     }
   }
 
+  if (clampedExitIdx !== null) {
+    if (mapped.has(clampedExitIdx) && mapped.get(clampedExitIdx) > startPolyIdx) {
+      endPolyIdx = mapped.get(clampedExitIdx);
+    } else {
+      const exSt = stops[clampedExitIdx];
+      const eLat = parseFloat(exSt?.latitude ?? exSt?.lat);
+      const eLon = parseFloat(exSt?.longitude ?? exSt?.lon);
+      if (Number.isFinite(eLat) && Number.isFinite(eLon)) {
+        let bestI = coords.length - 1, bestKm = Infinity;
+        for (let p = startPolyIdx; p < coords.length; p++) {
+          const dKm = _haversineKm(eLat, eLon, coords[p][0], coords[p][1]);
+          if (dKm < bestKm) { bestKm = dKm; bestI = p; }
+        }
+        endPolyIdx = Math.max(startPolyIdx + 1, bestI);
+      }
+    }
+  }
+
   const sliced = [];
   let cumKm = 0;
-  for (let p = startPolyIdx; p < coords.length; p++) {
+  for (let p = startPolyIdx; p <= endPolyIdx && p < coords.length; p++) {
     const pt = coords[p];
     if (!Array.isArray(pt) || pt.length < 2) continue;
     if (!sliced.length) {
@@ -3480,24 +3524,435 @@ function _buildRoadSnappedSegments(stops, startIdx, endIdxExclusive, roadPolylin
   return segments.length >= 1 ? segments : null;
 }
 
-// Strict downstream-only route-polyline lookahead starting AT the selected stop and extending up to 12 km AHEAD toward the terminus.
-// Matches ONLY TD speed segments and TD traffic cameras within ~150m of the forward polyline aligned with route travel bearing.
-// Never matches cameras or congestion located behind/upstream of the selected stop.
-function inferDirectionalRoadTrafficForStops(stops, startIdx = 0, detectors = [], lookaheadStops = 40, roadPolylinePoints = null, maxLookaheadMeters = 12000, cameras = null) {
-  if (!Array.isArray(stops) || stops.length < 2 || !Array.isArray(detectors) || !detectors.length) {
-    return { sameSide: null, oppSide: null, approaching: null, forwardCameras: [], hasLive: false, capturedAt: '', usedRoadPolyline: false };
+// Hong Kong time-of-day context (UTC+8) for interpreting expected vs. actual corridor speed
+// and whether distant queues are likely building or dissipating (never fabricates sensor speeds).
+function getHongKongTimeOfDayContext(nowMs = null) {
+  const ms = (nowMs !== null && nowMs !== undefined && Number.isFinite(Number(nowMs)))
+    ? Number(nowMs)
+    : Date.now();
+  const hkDate = new Date(ms + 8 * 3600 * 1000);
+  const hkHour = hkDate.getUTCHours();
+  const hkMin = hkDate.getUTCMinutes();
+  const hkDay = hkDate.getUTCDay(); // 0 = Sun, 6 = Sat
+  const minsOfDay = hkHour * 60 + hkMin;
+  const yyyy = hkDate.getUTCFullYear();
+  const mm = String(hkDate.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(hkDate.getUTCDate()).padStart(2, '0');
+  const ymd = `${yyyy}-${mm}-${dd}`;
+  const isHol = Boolean(typeof window !== 'undefined' && window.__HK_PUBLIC_HOLIDAYS__ instanceof Set && window.__HK_PUBLIC_HOLIDAYS__.has(ymd));
+  const isWeekend = (hkDay === 0 || hkDay === 6 || isHol);
+  const isWeekday = !isWeekend;
+
+  let period = 'OFF_PEAK';
+  let isPeak = false;
+  let isAmPeak = false;
+  let isPmPeak = false;
+  let isLateNight = false;
+  let trend = 'STEADY';
+  let expectedSpeedRatio = 0.94;
+  let labelEn = 'Off-peak midday';
+  let labelTc = '日間非繁忙時段';
+
+  if (minsOfDay >= 1290 || minsOfDay < 420) {
+    // 21:30–06:59
+    period = 'LATE_NIGHT';
+    isLateNight = true;
+    trend = 'DISSIPATING';
+    expectedSpeedRatio = 1.0;
+    labelEn = 'Late night · light traffic window';
+    labelTc = '深夜時段 · 路面一般暢順';
+  } else if (isWeekend) {
+    period = 'WEEKEND';
+    trend = minsOfDay >= 1170 ? 'DISSIPATING' : 'STEADY';
+    expectedSpeedRatio = 0.92;
+    labelEn = isHol ? 'Public holiday flow' : 'Weekend flow';
+    labelTc = isHol ? '公眾假期車流' : '週末車流';
+  } else if (minsOfDay >= 420 && minsOfDay < 450) {
+    // 07:00–07:29
+    period = 'PRE_AM_PEAK';
+    trend = 'BUILDING';
+    expectedSpeedRatio = 0.86;
+    labelEn = 'Entering AM peak · queues building';
+    labelTc = '臨近早繁 · 車龍漸現';
+  } else if (minsOfDay >= 450 && minsOfDay <= 585) {
+    // 07:30–09:45
+    period = 'AM_PEAK';
+    isPeak = true;
+    isAmPeak = true;
+    trend = minsOfDay <= 540 ? 'BUILDING' : 'DISSIPATING';
+    expectedSpeedRatio = 0.65;
+    labelEn = 'Weekday AM rush';
+    labelTc = '平日早繁時段';
+  } else if (minsOfDay >= 990 && minsOfDay < 1035) {
+    // 16:30–17:14
+    period = 'PRE_PM_PEAK';
+    trend = 'BUILDING';
+    expectedSpeedRatio = 0.84;
+    labelEn = 'Entering PM peak · queues building';
+    labelTc = '臨近晚繁 · 車流漸增';
+  } else if (minsOfDay >= 1035 && minsOfDay <= 1185) {
+    // 17:15–19:45
+    period = 'PM_PEAK';
+    isPeak = true;
+    isPmPeak = true;
+    trend = minsOfDay <= 1140 ? 'BUILDING' : 'DISSIPATING';
+    expectedSpeedRatio = 0.62;
+    labelEn = 'Weekday PM rush';
+    labelTc = '平日晚繁時段';
+  } else if (minsOfDay > 1185 && minsOfDay < 1290) {
+    // 19:46–21:29
+    period = 'EVENING_EASING';
+    trend = 'DISSIPATING';
+    expectedSpeedRatio = 0.90;
+    labelEn = 'Evening off-peak · queues easing';
+    labelTc = '晚間非繁忙 · 車龍漸散';
   }
 
+  return {
+    period,
+    isWeekday,
+    isWeekend,
+    isPeak,
+    isAmPeak,
+    isPmPeak,
+    isLateNight,
+    trend,
+    expectedSpeedRatio,
+    hkHour,
+    hkMin,
+    labelEn,
+    labelTc
+  };
+}
+
+function computeTimeToReachDecayWeight(etaMins, distKm = 0) {
+  const mins = Math.max(0, Number(etaMins) || 0);
+  const km = Math.max(0, Number(distKm) || 0);
+  if (mins > 30 || km > 15) return 0.3;
+  if (mins > 15) return 0.65;
+  return 1.0;
+}
+
+function _normalizeBottleneckTier(tier, speedKmh) {
+  const t = String(tier || '').toUpperCase();
+  const spd = Number(speedKmh);
+  if (t === 'CONGESTED' || t === 'JAMMED' || (Number.isFinite(spd) && spd < 20)) return 'CONGESTED';
+  if (t === 'MODERATE' || t === 'SLOW' || (Number.isFinite(spd) && spd <= 40)) return 'MODERATE';
+  return 'SMOOTH';
+}
+
+function computeBottleneckSeverityScore(detOrSeg, todCtx = null) {
+  if (!detOrSeg) return 0;
+  const spd = Number(detOrSeg.speedKmh ?? detOrSeg.spd);
+  const effSpd = Number.isFinite(spd) ? Math.max(0, spd) : 50;
+  const occ = Math.max(0, Number(detOrSeg.occ ?? detOrSeg.maxOcc ?? 0) || 0);
+  const tier = _normalizeBottleneckTier(detOrSeg.tier || detOrSeg.status, effSpd);
+
+  let score = 0;
+  if (tier === 'CONGESTED') {
+    score = 78 + (20 - Math.min(20, effSpd)) * 1.6 + Math.min(18, occ * 0.18);
+  } else if (tier === 'MODERATE') {
+    score = 36 + (40 - Math.min(40, Math.max(20, effSpd))) * 1.25 + Math.min(10, occ * 0.12);
+  } else {
+    score = Math.max(0, 12 - effSpd * 0.14);
+  }
+
+  // Contextualize severity against expected Hong Kong time-of-day speed without altering raw speed
+  if (todCtx) {
+    if (tier === 'CONGESTED' && (todCtx.isLateNight || todCtx.expectedSpeedRatio >= 0.92)) {
+      score *= 1.08; // Unexpected incident/jam during normally clear hours
+    } else if (tier === 'MODERATE' && todCtx.isPeak && effSpd >= 28) {
+      score *= 0.92; // Mild slowdown expected during peak rush
+    }
+  }
+  return Number(score.toFixed(2));
+}
+
+// Build upstream segments leading INTO stops[stopIdx] (0–2.5 km behind the stop),
+// oriented in the bus's forward travel direction so approaching-jam detectors align cleanly.
+function _buildUpstreamSegments(stops, stopIdx, roadPolylinePoints = null, maxUpstreamKm = 2.5) {
+  if (!Array.isArray(stops) || stopIdx <= 0 || stopIdx >= stops.length) return [];
+  const limitKm = Math.max(0.2, Math.min(2.5, Number(maxUpstreamKm) || 2.5));
+  const bbiStopRe = /tunnel|toll\s*plaza|\bbbi\b|highway|interchange|tsing\s*ma|lantau\s*link|轉車站|隧道|收費廣場|公路/i;
+
+  if (Array.isArray(roadPolylinePoints) && roadPolylinePoints.length >= 3) {
+    const stopPolyIdx = _mapStopsToRoadPolylineIndices(stops, roadPolylinePoints);
+    const pAtStop = stopPolyIdx.get(stopIdx);
+    if (pAtStop !== undefined && pAtStop > 0) {
+      // Find immediate previous mapped stop for span/BBI context
+      let prevStopIdx = stopIdx - 1;
+      while (prevStopIdx >= 0 && !stopPolyIdx.has(prevStopIdx)) prevStopIdx--;
+      const prevSt = stops[Math.max(0, prevStopIdx)];
+      const curSt = stops[stopIdx];
+      const aName = `${prevSt?.stopName_e || ''} ${prevSt?.name_tc || ''}`;
+      const bName = `${curSt?.stopName_e || ''} ${curSt?.name_tc || ''}`;
+      const isBbiSeg = bbiStopRe.test(aName) || bbiStopRe.test(bName);
+      const pPrevStop = prevStopIdx >= 0 ? (stopPolyIdx.get(prevStopIdx) ?? 0) : 0;
+      let parentSpanKm = 0;
+      for (let q = pPrevStop; q < pAtStop; q++) {
+        parentSpanKm += _haversineKm(roadPolylinePoints[q][0], roadPolylinePoints[q][1], roadPolylinePoints[q + 1][0], roadPolylinePoints[q + 1][1]);
+      }
+
+      const rawBack = [];
+      let backKm = 0;
+      for (let p = pAtStop; p > 0 && backKm < limitKm; p--) {
+        const cPrev = roadPolylinePoints[p - 1];
+        const cCur = roadPolylinePoints[p];
+        const segKm = _haversineKm(cPrev[0], cPrev[1], cCur[0], cCur[1]);
+        if (segKm < 0.008) continue;
+        let la1 = cPrev[0], lo1 = cPrev[1], effSegKm = segKm;
+        if (backKm + segKm > limitKm) {
+          const frac = Math.max(0, Math.min(1, (limitKm - backKm) / segKm));
+          la1 = cCur[0] + (cPrev[0] - cCur[0]) * frac;
+          lo1 = cCur[1] + (cPrev[1] - cCur[1]) * frac;
+          effSegKm = limitKm - backKm;
+        }
+        rawBack.push({
+          la1, lo1, la2: cCur[0], lo2: cCur[1],
+          hopKm: effSegKm,
+          parentHopKm: Math.max(parentSpanKm, effSegKm),
+          distBeforeStopEndKm: backKm,
+          distBeforeStopStartKm: backKm + effSegKm,
+          isBbiSeg,
+          isRoadSnapped: true,
+          brg: computeBearingDeg(la1, lo1, cCur[0], cCur[1]),
+          betweenStops: {
+            fromSeq: Math.max(1, prevStopIdx + 1),
+            toSeq: stopIdx + 1,
+            fromNameEn: _stripStopPlatformSuffix(prevSt?.stopName_e || prevSt?.name_tc || ''),
+            fromNameTc: _stripStopPlatformSuffix(prevSt?.name_tc || prevSt?.stopName_e || ''),
+            toNameEn: _stripStopPlatformSuffix(curSt?.stopName_e || curSt?.name_tc || ''),
+            toNameTc: _stripStopPlatformSuffix(curSt?.name_tc || curSt?.stopName_e || ''),
+            hopKm: Number(Math.max(parentSpanKm, effSegKm).toFixed(1))
+          }
+        });
+        backKm += effSegKm;
+      }
+      rawBack.reverse();
+      let cumKm = 0;
+      return rawBack.map((seg, idx) => {
+        const out = { ...seg, segIdx: idx, cumKm };
+        cumKm += seg.hopKm;
+        return out;
+      });
+    }
+  }
+
+  // Fallback: stop-pair upstream segments walking backward from stopIdx up to limitKm
+  const backSegs = [];
+  let backKm = 0;
+  for (let idx = stopIdx - 1; idx >= 0 && backKm < limitKm; idx--) {
+    const a = stops[idx], b = stops[idx + 1];
+    const la1 = parseFloat(a?.latitude ?? a?.lat), lo1 = parseFloat(a?.longitude ?? a?.lon);
+    const la2 = parseFloat(b?.latitude ?? b?.lat), lo2 = parseFloat(b?.longitude ?? b?.lon);
+    if (!Number.isFinite(la1) || !Number.isFinite(lo1) || !Number.isFinite(la2) || !Number.isFinite(lo2)) continue;
+    const hopKm = _haversineKm(la1, lo1, la2, lo2);
+    if (hopKm < 0.04) continue;
+    const aName = `${a?.stopName_e || ''} ${a?.name_tc || ''}`;
+    const bName = `${b?.stopName_e || ''} ${b?.name_tc || ''}`;
+    const isBbiSeg = bbiStopRe.test(aName) || bbiStopRe.test(bName);
+
+    let sLat = la1, sLon = lo1, effHopKm = hopKm;
+    if (backKm + hopKm > limitKm) {
+      const frac = Math.max(0, Math.min(1, (limitKm - backKm) / hopKm));
+      sLat = la2 + (la1 - la2) * frac;
+      sLon = lo2 + (lo1 - lo2) * frac;
+      effHopKm = limitKm - backKm;
+    }
+    backSegs.push({
+      la1: sLat, lo1: sLon, la2, lo2,
+      hopKm: effHopKm,
+      parentHopKm: hopKm,
+      distBeforeStopEndKm: backKm,
+      distBeforeStopStartKm: backKm + effHopKm,
+      isBbiSeg,
+      isRoadSnapped: false,
+      brg: computeBearingDeg(sLat, sLon, la2, lo2),
+      betweenStops: {
+        fromSeq: idx + 1,
+        toSeq: idx + 2,
+        fromNameEn: _stripStopPlatformSuffix(a?.stopName_e || a?.name_tc || ''),
+        fromNameTc: _stripStopPlatformSuffix(a?.name_tc || a?.stopName_e || ''),
+        toNameEn: _stripStopPlatformSuffix(b?.stopName_e || b?.name_tc || ''),
+        toNameTc: _stripStopPlatformSuffix(b?.name_tc || b?.stopName_e || ''),
+        hopKm: Number(hopKm.toFixed(1))
+      }
+    });
+    backKm += effHopKm;
+  }
+  backSegs.reverse();
+  let cumKm = 0;
+  return backSegs.map((seg, idx) => {
+    const out = { ...seg, segIdx: idx, cumKm };
+    cumKm += seg.hopKm;
+    return out;
+  });
+}
+
+function _estimateRouteArrivalMins(distKm, liveSpeedKmh = null, isHighwaySpan = false) {
+  const km = Math.max(0, Number(distKm) || 0);
+  if (km <= 0.05) return 0;
+  const spd = Number(liveSpeedKmh);
+  const baselineKmh = isHighwaySpan ? 46 : 24;
+  // Blend actual local speed with corridor baseline (don't assume entire 15km is stuck at 1 point's speed)
+  const effKmh = (Number.isFinite(spd) && spd >= 6)
+    ? Math.max(10, Math.min(72, spd * 0.45 + baselineKmh * 0.55))
+    : baselineKmh;
+  return Math.max(1, Math.round((km / effKmh) * 60));
+}
+
+function _findNearestCamForPoint(lat, lon, forwardCameras = [], fallbackCameras = [], detBrg = null, maxKm = 0.65) {
+  const cLat = Number(lat), cLon = Number(lon);
+  if (!Number.isFinite(cLat) || !Number.isFinite(cLon)) return null;
+  let best = null;
+  let bestDistKm = Infinity;
+
+  const scan = (list, isWrapped) => {
+    for (let i = 0; i < list.length; i++) {
+      const item = list[i];
+      const cam = isWrapped ? item.cam : item;
+      if (!cam?.key) continue;
+      const la = Number(cam.lat), lo = Number(cam.lon);
+      if (!Number.isFinite(la) || !Number.isFinite(lo)) continue;
+      const dKm = _haversineKm(cLat, cLon, la, lo);
+      if (dKm > maxKm) continue;
+      if (detBrg !== null && Number.isFinite(Number(detBrg))) {
+        const camBrg = Number(cam.bearingDeg);
+        if (cam.bearingDeg !== null && cam.bearingDeg !== undefined && Number.isFinite(camBrg)) {
+          if (angularDiffDeg(camBrg, Number(detBrg)) > 65) continue;
+        }
+      }
+      if (dKm < bestDistKm) {
+        bestDistKm = dKm;
+        best = {
+          camKey: cam.key,
+          key: cam.key,
+          desc: cam.desc || cam.key,
+          meters: Math.round(dKm * 1000),
+          lat: la,
+          lon: lo,
+          dir: cam.dir || '',
+          bearingDeg: cam.bearingDeg
+        };
+      }
+    }
+  };
+
+  if (Array.isArray(forwardCameras) && forwardCameras.length) scan(forwardCameras, true);
+  if (!best && Array.isArray(fallbackCameras) && fallbackCameras.length) scan(fallbackCameras, false);
+  return best;
+}
+
+// Strict forward-only downstream corridor evaluation (optionally clamped to exitStopIdx)
+// PLUS upstream "Jam Before Stop" (0–2.5 km leading into stops[startIdx]), segment-by-segment
+// corridor bottlenecks with time-to-reach decay weighting, and Hong Kong time-of-day context.
+function inferDirectionalRoadTrafficForStops(stops, startIdx = 0, detectors = [], lookaheadStops = 40, roadPolylinePoints = null, maxLookaheadMeters = 12000, cameras = null, opts = {}) {
+  const emptyRes = {
+    sameSide: null,
+    oppSide: null,
+    approaching: null,
+    segments: [],
+    rankedBottlenecks: [],
+    forwardCameras: [],
+    aheadCam: null,
+    timeOfDayContext: getHongKongTimeOfDayContext(opts?.nowMs ?? null),
+    hasLive: false,
+    capturedAt: '',
+    usedRoadPolyline: false
+  };
+  if (!Array.isArray(stops) || stops.length < 2) {
+    return emptyRes;
+  }
+
+  const detList = Array.isArray(detectors) ? detectors : [];
   const rawStart = Number(startIdx) || 0;
-  // At or past terminus: strictly nothing ahead
-  if (rawStart >= stops.length - 1) {
-    return { sameSide: null, oppSide: null, approaching: null, forwardCameras: [], hasLive: false, capturedAt: '', usedRoadPolyline: false };
+  const fromIdx = Math.max(0, Math.min(stops.length - 1, rawStart));
+  const todCtx = getHongKongTimeOfDayContext(opts?.nowMs ?? null);
+  const camList = Array.isArray(cameras)
+    ? cameras
+    : (typeof window !== 'undefined' && Array.isArray(window.__LIVE_TRAFFIC_CAMERAS__) ? window.__LIVE_TRAFFIC_CAMERAS__ : []);
+
+  // 1. Evaluate Upstream "Jam Before Stop" (0–2.5 km leading into stops[fromIdx] along route polyline)
+  let approaching = null;
+  if (fromIdx > 0 && detList.length) {
+    const upSegs = _buildUpstreamSegments(stops, fromIdx, roadPolylinePoints, 2.5);
+    if (upSegs.length) {
+      const upTotalKm = upSegs.reduce((acc, s) => acc + (s.hopKm || 0), 0);
+      const { sameHits: upSameHits } = _matchDetectorsAlongSegments(upSegs, detList);
+      const activeUpHits = upSameHits
+        .map(h => {
+          const distBeforeKm = Math.max(0, Number((upTotalKm - (Number(h.aheadKm) || 0)).toFixed(2)));
+          return { ...h, distBeforeKm };
+        })
+        .filter(h => h.distBeforeKm <= 2.55);
+
+      const upBucket = summarizeDetectorBucket(activeUpHits);
+      if (upBucket && (upBucket.status === 'JAMMED' || upBucket.status === 'SLOW')) {
+        const upDet = upBucket.worstDet || upBucket.representativeDet;
+        const worstHit = activeUpHits.find(h => h.det === upDet) || activeUpHits[0];
+        const distKm = Number((worstHit?.distBeforeKm ?? 0.8).toFixed(1));
+        const tier = _normalizeBottleneckTier(upDet?.tier || upBucket.status, upBucket.minSpd);
+        const sevScore = computeBottleneckSeverityScore({ spd: upBucket.minSpd, occ: upBucket.maxOcc, tier }, todCtx);
+        const etaMins = Math.max(1, _estimateRouteArrivalMins(distKm, upBucket.minSpd, distKm >= 1.2));
+        const upCam = _findNearestCamForPoint(upDet?.lat, upDet?.lon, [], camList, upDet?.rot, 0.55);
+        const roadEn = _shortRoadNameForVerdict(upDet, false);
+        const roadTc = _shortRoadNameForVerdict(upDet, true);
+        approaching = {
+          status: upBucket.status,
+          tier,
+          speedKmh: upBucket.minSpd,
+          minSpd: upBucket.minSpd,
+          avgSpd: upBucket.avgSpd,
+          maxOcc: upBucket.maxOcc,
+          estDelayMins: upBucket.estDelayMins,
+          distKm,
+          distMeters: Math.round(distKm * 1000),
+          etaMins,
+          severityScore: sevScore,
+          timeDecayWeight: 1.0,
+          impactScore: sevScore,
+          isApproaching: true,
+          isFarAhead: false,
+          det: upDet,
+          detectorId: upDet?.id || '',
+          detId: upDet?.id || '',
+          roadEn,
+          roadTc,
+          cam: upCam,
+          camKey: upCam?.camKey || upCam?.key || upDet?.camKey || '',
+          camDesc: upCam?.desc || '',
+          labelEn: `Jam before stop (${distKm.toFixed(1)} km upstream · ${upBucket.minSpd} km/h)`,
+          labelTc: `到站前塞車（前 ${distKm.toFixed(1)} km · ${upBucket.minSpd} km/h）`
+        };
+      }
+    }
   }
 
-  const fromIdx = Math.max(0, rawStart);
+  // At or past terminus: nothing ahead, only return upstream approaching jam if active
+  if (fromIdx >= stops.length - 1) {
+    return {
+      ...emptyRes,
+      approaching,
+      rankedBottlenecks: approaching ? [approaching] : [],
+      hasLive: Boolean(approaching)
+    };
+  }
+
+  // 2. Downstream forward corridor (strictly clamped to exitStopIdx when selected)
   const effLookahead = Math.max(2, Number(lookaheadStops) || 40);
-  const endIdx = Math.min(stops.length, fromIdx + effLookahead + 1);
-  const maxLookaheadKm = Math.max(0.5, (Number(maxLookaheadMeters) || 12000) / 1000);
+  const rawExitIdx = opts?.exitStopIdx;
+  const hasExitClamp = (
+    rawExitIdx !== null &&
+    rawExitIdx !== undefined &&
+    Number.isFinite(Number(rawExitIdx)) &&
+    Number(rawExitIdx) > fromIdx &&
+    Number(rawExitIdx) < stops.length
+  );
+  const endIdx = hasExitClamp
+    ? Math.min(stops.length, Number(rawExitIdx) + 1)
+    : Math.min(stops.length, fromIdx + effLookahead + 1);
+  const baseMaxKm = Math.max(0.5, (Number(maxLookaheadMeters) || 12000) / 1000);
+  const maxLookaheadKm = hasExitClamp ? Math.max(baseMaxKm, 45.0) : baseMaxKm;
 
   const snappedAhead = roadPolylinePoints
     ? _buildRoadSnappedSegments(stops, fromIdx, endIdx, roadPolylinePoints, maxLookaheadKm)
@@ -3506,30 +3961,222 @@ function inferDirectionalRoadTrafficForStops(stops, startIdx = 0, detectors = []
     ? snappedAhead
     : _buildStopPairSegments(stops, fromIdx, endIdx, maxLookaheadKm, maxLookaheadKm);
 
-  const { sameHits: rawSameHits, oppHits: rawOppHits } = _matchDetectorsAlongSegments(aheadSegs, detectors);
+  const { sameHits: rawSameHits, oppHits: rawOppHits } = detList.length
+    ? _matchDetectorsAlongSegments(aheadSegs, detList)
+    : { sameHits: [], oppHits: [] };
   const sameHits = rawSameHits.filter(h => (Number(h.aheadKm) || 0) <= maxLookaheadKm + 0.05);
   const oppHits = rawOppHits.filter(h => (Number(h.aheadKm) || 0) <= maxLookaheadKm + 0.05);
 
-  const camList = Array.isArray(cameras)
-    ? cameras
-    : (typeof window !== 'undefined' && Array.isArray(window.__LIVE_TRAFFIC_CAMERAS__) ? window.__LIVE_TRAFFIC_CAMERAS__ : []);
   const forwardCameras = camList.length ? _matchCamerasAlongForwardSegments(aheadSegs, camList) : [];
+  const nearestFwdCam = forwardCameras.length ? forwardCameras[0] : null;
+  const aheadCam = nearestFwdCam
+    ? {
+        key: nearestFwdCam.cam.key,
+        camKey: nearestFwdCam.cam.key,
+        desc: nearestFwdCam.cam.desc || nearestFwdCam.cam.key,
+        aheadMeters: Math.max(10, Math.round((Number(nearestFwdCam.aheadKm) || 0) * 1000)),
+        lat: Number(nearestFwdCam.cam.lat),
+        lon: Number(nearestFwdCam.cam.lon),
+        dir: nearestFwdCam.cam.dir || '',
+        bearingDeg: nearestFwdCam.cam.bearingDeg
+      }
+    : null;
+
+  // 3. Build segment-by-segment corridor bottlenecks with time-to-reach decay weighting
+  const segBuckets = new Map();
+  for (let i = 0; i < sameHits.length; i++) {
+    const h = sameHits[i];
+    const bs = h.betweenStops;
+    const roadCore = _shortRoadNameForVerdict(h.det, false);
+    const key = bs ? `STOP_${bs.fromSeq}_${bs.toSeq}` : `ROAD_${roadCore.toLowerCase()}`;
+    if (!segBuckets.has(key)) {
+      segBuckets.set(key, { key, betweenStops: bs || null, hits: [] });
+    }
+    segBuckets.get(key).hits.push(h);
+  }
+
+  const segments = [];
+  for (const bucket of segBuckets.values()) {
+    const bSum = summarizeDetectorBucket(bucket.hits);
+    if (!bSum) continue;
+    const wDet = bSum.worstDet || bSum.representativeDet;
+    const wHit = bucket.hits.find(x => x.det === wDet) || bucket.hits[0];
+    const distKm = Number((wHit?.aheadKm ?? bSum.aheadKm ?? 0).toFixed(1));
+    const tier = _normalizeBottleneckTier(wDet?.tier || bSum.status, bSum.status === 'SMOOTH' ? bSum.avgSpd : bSum.minSpd);
+    const speedKmh = bSum.status === 'SMOOTH' ? bSum.avgSpd : bSum.minSpd;
+    const isHwySpan = Boolean((bucket.betweenStops?.hopKm || 0) >= 1.2 || isExpresswayOrTunnelDetector(wDet));
+    const etaMins = _estimateRouteArrivalMins(distKm, speedKmh, isHwySpan);
+    const timeDecayWeight = computeTimeToReachDecayWeight(etaMins, distKm);
+    const severityScore = computeBottleneckSeverityScore({ spd: speedKmh, occ: bSum.maxOcc, tier }, todCtx);
+    const impactScore = Number((severityScore * timeDecayWeight).toFixed(2));
+    const isFarAhead = (etaMins > 30 || distKm > 15);
+
+    let farAheadNoteEn = '';
+    let farAheadNoteTc = '';
+    if (isFarAhead) {
+      if (todCtx.trend === 'DISSIPATING' || todCtx.isLateNight || todCtx.period === 'OFF_PEAK') {
+        farAheadNoteEn = 'Far ahead · may clear before arrival';
+        farAheadNoteTc = '較遠路段 · 抵達前或已消散';
+      } else if (todCtx.trend === 'BUILDING') {
+        farAheadNoteEn = 'Far ahead · peak queues may build';
+        farAheadNoteTc = '較遠路段 · 繁忙車龍或持續';
+      } else {
+        farAheadNoteEn = 'Far ahead · may clear before arrival';
+        farAheadNoteTc = '較遠路段 · 抵達前或有變化';
+      }
+    }
+
+    const matchedCam = (wDet?.camKey && camList.find(c => c.key === wDet.camKey))
+      ? (() => {
+          const cObj = camList.find(c => c.key === wDet.camKey);
+          const dM = (cObj && Number.isFinite(Number(cObj.lat)))
+            ? Math.round(_haversineKm(wDet.lat, wDet.lon, Number(cObj.lat), Number(cObj.lon)) * 1000)
+            : 0;
+          return {
+            camKey: cObj.key,
+            key: cObj.key,
+            desc: cObj.desc || cObj.key,
+            meters: dM,
+            lat: Number(cObj.lat),
+            lon: Number(cObj.lon),
+            dir: cObj.dir || '',
+            bearingDeg: cObj.bearingDeg
+          };
+        })()
+      : _findNearestCamForPoint(wDet?.lat, wDet?.lon, forwardCameras, [], wDet?.rot, 0.65);
+
+    segments.push({
+      key: bucket.key,
+      source: 'TD',
+      fromSeq: bucket.betweenStops?.fromSeq ?? null,
+      toSeq: bucket.betweenStops?.toSeq ?? null,
+      fromNameEn: bucket.betweenStops?.fromNameEn || '',
+      fromNameTc: bucket.betweenStops?.fromNameTc || '',
+      toNameEn: bucket.betweenStops?.toNameEn || '',
+      toNameTc: bucket.betweenStops?.toNameTc || '',
+      betweenStops: bucket.betweenStops || null,
+      roadEn: _shortRoadNameForVerdict(wDet, false),
+      roadTc: _shortRoadNameForVerdict(wDet, true),
+      tier,
+      status: bSum.status,
+      speedKmh,
+      occ: bSum.maxOcc,
+      estDelayMins: bSum.estDelayMins,
+      distKm,
+      etaMins,
+      severityScore,
+      timeDecayWeight,
+      impactScore,
+      isApproaching: false,
+      isFarAhead,
+      farAheadNoteEn,
+      farAheadNoteTc,
+      detectorId: wDet?.id || '',
+      detId: wDet?.id || '',
+      det: wDet,
+      cam: matchedCam,
+      camKey: matchedCam?.camKey || matchedCam?.key || wDet?.camKey || '',
+      camDesc: matchedCam?.desc || ''
+    });
+  }
+
+  // Optional Bus Speed Layer gap-fill segments (ONLY for stop stretches NOT covered by TD detectors)
+  const busSpeedSegments = Array.isArray(opts?.busSpeedSegments) ? opts.busSpeedSegments : [];
+  if (busSpeedSegments.length) {
+    const tdCoveredSeqs = new Set(segments.filter(s => s.fromSeq && s.toSeq).map(s => `${s.fromSeq}_${s.toSeq}`));
+    let cumBusKm = 0;
+    for (let i = 0; i < busSpeedSegments.length; i++) {
+      const bs = busSpeedSegments[i];
+      if (!bs || bs.fromIdx < fromIdx) continue;
+      if (hasExitClamp && bs.toIdx > Number(rawExitIdx)) continue;
+      const seqKey = `${bs.fromSeq}_${bs.toSeq}`;
+      const segDistKm = Number((cumBusKm + (bs.roadDistKm || 0) * 0.5).toFixed(1));
+      cumBusKm += (bs.roadDistKm || 0);
+      if (tdCoveredSeqs.has(seqKey)) continue;
+      if (segDistKm > maxLookaheadKm + 0.05) break;
+      const tier = _normalizeBottleneckTier(bs.tier, bs.speedKmh);
+      const etaMins = _estimateRouteArrivalMins(segDistKm, bs.speedKmh, (bs.roadDistKm || 0) >= 1.2);
+      const timeDecayWeight = computeTimeToReachDecayWeight(etaMins, segDistKm);
+      const severityScore = computeBottleneckSeverityScore({ spd: bs.speedKmh, occ: 0, tier }, todCtx);
+      const impactScore = Number((severityScore * timeDecayWeight).toFixed(2));
+      const isFarAhead = (etaMins > 30 || segDistKm > 15);
+      segments.push({
+        key: `BUS_${seqKey}`,
+        source: 'BUS_API',
+        fromSeq: bs.fromSeq,
+        toSeq: bs.toSeq,
+        fromNameEn: bs.fromNameEn || '',
+        fromNameTc: bs.fromNameTc || '',
+        toNameEn: bs.toNameEn || '',
+        toNameTc: bs.toNameTc || '',
+        betweenStops: {
+          fromSeq: bs.fromSeq,
+          toSeq: bs.toSeq,
+          fromNameEn: bs.fromNameEn || '',
+          fromNameTc: bs.fromNameTc || '',
+          toNameEn: bs.toNameEn || '',
+          toNameTc: bs.toNameTc || '',
+          hopKm: Number((bs.roadDistKm || 0).toFixed(1))
+        },
+        roadEn: `${bs.fromNameEn || ''} → ${bs.toNameEn || ''}`.trim(),
+        roadTc: `${bs.fromNameTc || bs.fromNameEn || ''} → ${bs.toNameTc || bs.toNameEn || ''}`.trim(),
+        tier,
+        status: tier === 'CONGESTED' ? 'JAMMED' : (tier === 'MODERATE' ? 'SLOW' : 'SMOOTH'),
+        speedKmh: Math.round(bs.speedKmh),
+        occ: 0,
+        estDelayMins: tier === 'CONGESTED' ? 8 : (tier === 'MODERATE' ? 3 : 0),
+        distKm: segDistKm,
+        etaMins,
+        severityScore,
+        timeDecayWeight,
+        impactScore,
+        isApproaching: false,
+        isFarAhead,
+        farAheadNoteEn: isFarAhead ? 'Far ahead · may clear before arrival' : '',
+        farAheadNoteTc: isFarAhead ? '較遠路段 · 抵達前或已消散' : '',
+        detectorId: '',
+        detId: '',
+        det: null,
+        cam: null,
+        camKey: '',
+        camDesc: ''
+      });
+    }
+  }
+
+  segments.sort((a, b) => a.distKm - b.distKm);
+
+  const rankedBottlenecks = [
+    ...(approaching ? [approaching] : []),
+    ...segments
+  ].sort((a, b) => {
+    if (b.impactScore !== a.impactScore) return b.impactScore - a.impactScore;
+    return a.distKm - b.distKm;
+  });
 
   const sameSide = summarizeDetectorBucket(sameHits);
   const oppSide = summarizeDetectorBucket(oppHits);
+
+  // Override worstDet on sameSide using time-to-reach weighted bottleneck ranking so
+  // a minor jam 25 km away never outranks an active bottleneck 2 km ahead!
+  const topTdSeg = rankedBottlenecks.find(s => !s.isApproaching && s.source === 'TD' && s.det);
+  if (sameSide && topTdSeg && topTdSeg.det) {
+    sameSide.worstDet = topTdSeg.det;
+    sameSide.aheadKm = topTdSeg.distKm;
+    sameSide.betweenStops = topTdSeg.betweenStops || sameSide.betweenStops;
+    sameSide.minSpd = Math.round(Number(topTdSeg.det.spd ?? sameSide.minSpd));
+  }
 
   // Ensure any paired camera on the primary forward detector is also located along the forward polyline (never behind the stop)
   if (sameSide && camList.length) {
     const forwardCamKeySet = new Set(forwardCameras.map(fc => fc.cam.key));
     const attachSafeForwardCam = (detObj) => {
       if (!detObj) return detObj;
-      // Detector's own co-located camera is already validated strictly forward by _matchDetectorsAlongSegments
       if (detObj.camKey && detObj.id && detObj.camKey === detObj.id) {
         return detObj;
       }
       if (detObj.camKey && !forwardCamKeySet.has(detObj.camKey)) {
         const camInfo = camList.find(c => c.key === detObj.camKey);
-        // Only keep camKey if camera is not upstream/far off-corridor; otherwise replace with nearest forward camera if close
         if (camInfo && forwardCameras.length) {
           const nearFwd = forwardCameras.find(fc => _haversineKm(detObj.lat, detObj.lon, fc.cam.lat, fc.cam.lon) <= 0.65);
           return { ...detObj, camKey: nearFwd ? nearFwd.cam.key : '' };
@@ -3545,12 +4192,17 @@ function inferDirectionalRoadTrafficForStops(stops, startIdx = 0, detectors = []
     sameSide.representativeDet = attachSafeForwardCam(sameSide.representativeDet);
   }
 
+  const hasBusApiBottleneck = segments.some(s => s.source === 'BUS_API');
   return {
     sameSide,
     oppSide,
-    approaching: null,
+    approaching,
+    segments,
+    rankedBottlenecks,
     forwardCameras,
-    hasLive: Boolean(sameSide || oppSide),
+    aheadCam,
+    timeOfDayContext: todCtx,
+    hasLive: Boolean(sameSide || oppSide || approaching || hasBusApiBottleneck),
     capturedAt: '',
     usedRoadPolyline: Boolean(Array.isArray(snappedAhead) && snappedAhead.length > 0)
   };
@@ -3566,32 +4218,97 @@ function _formatBetweenStopsLabel(betweenStops, isZh = false) {
   return `Between ${betweenStops.fromNameEn} → ${betweenStops.toNameEn}`;
 }
 
-function getDirectionalRoadSummary(stops, startIdx, detectors, isZh = false, lookaheadStops = 40, roadPolylinePoints = null, maxLookaheadMeters = 12000, cameras = null) {
-  const res = inferDirectionalRoadTrafficForStops(stops, startIdx, detectors, lookaheadStops, roadPolylinePoints, maxLookaheadMeters, cameras);
-  if (!res.hasLive || (!res.sameSide && !res.oppSide)) return null;
+function getDirectionalRoadSummary(stops, startIdx, detectors, isZh = false, lookaheadStops = 40, roadPolylinePoints = null, maxLookaheadMeters = 12000, cameras = null, opts = {}) {
+  const res = inferDirectionalRoadTrafficForStops(stops, startIdx, detectors, lookaheadStops, roadPolylinePoints, maxLookaheadMeters, cameras, opts);
+  if (!res.hasLive) return null;
 
   const same = res.sameSide;
   const opp = res.oppSide;
+  const approaching = res.approaching;
   const oppDet = opp?.worstDet || opp?.representativeDet || null;
+  const topRanked = res.rankedBottlenecks?.[0] || null;
+  const todCtx = res.timeOfDayContext;
 
-  const primary = same || opp;
-  const focusDet = (same?.status === 'JAMMED' || same?.status === 'SLOW')
-    ? same.worstDet
-    : (same?.representativeDet || same?.worstDet || (opp?.status === 'JAMMED' ? opp.worstDet : (primary?.representativeDet || null)));
+  // Determine whether upstream "Jam Before Stop" is the top-ranked concern (only when severe/active vs smooth/absent forward)
+  const approachingLeads = Boolean(
+    approaching &&
+    (!same || same.status === 'SMOOTH' || (topRanked && topRanked.isApproaching))
+  );
 
-  const decision = synthesizeTrafficDecision(same, opp, isZh);
+  // If ONLY Bus API segments exist (no TD detectors at all)
+  if (!same && !opp && !approaching && topRanked && topRanked.source === 'BUS_API') {
+    const busTone = topRanked.tier === 'CONGESTED' ? 'jammed' : (topRanked.tier === 'MODERATE' ? 'slow' : 'smooth');
+    const busHeadline = topRanked.tier === 'CONGESTED'
+      ? (isZh ? `巴士車速緩慢 · ${topRanked.speedKmh} km/h` : `Bus Speed Bottleneck · ${topRanked.speedKmh} km/h`)
+      : (topRanked.tier === 'MODERATE'
+        ? (isZh ? `巴士車流偏慢 · ${topRanked.speedKmh} km/h` : `Moderate Bus Flow · ${topRanked.speedKmh} km/h`)
+        : (isZh ? `巴士車速暢順 · ~${topRanked.speedKmh} km/h` : `Bus Speed Smooth · ~${topRanked.speedKmh} km/h`));
+    const betweenLabel = topRanked.betweenStops ? _formatBetweenStopsLabel(topRanked.betweenStops, isZh) : '';
+    return {
+      ...res,
+      tone: busTone,
+      modeRec: topRanked.tier === 'CONGESTED' ? 'MTR_FASTER' : 'TAKE_BUS',
+      headline: busHeadline,
+      detail: [
+        isZh ? '🚌 巴士實時到站推算' : '🚌 Bus API inferred',
+        betweenLabel,
+        topRanked.etaMins ? (isZh ? `約 ${topRanked.etaMins} 分鐘後` : `~${topRanked.etaMins}m ahead`) : ''
+      ].filter(Boolean).join(' · '),
+      actionTip: isZh ? '此路段未設運輸署感應器，以巴士實時站間時間推算' : 'No TD sensor on this stretch — inferred from live bus stop-to-stop ETAs',
+      delayLabel: topRanked.tier === 'CONGESTED' ? '+6–10m' : (topRanked.tier === 'MODERATE' ? '+2–4m' : (isZh ? '無延誤' : 'No delay')),
+      densityLabel: isZh ? '巴士實時推算' : 'Bus API speed',
+      aheadKm: topRanked.distKm,
+      betweenLabel,
+      isApproaching: false,
+      focusDet: null,
+      oppDet: null
+    };
+  }
+
+  const primary = same || (approachingLeads ? approaching : opp);
+  const focusDet = approachingLeads
+    ? approaching.det
+    : ((same?.status === 'JAMMED' || same?.status === 'SLOW')
+      ? same.worstDet
+      : (same?.representativeDet || same?.worstDet || (opp?.status === 'JAMMED' ? opp.worstDet : (primary?.representativeDet || primary?.det || null))));
+
+  const syntheticApproachingSame = (!same && approaching)
+    ? {
+        status: approaching.status,
+        avgSpd: approaching.avgSpd,
+        minSpd: approaching.minSpd,
+        maxOcc: approaching.maxOcc,
+        estDelayMins: approaching.estDelayMins,
+        worstDet: approaching.det,
+        representativeDet: approaching.det
+      }
+    : same;
+
+  const decision = synthesizeTrafficDecision(syntheticApproachingSame, opp, isZh);
+  if (!decision) return null;
+
   const roadLabel = focusDet ? (isZh ? (focusDet.roadTc || focusDet.roadEn) : (focusDet.roadEn || focusDet.roadTc)) : '';
-  const aheadKm = Number(primary?.aheadKm || 0);
-  const betweenStops = primary?.betweenStops || null;
-  const showBetween = Boolean(betweenStops && (same?.status !== 'SMOOTH' || (betweenStops.hopKm || 0) >= 1.8));
+  const aheadKm = Number((topRanked && !topRanked.isApproaching ? topRanked.distKm : primary?.aheadKm) || 0);
+  const betweenStops = (topRanked && !topRanked.isApproaching ? topRanked.betweenStops : primary?.betweenStops) || null;
+  const showBetween = Boolean(betweenStops && ((same?.status !== 'SMOOTH') || (betweenStops.hopKm || 0) >= 1.8));
   const betweenLabel = showBetween ? _formatBetweenStopsLabel(betweenStops, isZh) : '';
   const aheadStr = (!betweenLabel && aheadKm >= 0.4)
     ? (isZh ? `前方約 ${aheadKm.toFixed(1)} km` : `~${aheadKm.toFixed(1)} km ahead`)
     : '';
 
-  const headline = isZh ? decision.verdictTc : decision.verdictEn;
+  let headline = isZh ? decision.verdictTc : decision.verdictEn;
+  if (approachingLeads && (!same || same.status === 'SMOOTH')) {
+    const rShort = isZh ? approaching.roadTc : approaching.roadEn;
+    headline = isZh
+      ? `到站前塞車 · ${rShort} (${approaching.minSpd} km/h)`
+      : `Jam before stop · ${rShort} (${approaching.minSpd} km/h)`;
+  }
+
   const detailParts = [];
-  if (same) {
+  if (approachingLeads) {
+    detailParts.push(`${approaching.minSpd} km/h`);
+    detailParts.push(isZh ? `站前 ${approaching.distKm.toFixed(1)} km` : `${approaching.distKm.toFixed(1)} km before stop`);
+  } else if (same) {
     const spdDisp = same.status === 'SMOOTH' ? `~${same.avgSpd}` : `${same.minSpd}`;
     detailParts.push(`${spdDisp} km/h`);
     if (same.status !== 'SMOOTH' && same.worstDet?.occ > 0) {
@@ -3600,14 +4317,20 @@ function getDirectionalRoadSummary(stops, startIdx, detectors, isZh = false, loo
   }
   if (roadLabel) detailParts.push(roadLabel);
   if (betweenLabel) detailParts.push(betweenLabel);
-  else if (aheadStr) detailParts.push(aheadStr);
+  else if (aheadStr && !approachingLeads) detailParts.push(aheadStr);
+  if (topRanked && topRanked.isFarAhead && (topRanked.tier === 'CONGESTED' || topRanked.tier === 'MODERATE')) {
+    detailParts.push(isZh ? topRanked.farAheadNoteTc : topRanked.farAheadNoteEn);
+  }
   if (same && same.status === 'SMOOTH' && opp && opp.status === 'JAMMED') {
     detailParts.push(isZh ? `僅對面線塞車 (${opp.minSpd} km/h)` : `Opp. bound jammed (${opp.minSpd} km/h)`);
+  }
+  if (todCtx && (todCtx.isPeak || todCtx.trend === 'BUILDING' || todCtx.isLateNight)) {
+    detailParts.push(isZh ? todCtx.labelTc : todCtx.labelEn);
   }
 
   return {
     ...res,
-    tone: decision.tone,
+    tone: approachingLeads ? (approaching.tier === 'CONGESTED' ? 'jammed' : 'slow') : decision.tone,
     modeRec: decision.modeRec,
     headline,
     detail: detailParts.join(' · '),
@@ -3616,10 +4339,154 @@ function getDirectionalRoadSummary(stops, startIdx, detectors, isZh = false, loo
     densityLabel: isZh ? decision.densityTc : decision.densityEn,
     aheadKm,
     betweenLabel,
-    isApproaching: false,
+    isApproaching: approachingLeads,
     focusDet,
     oppDet
   };
+}
+
+// ============================================================================
+// BUS API SPEED INFERENCE ENGINE (SEPARATE BUS SPEED LAYER & TD GAP-FILLER)
+// ============================================================================
+function getBusSpeedLayerColorHex(tier, speedKmh = null) {
+  const t = _normalizeBottleneckTier(tier, speedKmh);
+  if (t === 'CONGESTED') return '#e11d48';
+  if (t === 'MODERATE') return '#f59e0b';
+  return '#10b981';
+}
+
+function inferBusApiSegmentSpeeds(stops, etaByStopIdx, roadPolylinePoints = null, opts = {}) {
+  if (!Array.isArray(stops) || stops.length < 2 || !etaByStopIdx) return [];
+  const getArrForIdx = (idx) => {
+    if (etaByStopIdx instanceof Map) return etaByStopIdx.get(idx) || [];
+    if (Array.isArray(etaByStopIdx)) return etaByStopIdx[idx] || [];
+    return etaByStopIdx[idx] || etaByStopIdx[String(idx)] || [];
+  };
+
+  const stopPolyIdx = (Array.isArray(roadPolylinePoints) && roadPolylinePoints.length >= 2)
+    ? _mapStopsToRoadPolylineIndices(stops, roadPolylinePoints)
+    : new Map();
+  const tdCoveredPairs = opts.tdCoveredStopPairs instanceof Set ? opts.tdCoveredStopPairs : null;
+  const onlyUncovered = Boolean(opts.onlyUncoveredByTd);
+  const routeNo = String(opts.routeNo || '');
+  const company = String(opts.company || '');
+  const out = [];
+
+  for (let i = 0; i < stops.length - 1; i++) {
+    const a = stops[i], b = stops[i + 1];
+    const la1 = parseFloat(a?.latitude ?? a?.lat), lo1 = parseFloat(a?.longitude ?? a?.lon);
+    const la2 = parseFloat(b?.latitude ?? b?.lat), lo2 = parseFloat(b?.longitude ?? b?.lon);
+    if (!Number.isFinite(la1) || !Number.isFinite(lo1) || !Number.isFinite(la2) || !Number.isFinite(lo2)) continue;
+
+    const coveredByTd = Boolean(tdCoveredPairs && tdCoveredPairs.has(`${i + 1}_${i + 2}`));
+    if (onlyUncovered && coveredByTd) continue;
+
+    // Slice road geometry between stop i and i + 1 if road-snapped polyline is available
+    let segCoords = [[la1, lo1], [la2, lo2]];
+    let roadDistKm = _haversineKm(la1, lo1, la2, lo2) * 1.12;
+    const pA = stopPolyIdx.get(i), pB = stopPolyIdx.get(i + 1);
+    if (pA !== undefined && pB !== undefined && pB > pA) {
+      const sliced = roadPolylinePoints.slice(pA, pB + 1);
+      if (sliced.length >= 2) {
+        segCoords = sliced;
+        let dSum = 0;
+        for (let k = 0; k < sliced.length - 1; k++) {
+          dSum += _haversineKm(sliced[k][0], sliced[k][1], sliced[k + 1][0], sliced[k + 1][1]);
+        }
+        if (dSum >= 0.05) roadDistKm = dSum;
+      }
+    }
+    if (roadDistKm < 0.08 || roadDistKm > 28) continue;
+
+    const arrA = (getArrForIdx(i) || [])
+      .map(x => ({
+        ms: Number(x?.rawTargetMs ?? x?.targetMs ?? (x?.eta ? new Date(x.eta).getTime() : NaN)),
+        seq: Number(x?.etaSeq ?? x?.eta_seq ?? 0)
+      }))
+      .filter(x => Number.isFinite(x.ms))
+      .sort((x, y) => x.ms - y.ms);
+    const arrB = (getArrForIdx(i + 1) || [])
+      .map(x => ({
+        ms: Number(x?.rawTargetMs ?? x?.targetMs ?? (x?.eta ? new Date(x.eta).getTime() : NaN)),
+        seq: Number(x?.etaSeq ?? x?.eta_seq ?? 0)
+      }))
+      .filter(x => Number.isFinite(x.ms))
+      .sort((x, y) => x.ms - y.ms);
+
+    if (!arrA.length || !arrB.length) continue;
+
+    // Physical travel time bounds (3 km/h crawl to 95 km/h highway + dwell)
+    const minSec = Math.max(15, (roadDistKm / 95) * 3600);
+    const maxSec = Math.min(2400, (roadDistKm / 3) * 3600 + 180);
+    const validDeltas = [];
+    const usedB = new Set();
+
+    for (let ai = 0; ai < arrA.length; ai++) {
+      const ea = arrA[ai];
+      let bestIdx = -1;
+      let bestDelta = Infinity;
+      for (let bi = 0; bi < arrB.length; bi++) {
+        if (usedB.has(bi)) continue;
+        const eb = arrB[bi];
+        const dSec = (eb.ms - ea.ms) / 1000;
+        if (dSec < minSec || dSec > maxSec) continue;
+        // Prefer matching eta_seq when present, otherwise closest physically valid forward progression
+        const seqBonus = (ea.seq > 0 && eb.seq === ea.seq) ? -20 : 0;
+        if (dSec + seqBonus < bestDelta) {
+          bestDelta = dSec + seqBonus;
+          bestIdx = bi;
+        }
+      }
+      if (bestIdx >= 0) {
+        usedB.add(bestIdx);
+        validDeltas.push((arrB[bestIdx].ms - ea.ms) / 1000);
+      }
+    }
+
+    if (!validDeltas.length) continue;
+    validDeltas.sort((x, y) => x - y);
+    const deltaSec = validDeltas[Math.floor(validDeltas.length / 2)];
+    const dwellSec = Math.min(deltaSec * 0.25, roadDistKm < 0.6 ? 20 : 12);
+    const movingSec = Math.max(12, deltaSec - dwellSec);
+    const speedKmh = Math.max(3, Math.min(95, Number(((roadDistKm / (movingSec / 3600))).toFixed(1))));
+
+    const distM = roadDistKm * 1000;
+    const highwayRatio = Math.min(1, Math.max(0, (distM - 500) / 1800));
+    const expectedKmh = Math.round(18 + highwayRatio * 42);
+    const ratio = speedKmh / Math.max(12, expectedKmh);
+
+    let tier = 'SMOOTH';
+    if (speedKmh < 14 || (expectedKmh >= 35 && speedKmh < 22) || ratio < 0.45) {
+      tier = 'CONGESTED';
+    } else if (speedKmh < 26 || ratio < 0.72) {
+      tier = 'MODERATE';
+    }
+
+    out.push({
+      fromIdx: i,
+      toIdx: i + 1,
+      fromSeq: i + 1,
+      toSeq: i + 2,
+      fromNameEn: _stripStopPlatformSuffix(a?.stopName_e || a?.name_tc || ''),
+      fromNameTc: _stripStopPlatformSuffix(a?.name_tc || a?.stopName_e || ''),
+      toNameEn: _stripStopPlatformSuffix(b?.stopName_e || b?.name_tc || ''),
+      toNameTc: _stripStopPlatformSuffix(b?.name_tc || b?.stopName_e || ''),
+      routeNo,
+      company,
+      roadDistKm: Number(roadDistKm.toFixed(2)),
+      deltaSec: Math.round(deltaSec),
+      speedKmh,
+      expectedKmh,
+      tier,
+      isBottleneck: tier === 'CONGESTED' || tier === 'MODERATE',
+      color: getBusSpeedLayerColorHex(tier, speedKmh),
+      source: 'BUS_API',
+      coveredByTd,
+      coords: segCoords
+    });
+  }
+
+  return out;
 }
 
 // ============================================================================
@@ -3890,8 +4757,13 @@ if (typeof window !== 'undefined') {
   window.parseHkGpsCoordinates = parseHkGpsCoordinates;
   window.findOppositeDirectionGroup = findOppositeDirectionGroup;
   window.synthesizeTrafficDecision = synthesizeTrafficDecision;
+  window.getHongKongTimeOfDayContext = getHongKongTimeOfDayContext;
+  window.computeTimeToReachDecayWeight = computeTimeToReachDecayWeight;
+  window.computeBottleneckSeverityScore = computeBottleneckSeverityScore;
   window.inferDirectionalRoadTrafficForStops = inferDirectionalRoadTrafficForStops;
   window.getDirectionalRoadSummary = getDirectionalRoadSummary;
+  window.getBusSpeedLayerColorHex = getBusSpeedLayerColorHex;
+  window.inferBusApiSegmentSpeeds = inferBusApiSegmentSpeeds;
   window.sliceForwardPolylineFromStop = sliceForwardPolylineFromStop;
   window.extractCardinalDirectionMeta = extractCardinalDirectionMeta;
   window.findNearestMatchingDetectorForCamera = findNearestMatchingDetectorForCamera;
@@ -3954,8 +4826,13 @@ if (typeof module !== 'undefined' && module.exports) {
     parseHkGpsCoordinates,
     findOppositeDirectionGroup,
     synthesizeTrafficDecision,
+    getHongKongTimeOfDayContext,
+    computeTimeToReachDecayWeight,
+    computeBottleneckSeverityScore,
     inferDirectionalRoadTrafficForStops,
     getDirectionalRoadSummary,
+    getBusSpeedLayerColorHex,
+    inferBusApiSegmentSpeeds,
     sliceForwardPolylineFromStop,
     extractCardinalDirectionMeta,
     findNearestMatchingDetectorForCamera,

@@ -1376,7 +1376,7 @@ function buildWorkerSpeedMapGeoJson(detectorMeta, combinedLive) {
     });
   }
 
-  // Group by road core name to stitch adjacent same-direction strategic detectors into clean arterial links (>= 350 m)
+  // Group by road core name to stitch adjacent same-direction strategic detectors into clean parallel links (60m - 320m)
   const byRoad = new Map();
   for (let i = 0; i < allEntries.length; i++) {
     const e = allEntries[i];
@@ -1394,12 +1394,12 @@ function buildWorkerSpeedMapGeoJson(detectorMeta, combinedLive) {
       for (let j = 0; j < list.length; j++) {
         if (i === j) continue;
         const b = list[j];
-        if (angDiffDegWorker(a.rot, b.rot) > 32) continue;
+        if (angDiffDegWorker(a.rot, b.rot) > 28) continue;
         const dKm = haversineKmWorker(a.lat, a.lon, b.lat, b.lon);
-        // Filter out short/curved interchange ramp stubs (< 350 m straight-line distance)
-        if (dKm < 0.35 || dKm > 2.2) continue;
+        // Keep short/medium 2-point links (60 m - 320 m); drop stubs (< 60 m) and hillside-cutting chords (> 320 m)
+        if (dKm < 0.06 || dKm > 0.32) continue;
         const linkBrg = bearingDegWorker(a.lat, a.lon, b.lat, b.lon);
-        const maxLinkAng = dKm > 1.0 ? 16 : 24;
+        const maxLinkAng = 22;
         if (angDiffDegWorker(a.rot, linkBrg) > maxLinkAng) continue;
         if (angDiffDegWorker(b.rot, linkBrg) > maxLinkAng) continue;
         if (dKm < bestDistKm) {

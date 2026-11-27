@@ -72,7 +72,11 @@ jobs:
             } catch (e) {
               console.warn(`hardcode.js require fallback triggered: ${e.message}`);
             }
-            const src = fs.readFileSync(hardcodePath, 'utf8');
+            const baseDir = path.dirname(hardcodePath);
+            const orderedParts = ['transit-data.js', 'fare-load-engine.js', 'hardcode.js']
+              .map(f => path.join(baseDir, f))
+              .filter(p => fs.existsSync(p));
+            const src = orderedParts.map(p => fs.readFileSync(p, 'utf8')).join('\n');
             const sandboxMod = { exports: {} };
             const sandboxWin = {};
             const sandboxCtx = {

@@ -1,5 +1,5 @@
 /* Transit HK (通) Service Worker — Silent Auto-Update + SKIP_WAITING Lifecycle */
-const SW_BUILD_VERSION = '2026-11-27 18:10 HKT';
+const SW_BUILD_VERSION = '2026-11-27 20:00 HKT';
 const CACHE_PREFIX = 'transit-hk-shell-';
 const CACHE_NAME = `${CACHE_PREFIX}${SW_BUILD_VERSION.replace(/[^0-9A-Za-z_-]+/g, '-')}`;
 
@@ -9,6 +9,15 @@ const CORE_SHELL_URLS = [
   'icon.png',
   'icon.svg',
   'app.css',
+  'transit-data.js',
+  'fare-load-engine.js',
+  'hardcode.js',
+  'busspeed.js',
+  'map-traffic-overlay.js',
+  'map.js',
+  'commute-hubs.js',
+  'raptor-cost-engine.js',
+  'planner.js',
   'eta-engine.js',
   'onboarding-pwa.js',
   'app-ui.js',

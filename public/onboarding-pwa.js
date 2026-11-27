@@ -137,11 +137,7 @@ function syncSettingsModalLabels() {
   if (forceBtn && !forceBtn.disabled) {
     forceBtn.innerText = isZh ? '↻ 強制更新程式' : '↻ Force Update App';
   }
-  setV('pwaUpdateToastText', isZh ? '有新版本可用 — 點擊更新' : 'New version available — Tap to update');
-  const dismissBtn = document.getElementById('pwaUpdateDismissBtn');
-  if (dismissBtn) {
-    dismissBtn.setAttribute('aria-label', isZh ? '關閉更新提示' : 'Dismiss update notification');
-  }
+  setV('pwaUpdateToastText', isZh ? '正在更新程式…' : 'Updating app…');
 }
 
 function getAppBuildVersion() {
@@ -228,27 +224,46 @@ let _pwaWaitingWorker = null;
 let _pwaUpdateReloadRequested = false;
 let _pwaUpdateReloaded = false;
 let _pwaToastShownInSession = false;
+let _pwaDeferredReloadBound = false;
 
-window.showPwaUpdateToast = function showPwaUpdateToast(worker, forceShow = false) {
-  if (worker) _pwaWaitingWorker = worker;
-  const workerSig = String((worker && worker.scriptURL) || (_pwaWaitingWorker && _pwaWaitingWorker.scriptURL) || 'waiting-sw');
-  if (!forceShow) {
-    const shownSig = _readPwaSessionFlag(_SW_TOAST_SHOWN_KEY);
-    if (_pwaToastShownInSession || shownSig === workerSig) return false;
-  }
-  const toast = document.getElementById?.('pwaUpdateToast');
-  if (!toast) return false;
-  _pwaToastShownInSession = true;
-  _writePwaSessionFlag(_SW_TOAST_SHOWN_KEY, workerSig);
-  const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
-  const txtEl = document.getElementById?.('pwaUpdateToastText');
-  const applyBtn = document.getElementById?.('pwaUpdateApplyBtn');
-  if (txtEl) txtEl.innerText = isZh ? '有新版本可用 — 點擊更新' : 'New version available — Tap to update';
-  if (applyBtn) applyBtn.disabled = false;
-  toast.setAttribute?.('aria-hidden', 'false');
-  toast.classList?.add('show');
+function _isSafeToAutoReloadPwa() {
+  try {
+    const ae = typeof document !== 'undefined' ? document.activeElement : null;
+    if (ae && /^(INPUT|TEXTAREA|SELECT)$/i.test(String(ae.tagName || ''))) return false;
+  } catch (e) {}
   return true;
-};
+}
+
+function _performSilentPwaReloadOnce() {
+  if (_pwaUpdateReloaded) return;
+  if (_isSafeToAutoReloadPwa()) {
+    _removePwaSessionFlag(_SW_USER_RELOAD_KEY);
+    _pwaUpdateReloaded = true;
+    window.location.reload();
+    return;
+  }
+  if (_pwaDeferredReloadBound) return;
+  _pwaDeferredReloadBound = true;
+  const finish = () => {
+    if (_pwaUpdateReloaded) return;
+    _removePwaSessionFlag(_SW_USER_RELOAD_KEY);
+    _pwaUpdateReloaded = true;
+    window.location.reload();
+  };
+  try {
+    const ae = typeof document !== 'undefined' ? document.activeElement : null;
+    if (ae && typeof ae.addEventListener === 'function') {
+      ae.addEventListener('blur', finish, { once: true });
+    }
+    if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') finish();
+      }, { once: true });
+    }
+  } catch (e) {
+    finish();
+  }
+}
 
 window.dismissPwaUpdateToast = function dismissPwaUpdateToast() {
   const toast = document.getElementById?.('pwaUpdateToast');
@@ -257,22 +272,42 @@ window.dismissPwaUpdateToast = function dismissPwaUpdateToast() {
   toast.setAttribute?.('aria-hidden', 'true');
 };
 
-window.applyPendingPwaUpdate = function applyPendingPwaUpdate() {
-  if (typeof triggerHaptic === 'function') triggerHaptic(12);
-  const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
-  const applyBtn = document.getElementById?.('pwaUpdateApplyBtn');
-  const txtEl = document.getElementById?.('pwaUpdateToastText');
-  if (applyBtn) applyBtn.disabled = true;
-  if (txtEl) txtEl.innerText = isZh ? '正在套用更新…' : 'Updating app…';
+// Silent self-apply: posts SKIP_WAITING automatically without showing a blocking reload/dismiss button prompt.
+window.applyPendingPwaUpdate = function applyPendingPwaUpdate(workerOverride = null, opts = {}) {
+  const silent = Boolean(opts && opts.silent);
+  const targetWorker = workerOverride || _pwaWaitingWorker;
+  if (targetWorker) _pwaWaitingWorker = targetWorker;
+  const workerSig = String((targetWorker && targetWorker.scriptURL) || 'waiting-sw');
+  if (silent) {
+    const alreadySig = _readPwaSessionFlag(_SW_TOAST_SHOWN_KEY);
+    if (_pwaToastShownInSession && alreadySig === workerSig) return false;
+    _pwaToastShownInSession = true;
+    _writePwaSessionFlag(_SW_TOAST_SHOWN_KEY, workerSig);
+  }
+  window.dismissPwaUpdateToast();
+  if (!silent && typeof triggerHaptic === 'function') triggerHaptic(12);
   _pwaUpdateReloadRequested = true;
   _writePwaSessionFlag(_SW_USER_RELOAD_KEY, '1');
   if (_pwaWaitingWorker && typeof _pwaWaitingWorker.postMessage === 'function') {
     _pwaWaitingWorker.postMessage({ type: 'SKIP_WAITING' });
     return true;
   }
-  _removePwaSessionFlag(_SW_USER_RELOAD_KEY);
-  window.location.reload();
+  if (!silent) {
+    _removePwaSessionFlag(_SW_USER_RELOAD_KEY);
+    window.location.reload();
+  }
   return false;
+};
+
+// Retained for backward compatibility: immediately self-applies silently with zero manual button clicks.
+window.showPwaUpdateToast = function showPwaUpdateToast(worker, forceShow = false) {
+  if (worker) _pwaWaitingWorker = worker;
+  const workerSig = String((worker && worker.scriptURL) || (_pwaWaitingWorker && _pwaWaitingWorker.scriptURL) || 'waiting-sw');
+  if (!forceShow) {
+    const shownSig = _readPwaSessionFlag(_SW_TOAST_SHOWN_KEY);
+    if (_pwaToastShownInSession || shownSig === workerSig) return false;
+  }
+  return window.applyPendingPwaUpdate(_pwaWaitingWorker, { silent: !forceShow });
 };
 
 window.initPwaUpdateLifecycle = function initPwaUpdateLifecycle(swContainerOverride) {
@@ -283,17 +318,18 @@ window.initPwaUpdateLifecycle = function initPwaUpdateLifecycle(swContainerOverr
   _pwaUpdateReloadRequested = false;
   _pwaWaitingWorker = null;
   _pwaToastShownInSession = false;
+  _pwaDeferredReloadBound = false;
+  const hadControllerOnInit = Boolean(sw.controller);
 
   if (!sw._transitControllerChangeBound && typeof sw.addEventListener === 'function') {
     sw._transitControllerChangeBound = true;
     sw.addEventListener('controllerchange', () => {
       if (_pwaUpdateReloaded) return;
-      // Strict one-time sessionStorage gate prevents iOS PWA background controller swaps from resetting users to Home
-      const hasUserReloadFlag = _readPwaSessionFlag(_SW_USER_RELOAD_KEY) === '1';
-      if (!hasUserReloadFlag) return;
-      _removePwaSessionFlag(_SW_USER_RELOAD_KEY);
-      _pwaUpdateReloaded = true;
-      window.location.reload();
+      if (!hadControllerOnInit) return;
+      // Strict one-time sessionStorage gate prevents unprompted iOS background controller swaps from reload loops
+      const hasPendingAutoOrUserFlag = _pwaUpdateReloadRequested || _readPwaSessionFlag(_SW_USER_RELOAD_KEY) === '1';
+      if (!hasPendingAutoOrUserFlag) return;
+      _performSilentPwaReloadOnce();
     });
   }
 
@@ -302,7 +338,7 @@ window.initPwaUpdateLifecycle = function initPwaUpdateLifecycle(swContainerOverr
     worker._transitStateBound = true;
     const onStateChange = () => {
       if (worker.state === 'installed' && sw.controller) {
-        window.showPwaUpdateToast(worker, false);
+        window.applyPendingPwaUpdate(worker, { silent: true });
       }
     };
     if (typeof worker.addEventListener === 'function') {
@@ -316,7 +352,7 @@ window.initPwaUpdateLifecycle = function initPwaUpdateLifecycle(swContainerOverr
     .then((reg) => {
       if (!reg) return null;
       if (reg.waiting && sw.controller) {
-        window.showPwaUpdateToast(reg.waiting, false);
+        window.applyPendingPwaUpdate(reg.waiting, { silent: true });
       }
       if (reg.installing) {
         watchInstallingWorker(reg.installing);

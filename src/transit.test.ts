@@ -12,6 +12,24 @@ function readAppBundle(): string {
     .join('\n');
 }
 
+function readHardcodeBundle(): string {
+  return ['public/transit-data.js', 'public/fare-load-engine.js', 'public/hardcode.js']
+    .map((f) => fs.readFileSync(f, 'utf8'))
+    .join('\n');
+}
+
+function readMapBundle(): string {
+  return ['public/map-traffic-overlay.js', 'public/map.js']
+    .map((f) => fs.readFileSync(f, 'utf8'))
+    .join('\n');
+}
+
+function readPlannerBundle(): string {
+  return ['public/commute-hubs.js', 'public/raptor-cost-engine.js', 'public/planner.js']
+    .map((f) => fs.readFileSync(f, 'utf8'))
+    .join('\n');
+}
+
 function loadWorkerSandbox(extraCtx: Record<string, any> = {}) {
   const rawSrc = fs.readFileSync('functions/api/worker.js', 'utf8');
   const sandboxSrc = rawSrc.replace(/^export\s+/gm, '');
@@ -37,8 +55,8 @@ function loadWorkerSandbox(extraCtx: Record<string, any> = {}) {
 }
 
 function loadHardcodeAndPlannerSandbox(overrides: Record<string, any> = {}) {
-  const hardcodeSrc = fs.readFileSync('public/hardcode.js', 'utf8');
-  const plannerSrc = fs.readFileSync('public/planner.js', 'utf8');
+  const hardcodeSrc = readHardcodeBundle();
+  const plannerSrc = readPlannerBundle();
 
   const win: Record<string, any> = {
     __HKO_WEATHER__: { heavyRain: false, rainAdvisory: false, typhoon: false },
@@ -165,9 +183,14 @@ function loadHardcodeAndPlannerSandbox(overrides: Record<string, any> = {}) {
 test('Detour BS is completely removed from all app source files', () => {
   const files = [
     'index.html',
-    'public/planner.js',
-    'public/map.js',
+    'public/transit-data.js',
+    'public/fare-load-engine.js',
     'public/hardcode.js',
+    'public/map-traffic-overlay.js',
+    'public/map.js',
+    'public/commute-hubs.js',
+    'public/raptor-cost-engine.js',
+    'public/planner.js',
     'functions/api/worker.js',
   ];
   const forbidden = [
@@ -835,7 +858,7 @@ test('planner.js: autocomplete pins Bus & Minibus Stops above async ALS landmark
 });
 
 test('map.js & planner.js: Planner map disables tap-to-pin popup (preserved in Map Browser) and clears stale route layers while editing or clearing inputs', () => {
-  const mapSrc = fs.readFileSync('public/map.js', 'utf8');
+  const mapSrc = readMapBundle();
   assert.equal(
     mapSrc.includes("window.xferMapInstance.on('click', handleXferMapSpotClick)"),
     false,
@@ -1166,7 +1189,7 @@ test('index.html: Planner autocomplete dropdown is 100% opaque in dark and light
 
 test('Logging functions (BlackboxLogger, Log modal, Log buttons) are completely removed while SignalHealthMonitor remains intact', () => {
   const html = readAppBundle();
-  const planner = fs.readFileSync('public/planner.js', 'utf8');
+  const planner = readPlannerBundle();
   const removedTokens = [
     'BlackboxLogger',
     'exportAndEmailDiagnosticLog',
@@ -1647,7 +1670,7 @@ test('planner.js, map.js, index.html & actions.yml: Share Trip summary, active l
   assert.ok(shareTxt.includes('Exit D') && shareTxt.includes('Exit F'), 'Share text must include MTR Exit letters');
 
   // 2. Map active leg highlight dims non-selected polylines and toggles cleanly
-  const mapSrc = fs.readFileSync('public/map.js', 'utf8');
+  const mapSrc = readMapBundle();
   assert.ok(mapSrc.includes('function highlightPlannerMapLeg'), 'map.js must export highlightPlannerMapLeg');
   assert.ok(mapSrc.includes('xferMapLegPolylines.push'), 'map.js must track leg polylines for click-to-highlight sync');
 
@@ -2093,7 +2116,7 @@ test('planner.js: keeps 3M (19m live) above 1 (59m sched) without false merge an
   assert.ok(liveTagZh.includes('實時') && liveTagZh.includes('white-space:nowrap'), `Expected non-wrapping 實時 tag, got: ${liveTagZh}`);
   assert.ok(sb.formatLegSignalTagHtml('SCHED').includes('預計班次'));
 
-  const plannerSrc = fs.readFileSync('public/planner.js', 'utf8');
+  const plannerSrc = readPlannerBundle();
   assert.ok(!plannerSrc.includes('Live ETA'), 'public/planner.js must not contain Live ETA jargon');
   assert.ok(plannerSrc.includes("'Stops & ETA ›'") && plannerSrc.includes("'站點班次 ›'"), 'Planner leg button must say Stops & ETA ›');
   assert.ok(!plannerSrc.includes("'Live ›'") && !plannerSrc.includes("'實時 ›'"), 'Ambiguous Live › button label must be removed');
@@ -2758,7 +2781,7 @@ test('hardcode.js: detects curved Tuen Mun highway jams between two far-apart E3
 });
 
 test('map.js: slim clickable traffic arrows (20-22px inside 32x32 hit area), zoom-15 smooth hiding, left-hand lane separation, and N/S/E/W bound badges', () => {
-  const mapCode = fs.readFileSync('public/map.js', 'utf8');
+  const mapCode = readMapBundle();
   const addedPolylines: any[] = [];
   const addedMarkers: any[] = [];
   const fakeLayerGroup = {
@@ -3064,7 +3087,7 @@ test('index.html: Saved Bookmarks cleanly truncates long destinations with .rout
 });
 
 test('map.js: route-scoped traffic filtering hides off-route & opposite-smooth detectors, enforces >=52px arrow spacing, and keeps stop markers above traffic arrows', () => {
-  const mapCode = fs.readFileSync('public/map.js', 'utf8');
+  const mapCode = readMapBundle();
   const addedPolylines: any[] = [];
   const addedMarkers: any[] = [];
   const fakeLayerGroup = {
@@ -3249,7 +3272,7 @@ test('Decision-first Transit: zero off-route clutter (<=2 bottlenecks on route m
   assert.ok(sumB.headline.includes('Switch to MTR · Jammed on Yuen Long Highway (+15m)'), `Unexpected YLH severe jam headline: ${sumB.headline}`);
 
   // --- AC 1: Zoomed-out E36 map hides Sha Tin / Ma On Shan / Tsuen Wan off-route badges and caps route bottlenecks to <= 2 ---
-  const mapCode = fs.readFileSync('public/map.js', 'utf8');
+  const mapCode = readMapBundle();
   const addedMarkers: any[] = [];
   const fakeLayerGroup = { addTo() { return this; }, clearLayers() { addedMarkers.length = 0; }, hasLayer() { return false; } };
   const fakeDetailMap = { getBounds: () => ({ isValid: () => true, pad: () => ({ contains: () => true }) }), getZoom: () => 11 };
@@ -3315,7 +3338,7 @@ test('Decision-first Transit: zero off-route clutter (<=2 bottlenecks on route m
 
 test('index.html & map.js: desktop Pointer Events drag resize on #mapSheetHandle (zero text selection) and direct Verdict & Cam click with stripped 250"/250° telemetry artifacts', () => {
   const html = readAppBundle();
-  const mapCode = fs.readFileSync('public/map.js', 'utf8');
+  const mapCode = readMapBundle();
 
   // 1. Verify CSS grab/grabbing, touch-action: none, and user-select suppression in index.html
   assert.ok(html.includes('.map-sheet-handle {') && html.includes('cursor: grab;') && html.includes('touch-action: none;') && html.includes('user-select: none;'), 'Sheet handle must enforce grab cursor, touch-action: none, and user-select: none');
@@ -3587,12 +3610,13 @@ test('PWA update mechanism: public/sw.js SKIP_WAITING lifecycle, Settings Force 
   assert.equal(reloadCount, 0, 'First-ever SW controllerclaim must NOT reload page');
   assert.equal(elements.pwaUpdateToast.classes.has('show'), false, 'First-ever SW install must NOT show update toast');
 
-  // 5. Test SW lifecycle: Active controller + updatefound -> installed waiting -> toast -> tap -> SKIP_WAITING -> controllerchange reload once
+  // 5. Test SW lifecycle: Active controller + updatefound -> installed waiting -> silent auto-apply SKIP_WAITING -> controllerchange reload once (no manual button prompt!)
   const swListeners: Record<string, Function> = {};
   const regListeners: Record<string, Function> = {};
   const workerListeners: Record<string, Function> = {};
   const postedMsgs: any[] = [];
   const newWorker: any = {
+    scriptURL: 'https://example.com/sw.js?v=silent1',
     state: 'installing',
     postMessage: (m: any) => postedMsgs.push(m),
     addEventListener: (ev: string, fn: Function) => { workerListeners[ev] = fn; },
@@ -3612,32 +3636,27 @@ test('PWA update mechanism: public/sw.js SKIP_WAITING lifecycle, Settings Force 
     },
   };
 
+  const rawIndexHtml = fs.readFileSync('index.html', 'utf8');
+  assert.ok(!rawIndexHtml.includes('pwaUpdateApplyBtn') && !rawIndexHtml.includes('pwaUpdateDismissBtn'),
+    'index.html must eliminate manual reload/dismiss buttons on PWA update toast');
+
   await ctx.window.initPwaUpdateLifecycle(activeSw);
   activeReg.installing = newWorker;
   regListeners.updatefound();
   assert.equal(elements.pwaUpdateToast.classes.has('show'), false, 'Toast must stay hidden while worker is still installing');
+  assert.equal(postedMsgs.length, 0, 'Must not post SKIP_WAITING while still installing');
 
-  // Transition worker to installed (entering waiting state while old controller is active)
+  // Transition worker to installed (entering waiting state while old controller is active):
+  // silently posts SKIP_WAITING automatically with zero required button presses!
   newWorker.state = 'installed';
   workerListeners.statechange();
-  assert.equal(elements.pwaUpdateToast.classes.has('show'), true, 'Update toast must appear when new SW enters waiting state');
-  assert.equal(elements.pwaUpdateToastText.innerText, 'New version available — Tap to update');
-
-  // Dismissing hides toast cleanly
-  ctx.window.dismissPwaUpdateToast();
-  assert.equal(elements.pwaUpdateToast.classes.has('show'), false, 'Dismiss button must hide update toast');
-  assert.equal(elements.pwaUpdateToast.attrs['aria-hidden'], 'true');
-
-  // Re-show and tap Update: posts SKIP_WAITING and reloads exactly once on controllerchange
-  ctx.window.showPwaUpdateToast(newWorker);
-  ctx.window.applyPendingPwaUpdate();
-  assert.equal(postedMsgs.length, 1, 'Tapping update toast must post one message to waiting worker');
-  assert.equal(postedMsgs[0]?.type, 'SKIP_WAITING', 'Tapping update toast must post SKIP_WAITING to waiting worker');
+  assert.equal(postedMsgs.length, 1, 'New installed worker must silently auto-post SKIP_WAITING with zero manual clicks');
+  assert.equal(postedMsgs[0]?.type, 'SKIP_WAITING', 'Silent update must post SKIP_WAITING to waiting worker');
   assert.equal(reloadCount, 0, 'Must wait for controllerchange before reloading');
 
   swListeners.controllerchange();
   swListeners.controllerchange(); // second fire must be ignored
-  assert.equal(reloadCount, 1, 'controllerchange must reload cleanly exactly once');
+  assert.equal(reloadCount, 1, 'controllerchange must reload silently exactly once');
 });
 
 test('SmartReturnManager & index.html: tight Quick Return confidence threshold (Home anchor or 3+ time-window trips), distance & 20m-vs-5m guardrails, and Settings toggle clean-plate OFF default', () => {
@@ -3826,7 +3845,7 @@ test('Architecture Update 1: Cross-Tunnel & 5km Lookahead Cap blocks Lantau -> T
 });
 
 test('Architecture Update 1B: Floating Back to Stop pill appears when panning >300m away from active stop and pans back cleanly', () => {
-  const mapCode = fs.readFileSync('public/map.js', 'utf8');
+  const mapCode = readMapBundle();
   const html = readAppBundle();
   assert.ok(html.includes('id="detailBackToStopPill"') && html.includes('returnToActiveDetailStop()'), 'index.html must include top-center #detailBackToStopPill button');
 
@@ -3942,7 +3961,7 @@ test('Architecture Update 2: Route-Level Speed Digital Twin GeoJSON colors (#16a
   assert.equal(oppUsed, false, 'Opposite-direction detector must NOT color the active route polyline');
 
   // Verify map.js renders thin dark casing (#1e293b weight 7.5) underneath live speed-colored GeoJSON (weight 5, round caps)
-  const mapCode = fs.readFileSync('public/map.js', 'utf8');
+  const mapCode = readMapBundle();
   const polyCalls: any[] = [];
   const geoJsonCalls: any[] = [];
   const mCtx: any = {
@@ -3981,7 +4000,7 @@ test('Architecture Update 2: Route-Level Speed Digital Twin GeoJSON colors (#16a
 });
 
 test('Architecture Update 3: Global Map View Traffic Toggle at bottomright, <350m ramp stub cleanup, high-zoom lane centering, and stop restore when OFF', () => {
-  const mapCode = fs.readFileSync('public/map.js', 'utf8');
+  const mapCode = readMapBundle();
   const addedControls: any[] = [];
   const addedToBrowseMap = new Set<any>();
   const clusterMarkers: any[] = [];
@@ -4473,31 +4492,29 @@ test('Commuter Update 1: iOS PWA controllerchange strictly requires sw-user-relo
   };
 
   await ctx.window.initPwaUpdateLifecycle(activeSw);
-  assert.equal(toastShowCalls, 1, 'Toast should show once when waiting worker is present');
-
-  // Unprompted iOS controllerchange WITHOUT sw-user-reload flag must NOT reload!
-  swListeners.controllerchange();
-  assert.equal(reloadCount, 0, 'Unprompted controllerchange without sw-user-reload=1 must NEVER trigger reload');
-
-  // Duplicate update notification in same session must be suppressed
-  ctx.window.dismissPwaUpdateToast();
-  const secondShow = ctx.window.showPwaUpdateToast(waitingWorker);
-  assert.equal(secondShow, false, 'Duplicate update toast in same session must be suppressed');
-  assert.equal(toastShowCalls, 1, 'Toast must not flash a second time in the same session');
-
-  // Explicit user tap sets sw-user-reload=1, posts SKIP_WAITING, and controllerchange deletes flag + reloads once
-  ctx.window.applyPendingPwaUpdate();
-  assert.equal(mockSessionStorage.getItem('sw-user-reload'), '1', 'Tapping update must set sw-user-reload=1');
+  assert.equal(toastShowCalls, 0, 'Silent PWA auto-update must not show a manual button-prompt toast');
+  assert.equal(postedMsgs.length, 1, 'Waiting worker must silently receive SKIP_WAITING automatically on init');
   assert.equal(postedMsgs[0]?.type, 'SKIP_WAITING');
+  assert.equal(mockSessionStorage.getItem('sw-user-reload'), '1', 'Silent auto-apply must arm sw-user-reload=1 before controllerchange');
 
+  // Duplicate update trigger for the same worker in the same session must be suppressed
+  const secondShow = ctx.window.showPwaUpdateToast(waitingWorker);
+  assert.equal(secondShow, false, 'Duplicate update application in same session must be suppressed');
+  assert.equal(postedMsgs.length, 1, 'SKIP_WAITING must not be posted twice for the same worker');
+
+  // controllerchange with sw-user-reload=1 deletes flag and reloads cleanly once
   swListeners.controllerchange();
   assert.equal(reloadCount, 1, 'controllerchange with sw-user-reload=1 must reload once');
   assert.equal(mockSessionStorage.getItem('sw-user-reload'), null, 'sw-user-reload must be deleted immediately before reload');
+
+  // Unprompted iOS controllerchange WITHOUT sw-user-reload flag must NEVER trigger reload
+  swListeners.controllerchange();
+  assert.equal(reloadCount, 1, 'Unprompted controllerchange without sw-user-reload=1 must NEVER trigger reload');
 });
 
 test('Commuter Updates 2 & 3: Directional camera bearingDeg & FOV cones on Global/Route Maps, clickable 350m corridor cameras, Traffic & Cams toggle, and dashed slate-blue unmonitored roads', () => {
   const sb = loadHardcodeAndPlannerSandbox();
-  const mapSrc = fs.readFileSync('public/map.js', 'utf8');
+  const mapSrc = readMapBundle();
   const html = readAppBundle();
   const workerSrc = fs.readFileSync('functions/api/worker.js', 'utf8');
 
@@ -4510,7 +4527,7 @@ test('Commuter Updates 2 & 3: Directional camera bearingDeg & FOV cones on Globa
   const workerExports = workerSrc.split('\n').filter((l) => /^\s*export\b/.test(l));
   assert.equal(workerExports.length, 1, 'functions/api/worker.js must maintain strictly one export');
 
-  // 3. Load map.js helpers in sandbox to test resolveCameraBearingDeg, buildDirectionalCameraDivIcon, dashed unmonitored GeoJSON, and 350m route cameras
+  // 3. Load map.js helpers in sandbox to test resolveCameraBearingDeg, buildDirectionalCameraDivIcon, neutral unmonitored GeoJSON, and 350m route cameras
   const markersAdded: any[] = [];
   const geoJsonStyles: any[] = [];
   const modalOpenedCams: any[] = [];
@@ -4579,7 +4596,7 @@ test('Commuter Updates 2 & 3: Directional camera bearingDeg & FOV cones on Globa
   assert.ok(iconObj.html.includes(`transform:rotate(${brgTC002F}deg)`), 'Camera marker SVG cone/arrow must rotate to bearingDeg');
   assert.ok(iconObj.html.includes('cam-fov-svg') && iconObj.html.includes('A36 36') && iconObj.html.includes('rgba(37, 99, 235, 0.28)'), 'Camera marker must include 36px 45° radar FOV cone SVG path');
 
-  // 5. Verify solid vivid route styling (routeAccent or #2563eb, dashArray: null, weight: 4, opacity: 0.95) on unmonitored segments
+  // 5. Verify neutral Slate/Blue (#3b82f6, NEVER route-brand Red #FF3B30/#ef4444) on unmonitored segments whenever Traffic Overlay is ON
   const sampleRouteCoords = [
     [22.3712, 113.9562], // Lung Mun Rd Roundabout (unmonitored)
     [22.3735, 113.9555],
@@ -4591,7 +4608,7 @@ test('Commuter Updates 2 & 3: Directional camera bearingDeg & FOV cones on Globa
   const unmonitoredStyles = geoJsonStyles.filter((x) => x.feat.properties.hasSpeedData === false);
   const monitoredStyles = geoJsonStyles.filter((x) => x.feat.properties.hasSpeedData === true);
   assert.ok(unmonitoredStyles.length > 0, 'Route with unmonitored roundabout segment must emit hasSpeedData=false feature');
-  assert.equal(unmonitoredStyles[0].style.color, '#FF3B30', 'Unmonitored segment must use solid vivid routeAccent color');
+  assert.equal(unmonitoredStyles[0].style.color, '#3b82f6', 'Unmonitored segment must use neutral Slate/Blue (#3b82f6) when Traffic Overlay is ON, NEVER Red');
   assert.equal(unmonitoredStyles[0].style.dashArray, null, 'Unmonitored segment must render as a solid line (no dashed MTR style)');
   assert.equal(unmonitoredStyles[0].style.weight, 4, 'Unmonitored route line weight must be 4');
   assert.equal(unmonitoredStyles[0].style.opacity, 0.95, 'Unmonitored route line opacity must be 0.95');
@@ -4704,7 +4721,7 @@ test('Commuter Update 4: Graceful Video Lost pixel detection (no OCR) & strict w
 
 test('Camera FOV & Corridor Geometry Fix: Verified azimuth overrides, speed-link tangent snapping, 36px 45° radar cone, Hermite smoothing, non-crossing carriageways, and road-snapped ~150m route corridor', () => {
   const workerSrc = fs.readFileSync('functions/api/worker.js', 'utf8');
-  const mapSrc = fs.readFileSync('public/map.js', 'utf8');
+  const mapSrc = readMapBundle();
   const sb = loadHardcodeAndPlannerSandbox();
 
   // 1. Verify worker.js verified azimuths & speed-link tangent snapping in VM
@@ -4877,7 +4894,7 @@ test('Camera FOV & Corridor Geometry Fix: Verified azimuth overrides, speed-link
 
 test('Global Camera Orientation, Full-Frame Camera Modal & 7-App HK Ecosystem Links in About Modal', () => {
   const workerSrc = fs.readFileSync('functions/api/worker.js', 'utf8');
-  const mapSrc = fs.readFileSync('public/map.js', 'utf8');
+  const mapSrc = readMapBundle();
   const html = readAppBundle();
   const sb = loadHardcodeAndPlannerSandbox();
 
@@ -5019,7 +5036,7 @@ test('Global Camera Orientation, Full-Frame Camera Modal & 7-App HK Ecosystem Li
 
 test('Issues 1-4: Zoom-Gated Global Cameras, Upstream Jam & Time-Decay Corridor Ranking, Short-Gap Bridging, Forward-Only Exit Clamp & Road Ahead Chip, and Separate Bus Speed Layer', () => {
   const sb = loadHardcodeAndPlannerSandbox();
-  const mapSrc = fs.readFileSync('public/map.js', 'utf8');
+  const mapSrc = readMapBundle();
   const html = readAppBundle();
 
   // --- Issue 2: Upstream Jam Before Stop + Time-to-Reach Decay Ranking + HK Time-of-Day Context ---
@@ -5207,7 +5224,7 @@ test('Dedicated busspeed.js Calibration, Rural 1.45x Winding Factor, >=2 Consecu
   const busSpeedEngine: any = bsWindow.BusSpeedEngine;
   assert.ok(busSpeedEngine, 'public/busspeed.js must export window.BusSpeedEngine');
   const html = readAppBundle();
-  const mapSrc = fs.readFileSync('public/map.js', 'utf8');
+  const mapSrc = readMapBundle();
   const t0 = Date.UTC(2026, 10, 27, 1, 15, 0);
 
   // 1. Empty new-town road (Yu Tung Rd / Tung Chung Waterfront Rd):
@@ -5286,16 +5303,40 @@ test('Dedicated busspeed.js Calibration, Rural 1.45x Winding Factor, >=2 Consecu
   assert.equal(slIsolatedSegs[0].tier, 'SMOOTH', `Normal South Lantau Rd flow must be SMOOTH, got ${slIsolatedSegs[0].tier}`);
   assert.equal(slIsolatedSegs[1].tier, 'SMOOTH', `Isolated single slow rural span without a 2nd consecutive slow span must stay SMOOTH (never Red), got ${slIsolatedSegs[1].tier}`);
 
-  // 2 consecutive slow/congested live spans on South Lantau Rd -> flags Red (CONGESTED)
-  const slConsecJamEtas = {
+  // Single-bus slow spans cap at MODERATE (Amber, NEVER Red) without a live TD detector
+  const slSingleBusSlowEtas = {
     0: [{ targetMs: t0, rawTargetMs: t0, isSched: false, noGPS: 0 }],
     1: [{ targetMs: t0 + 360000, rawTargetMs: t0 + 360000, isSched: false, noGPS: 0 }], // smooth
-    2: [{ targetMs: t0 + 960000, rawTargetMs: t0 + 960000, isSched: false, noGPS: 0 }], // 10 min crawl
-    3: [{ targetMs: t0 + 1680000, rawTargetMs: t0 + 1680000, isSched: false, noGPS: 0 }], // 12 min crawl (2nd consecutive!)
+    2: [{ targetMs: t0 + 960000, rawTargetMs: t0 + 960000, isSched: false, noGPS: 0 }], // 10 min crawl (1 bus)
+    3: [{ targetMs: t0 + 1680000, rawTargetMs: t0 + 1680000, isSched: false, noGPS: 0 }], // 12 min crawl (1 bus)
   };
-  const slConsecSegs = busSpeedEngine.inferBusApiSegmentSpeeds(southLantauStops, slConsecJamEtas, null, { tdDetectors: [], nowMs: t0 });
-  assert.equal(slConsecSegs[1].tier, 'CONGESTED', `First of 2 consecutive live jams on South Lantau Rd must be CONGESTED, got ${slConsecSegs[1].tier}`);
-  assert.equal(slConsecSegs[2].tier, 'CONGESTED', `Second of 2 consecutive live jams on South Lantau Rd must be CONGESTED, got ${slConsecSegs[2].tier}`);
+  const slSingleBusSegs = busSpeedEngine.inferBusApiSegmentSpeeds(southLantauStops, slSingleBusSlowEtas, null, { tdDetectors: [], nowMs: t0 });
+  assert.equal(slSingleBusSegs[1].tier, 'MODERATE', `Single-bus slow span must cap at MODERATE (Amber), got ${slSingleBusSegs[1].tier}`);
+  assert.equal(slSingleBusSegs[2].tier, 'MODERATE', `Single-bus slow span must cap at MODERATE (Amber), got ${slSingleBusSegs[2].tier}`);
+
+  // Verified severe multi-bus stall (< 8 km/h across >= 2 consecutive live buses) on consecutive rural spans -> flags Red (CONGESTED)
+  const slMultiBusStallEtas = {
+    0: [
+      { targetMs: t0, rawTargetMs: t0, isSched: false, noGPS: 0, etaSeq: 1 },
+      { targetMs: t0 + 900000, rawTargetMs: t0 + 900000, isSched: false, noGPS: 0, etaSeq: 2 },
+    ],
+    1: [
+      { targetMs: t0 + 360000, rawTargetMs: t0 + 360000, isSched: false, noGPS: 0, etaSeq: 1 },
+      { targetMs: t0 + 1260000, rawTargetMs: t0 + 1260000, isSched: false, noGPS: 0, etaSeq: 2 },
+    ],
+    2: [
+      { targetMs: t0 + 1020000, rawTargetMs: t0 + 1020000, isSched: false, noGPS: 0, etaSeq: 1 }, // 11 min (~6.4 km/h)
+      { targetMs: t0 + 1920000, rawTargetMs: t0 + 1920000, isSched: false, noGPS: 0, etaSeq: 2 }, // 11 min (~6.4 km/h)
+    ],
+    3: [
+      { targetMs: t0 + 1920000, rawTargetMs: t0 + 1920000, isSched: false, noGPS: 0, etaSeq: 1 }, // 15 min (~6.2 km/h)
+      { targetMs: t0 + 2820000, rawTargetMs: t0 + 2820000, isSched: false, noGPS: 0, etaSeq: 2 }, // 15 min (~6.2 km/h)
+    ],
+  };
+  const slConsecSegs = busSpeedEngine.inferBusApiSegmentSpeeds(southLantauStops, slMultiBusStallEtas, null, { tdDetectors: [], nowMs: t0 });
+  assert.equal(slConsecSegs[1].isVerifiedMultiBusStall, true, '2 consecutive buses < 8 km/h must mark isVerifiedMultiBusStall=true');
+  assert.equal(slConsecSegs[1].tier, 'CONGESTED', `Verified multi-bus stall on South Lantau Rd span 1 must be CONGESTED, got ${slConsecSegs[1].tier}`);
+  assert.equal(slConsecSegs[2].tier, 'CONGESTED', `Verified multi-bus stall on South Lantau Rd span 2 must be CONGESTED, got ${slConsecSegs[2].tier}`);
 
   // 3b. Global corridor selector: removes tight maxRoutes=8 cap, selects >8 distinct corridors across KMB/LWB/CTB/NLB/GMB,
   // deduplicates overlapping routes on the exact same road stretch, and skips routes fully covered by TD detectors!
@@ -5667,7 +5708,7 @@ test('South Lantau / NLB Corridor Coverage, Zoom Persistence (z11-16), and Sched
   assert.equal(noFabricated.length, 0, 'Must NEVER fabricate speeds when live/scheduled ETA pairs are missing');
 
   // 4. Zoom/pan persistence in map.js: already-rendered Bus-API segments stay visible immediately (atomic swap, zero blanking!)
-  const mapSrc = fs.readFileSync('public/map.js', 'utf8');
+  const mapSrc = readMapBundle();
   let activeLayerCount = 0;
   let everZeroDuringRefresh = false;
   const mockMap: any = {
@@ -5862,7 +5903,7 @@ test('Side-Road <=45m Highway Leakage Blocking (Kam Ho Rd / Castle Peak Rd), Ter
   assert.equal(mockAttrs['aria-expanded'], 'false');
 
   // 5. buildDetailBusPolylineLayer vivid stroke (weight 4, opacity 0.95) strictly ordered ABOVE #0f172a casing via _bringLayerGroupToFront
-  const mapSrc = fs.readFileSync('public/map.js', 'utf8');
+  const mapSrc = readMapBundle();
   const frontOrder: string[] = [];
   const zCtx: any = {
     window: {
@@ -5904,9 +5945,9 @@ test('Side-Road <=45m Highway Leakage Blocking (Kam Ho Rd / Castle Peak Rd), Ter
   const airportCoords = [[22.3080, 113.9185], [22.3120, 113.9260], [22.3160, 113.9340]];
   const detailLayer = zCtx.buildDetailBusPolylineLayer(airportCoords, [], 0, '#FF3B30');
   zCtx._bringLayerGroupToFront(detailLayer);
-  assert.equal(frontOrder.length, 2, 'Expected dark casing + vivid unmonitored top stroke');
+  assert.equal(frontOrder.length, 2, 'Expected dark casing + neutral unmonitored top stroke');
   assert.ok(frontOrder[0].startsWith('poly:#0f172a:z0'), `Casing (#0f172a, z0) must be brought forward FIRST (underneath), got ${frontOrder[0]}`);
-  assert.equal(frontOrder[1], 'geo:#FF3B30:op0.95:w4:z1', `Vivid route top stroke (#FF3B30, opacity 0.95, weight 4, z1) MUST paint LAST (on top of casing), got ${frontOrder[1]}`);
+  assert.equal(frontOrder[1], 'geo:#3b82f6:op0.95:w4:z1', `Unmonitored route top stroke MUST paint neutral Slate/Blue (#3b82f6, opacity 0.95, weight 4, z1 — NEVER Red) LAST on top of casing, got ${frontOrder[1]}`);
 });
 
 test('Inspectable __BUS_SPEED_DEBUG__ Telemetry, Viewport TD vs Bus-API Counts, Silent SW Auto-Update & Clean Hardcode Config', () => {
@@ -5948,7 +5989,7 @@ test('Inspectable __BUS_SPEED_DEBUG__ Telemetry, Viewport TD vs Bus-API Counts, 
     '__BUS_SPEED_DEBUG__.skipReasons must log no_live_eta_pairs');
 
   // 2. Verify accurate viewport counts of active TD segments vs Bus-API inferred segments via map.js telemetry
-  const mapSrc = fs.readFileSync('public/map.js', 'utf8');
+  const mapSrc = readMapBundle();
   const mockBrowseMap = {
     getZoom: () => 13,
     getBounds: () => viewBounds,
@@ -6012,7 +6053,7 @@ test('Inspectable __BUS_SPEED_DEBUG__ Telemetry, Viewport TD vs Bus-API Counts, 
 
   // 3. Silent PWA auto-update execution in VM & clean hardcode.js config (no HKFX / hkway.pages.dev)
   const swSrc = fs.readFileSync('public/sw.js', 'utf8');
-  const hardcodeSrc = fs.readFileSync('public/hardcode.js', 'utf8');
+  const hardcodeSrc = readHardcodeBundle();
   assert.ok(!/\bHKFX\b/i.test(hardcodeSrc), 'public/hardcode.js must not contain HKFX entries');
   assert.ok(!/hkway\.pages\.dev/i.test(hardcodeSrc), 'public/hardcode.js must not contain self-referential hkway.pages.dev entries');
 
@@ -6059,7 +6100,7 @@ test('Follow-up Fix 1: E36 rejects off-route TMR/Brilliant Garden/Fung Tei/Siu H
   vm.runInContext(fs.readFileSync('public/busspeed.js', 'utf8'), bsSandbox);
   const engine: any = bsWindow.BusSpeedEngine;
 
-  const mapSrc = fs.readFileSync('public/map.js', 'utf8');
+  const mapSrc = readMapBundle();
   const html = readAppBundle();
 
   // 1. E36 off-route leaks (TDS91037 TMR/Brilliant Garden-SB, Fung Tei, Siu Hong & TDS91040 YLH/Kong Sham Western Hwy-WB)
@@ -6160,7 +6201,7 @@ test('Follow-up Fix 2: Clean qualitative Flowing/Slow/Heavy pills (no raw car km
   vm.runInContext(fs.readFileSync('public/busspeed.js', 'utf8'), bsSandbox);
   const engine: any = bsWindow.BusSpeedEngine;
   const html = readAppBundle();
-  const mapSrc = fs.readFileSync('public/map.js', 'utf8');
+  const mapSrc = readMapBundle();
 
   // 1. >= 40 km/h on expressways/trunk roads is ALWAYS Flowing (SMOOTH / Green), fixing false amber 52 km/h!
   assert.equal(engine.normalizeTrafficTier('SLOW', 52), 'SMOOTH', '52 km/h tagged SLOW by worker must normalize to SMOOTH');
@@ -6207,7 +6248,7 @@ test('Follow-up Fix 3: Congested standalone TD detector (TDSLFR10002 Wong Chu Rd
   vm.createContext(bsSandbox);
   vm.runInContext(fs.readFileSync('public/busspeed.js', 'utf8'), bsSandbox);
   const engine: any = bsWindow.BusSpeedEngine;
-  const mapSrc = fs.readFileSync('public/map.js', 'utf8');
+  const mapSrc = readMapBundle();
   const mapCtx: any = { window: {}, document: { getElementById: () => null }, console, Math, Number, String, Array, Map, Set, Object };
   vm.createContext(mapCtx);
   vm.runInContext(mapSrc, mapCtx);
@@ -6272,7 +6313,7 @@ test('Follow-up Fix 4: Airport Perimeter operational speeds (20-35 km/h = Flowin
   vm.createContext(bsSandbox);
   vm.runInContext(fs.readFileSync('public/busspeed.js', 'utf8'), bsSandbox);
   const engine: any = bsWindow.BusSpeedEngine;
-  const mapSrc = fs.readFileSync('public/map.js', 'utf8');
+  const mapSrc = readMapBundle();
   const mapCtx: any = { window: {}, document: { getElementById: () => null }, console, Math, Number, String, Array, Map, Set, Object };
   vm.createContext(mapCtx);
   vm.runInContext(mapSrc, mapCtx);
@@ -6406,7 +6447,7 @@ test('Follow-up Fix 6: Deduplicated operator prefixes in Bus-API tooltips (NLB 1
   vm.createContext(bsSandbox);
   vm.runInContext(fs.readFileSync('public/busspeed.js', 'utf8'), bsSandbox);
   const engine: any = bsWindow.BusSpeedEngine;
-  const mapSrc = fs.readFileSync('public/map.js', 'utf8');
+  const mapSrc = readMapBundle();
   const html = readAppBundle();
 
   const boundTooltips: string[] = [];
@@ -6459,30 +6500,58 @@ test('Follow-up Fix 6: Deduplicated operator prefixes in Bus-API tooltips (NLB 1
     '.kmb-map-stop-label must wrap naturally without clipping');
 });
 
-test('Tasks 1-3 Regression: Externalized app.css/eta-engine/onboarding-pwa/app-ui, 2026-11-27 18:10 HKT timestamp, South Lantau continuity, Wong Chu leakage block, and unified worst-ahead pill/banner', () => {
-  // 1. Task 1: External files exist, exact load order in index.html, no inline main style block, SW precaches them
+test('Tasks 1-3 Regression: Modularized domain scripts in exact 12-script order, 2026-11-27 20:00 HKT timestamp, South Lantau continuity, Wong Chu leakage block, and unified worst-ahead pill/banner', () => {
+  // 1. Task 1: External files exist, exact 12-script load order in index.html, no inline main style block, SW precaches all of them
   const rawIndex = fs.readFileSync('index.html', 'utf8');
   const swSrc = fs.readFileSync('public/sw.js', 'utf8');
-  for (const rel of ['public/app.css', 'public/eta-engine.js', 'public/onboarding-pwa.js', 'public/app-ui.js']) {
-    assert.ok(fs.existsSync(rel) && fs.statSync(rel).size > 1000, `Extracted asset ${rel} must exist and be non-empty`);
+  const modularAssets = [
+    'public/app.css',
+    'public/transit-data.js',
+    'public/fare-load-engine.js',
+    'public/hardcode.js',
+    'public/busspeed.js',
+    'public/map-traffic-overlay.js',
+    'public/map.js',
+    'public/commute-hubs.js',
+    'public/raptor-cost-engine.js',
+    'public/planner.js',
+    'public/eta-engine.js',
+    'public/onboarding-pwa.js',
+    'public/app-ui.js',
+  ];
+  for (const rel of modularAssets) {
+    assert.ok(fs.existsSync(rel) && fs.statSync(rel).size > 1000, `Modularized asset ${rel} must exist and be non-empty`);
   }
   assert.ok(rawIndex.includes('<link rel="stylesheet" href="app.css">'), 'index.html must link external app.css');
   assert.ok(!rawIndex.includes('<style id="transit-unified-fixed-css">'), 'index.html must not contain inline transit-unified-fixed-css block');
-  const loadOrder = ['hardcode.js', 'busspeed.js', 'map.js', 'planner.js', 'eta-engine.js', 'onboarding-pwa.js', 'app-ui.js'];
+  const loadOrder = [
+    'transit-data.js',
+    'fare-load-engine.js',
+    'hardcode.js',
+    'busspeed.js',
+    'map-traffic-overlay.js',
+    'map.js',
+    'commute-hubs.js',
+    'raptor-cost-engine.js',
+    'planner.js',
+    'eta-engine.js',
+    'onboarding-pwa.js',
+    'app-ui.js',
+  ];
   let prevPos = -1;
   for (const s of loadOrder) {
     const pos = rawIndex.indexOf(`<script src="${s}"></script>`);
     assert.ok(pos > prevPos, `index.html must load ${s} in exact order`);
     prevPos = pos;
   }
-  for (const asset of ['app.css', 'eta-engine.js', 'onboarding-pwa.js', 'app-ui.js']) {
+  for (const asset of ['app.css', ...loadOrder]) {
     assert.ok(swSrc.includes(asset), `public/sw.js must precache ${asset}`);
   }
 
-  // 2. Task 2: Build timestamp 2026-11-27 18:10 HKT & Settings About subtitle cleanup
-  const expectedTs = '2026-11-27 18:10 HKT';
-  assert.ok(rawIndex.includes(expectedTs), 'index.html must contain build timestamp 2026-11-27 18:10 HKT');
-  assert.ok(swSrc.includes(expectedTs), 'public/sw.js must contain build timestamp 2026-11-27 18:10 HKT');
+  // 2. Task 2: Build timestamp 2026-11-27 20:00 HKT & Settings About subtitle cleanup
+  const expectedTs = '2026-11-27 20:00 HKT';
+  assert.ok(rawIndex.includes(expectedTs), `index.html must contain build timestamp ${expectedTs}`);
+  assert.ok(swSrc.includes(expectedTs), `public/sw.js must contain build timestamp ${expectedTs}`);
   assert.equal(JSON.parse(fs.readFileSync('version.json', 'utf8')).version, expectedTs);
   assert.equal(JSON.parse(fs.readFileSync('public/version.json', 'utf8')).version, expectedTs);
   assert.ok(rawIndex.includes('HK Layer, HK Sundry, HK Property &amp; HK MPF'), 'Settings About subtitle must list the 4 remaining companion apps');
@@ -6491,7 +6560,7 @@ test('Tasks 1-3 Regression: Externalized app.css/eta-engine/onboarding-pwa/app-u
   const bsWindow: any = {};
   const bsSandbox: any = { window: bsWindow, globalThis: bsWindow, Math, Date, Number, String, Array, Map, Set, Object, Uint8Array, parseFloat, isFinite };
   vm.createContext(bsSandbox);
-  vm.runInContext(fs.readFileSync('public/hardcode.js', 'utf8'), bsSandbox);
+  vm.runInContext(readHardcodeBundle(), bsSandbox);
   vm.runInContext(fs.readFileSync('public/busspeed.js', 'utf8'), bsSandbox);
   const engine: any = bsWindow.BusSpeedEngine;
 
@@ -6553,8 +6622,366 @@ test('Tasks 1-3 Regression: Externalized app.css/eta-engine/onboarding-pwa/app-u
   assert.ok(!bannerSum.detail.includes('Opp. bound jammed'), `Banner detail must not contain Opp. bound jammed: ${bannerSum.detail}`);
 });
 
+test('Task 2A: Bus API inferred severity cap (6-17 km/h single-bus caps at Slow Amber, >=18 km/h Clear Green, no tilde) & strict TD Red (<15 km/h or occ>=75%)', () => {
+  const sb = loadHardcodeAndPlannerSandbox();
+  const bsWindow: any = {};
+  const bsSandbox: any = { window: bsWindow, globalThis: bsWindow, Math, Date, Number, String, Array, Map, Set, Object, Uint8Array, parseFloat, isFinite };
+  vm.createContext(bsSandbox);
+  vm.runInContext(readHardcodeBundle(), bsSandbox);
+  vm.runInContext(fs.readFileSync('public/busspeed.js', 'utf8'), bsSandbox);
+  const engine: any = bsWindow.BusSpeedEngine;
 
+  // 1. Strict TD Red reservation: <15 km/h or occupancy >=75% -> CONGESTED; 16-39 km/h with occ < 75% -> MODERATE
+  assert.equal(engine.normalizeTrafficTier('JAMMED', 14, 40), 'CONGESTED', 'TD 14 km/h must classify CONGESTED (Red)');
+  assert.equal(engine.normalizeTrafficTier('SLOW', 17, 78), 'CONGESTED', 'TD occ 78% (>=75%) must classify CONGESTED (Red)');
+  assert.equal(engine.normalizeTrafficTier('JAMMED', 16, 55), 'MODERATE', 'TD 16 km/h with occ 55% (<75%) must classify MODERATE (Amber), NOT Red');
+  assert.equal(sb.ctx._normalizeBottleneckTier('JAMMED', 16, 55), 'MODERATE');
+  assert.equal(sb.ctx._normalizeBottleneckTier('SLOW', 17, 75), 'CONGESTED');
 
+  // 2. Single-bus Bus API inferred speeds: Stop 1 Pat Heung Road (6 km/h) & Stop 10 Yau San Street (8 km/h) cap at Slow (Amber)
+  const e36Stops = [
+    { stopKey: 'PH1', stopName_e: 'Pat Heung Road', name_tc: '八鄉路', latitude: '22.4270', longitude: '114.0630' },
+    { stopKey: 'PH2', stopName_e: 'Kam Ho Road', name_tc: '錦河路', latitude: '22.4310', longitude: '114.0580' },
+    { stopKey: 'YS10', stopName_e: 'Yau San Street', name_tc: '又新街', latitude: '22.4442', longitude: '114.0315' },
+    { stopKey: 'YS11', stopName_e: 'Tai Tong Road', name_tc: '大棠路', latitude: '22.4444', longitude: '114.0272' },
+    { stopKey: 'YL12', stopName_e: 'Yuen Long Plaza', name_tc: '元朗廣場', latitude: '22.4446', longitude: '114.0220' },
+  ];
+  const busSegs = [
+    {
+      fromIdx: 0, toIdx: 1, fromSeq: 1, toSeq: 2,
+      fromNameEn: 'Pat Heung Road', fromNameTc: '八鄉路', toNameEn: 'Kam Ho Road', toNameTc: '錦河路',
+      source: 'BUS_API', tier: 'CONGESTED', speedKmh: 6, roadDistKm: 0.65, matchedBusCount: 1, isVerifiedMultiBusStall: false,
+      coords: [[22.4270, 114.0630], [22.4290, 114.0605], [22.4310, 114.0580]], isRoadSnapped: true
+    },
+    {
+      fromIdx: 2, toIdx: 3, fromSeq: 10, toSeq: 11,
+      fromNameEn: 'Yau San Street', fromNameTc: '又新街', toNameEn: 'Tai Tong Road', toNameTc: '大棠路',
+      source: 'BUS_API', tier: 'CONGESTED', speedKmh: 8, roadDistKm: 0.45, matchedBusCount: 1, isVerifiedMultiBusStall: false,
+      coords: [[22.4442, 114.0315], [22.4443, 114.0293], [22.4444, 114.0272]], isRoadSnapped: true
+    },
+    {
+      fromIdx: 3, toIdx: 4, fromSeq: 11, toSeq: 12,
+      fromNameEn: 'Tai Tong Road', fromNameTc: '大棠路', toNameEn: 'Yuen Long Plaza', toNameTc: '元朗廣場',
+      source: 'BUS_API', tier: 'SMOOTH', speedKmh: 24, roadDistKm: 0.55, matchedBusCount: 1, isVerifiedMultiBusStall: false,
+      coords: [[22.4444, 114.0272], [22.4445, 114.0246], [22.4446, 114.0220]], isRoadSnapped: true
+    },
+  ];
+  const unified = engine.buildStopByStopSegmentTraffic(e36Stops, null, [], [], busSegs, { routeNo: 'E36' });
+  assert.equal(unified[0].tier, 'MODERATE', 'Stop 1 Pat Heung Rd single-bus 6 km/h MUST cap at MODERATE (Amber), NEVER CONGESTED');
+  assert.equal(unified[0].color, '#f59e0b', 'Stop 1 Pat Heung Rd single-bus 6 km/h MUST use Amber #f59e0b');
+  assert.equal(unified[2].tier, 'MODERATE', 'Stop 10 Yau San St single-bus 8 km/h MUST cap at MODERATE (Amber), NEVER CONGESTED');
+  assert.equal(unified[3].tier, 'SMOOTH', '24 km/h (>= 18 km/h) Bus API segment MUST classify SMOOTH (Clear Green)');
 
+  // Expanded banner summary from hardcode.js
+  const sumStop1 = sb.getDirectionalRoadSummary(e36Stops, 0, [], false, 40, null, 12000, [], { unifiedSegments: unified });
+  assert.ok(sumStop1, 'Expected road summary for Bus API stop 1');
+  assert.equal(sumStop1.tone, 'slow', 'Stop 1 Pat Heung Rd expanded banner must be slow (Amber), NEVER jammed (Red)');
+  assert.ok(sumStop1.detail.includes('Bus API • 6 km/h'), `Expected clean Bus API • 6 km/h label, got: ${sumStop1.detail}`);
+  assert.ok(!sumStop1.detail.includes('~'), `Bus API detail must NEVER include tilde (~): ${sumStop1.detail}`);
 
+  // Map Bus API polyline overlay caps single-bus 6 km/h at Amber #f59e0b and labels cleanly with Bus API • 6 km/h
+  const drawnPolys: any[] = [];
+  const drawnTips: string[] = [];
+  const mapCtx: any = {
+    window: {
+      trafficLayerEnabled: true,
+      __LIVE_TRAFFIC_DETECTORS__: [],
+      __DETAIL_BUS_SPEED_SEGMENTS__: busSegs,
+      capBusApiTierHardcode: sb.ctx.window.capBusApiTierHardcode,
+      buildRouteSpeedGeoJson: sb.ctx.window.buildRouteSpeedGeoJson,
+    },
+    document: { getElementById: () => null },
+    currentLang: 'en',
+    L: {
+      layerGroup: (arr: any[] = []) => ({ _arr: arr, addTo() { return this; }, clearLayers() {} }),
+      polyline: (c: any, opts: any) => {
+        const lyr: any = { c, opts, addTo() { return this; }, bindTooltip(t: string) { drawnTips.push(t); return this; } };
+        drawnPolys.push(lyr);
+        return lyr;
+      },
+      geoJSON: () => ({ addTo() { return this; } }),
+    },
+    console, Math, Number, String, Array, Map, Set, Object,
+  };
+  vm.createContext(mapCtx);
+  vm.runInContext(readMapBundle(), mapCtx);
+  mapCtx.window.__DETAIL_BUS_SPEED_SEGMENTS__ = busSegs;
+  mapCtx.buildDetailBusPolylineLayer(busSegs[0].coords, e36Stops, 0, '#FF3B30');
+  const busStrokes = drawnPolys.filter((p) => p.opts?.dashArray === '8, 6' && p.opts?._zRank === 3);
+  assert.ok(busStrokes.length >= 1, 'Expected dashed BUS_API stroke');
+  assert.equal(busStrokes[0].opts.color, '#f59e0b', 'Single-bus 6 km/h map polyline MUST render Amber #f59e0b, NEVER Red');
+  assert.ok(drawnTips.some((t) => t.includes('Bus API • 6 km/h') && !t.includes('~')),
+    `Map Bus API tooltip must show Bus API • 6 km/h without tilde, got: ${drawnTips.join(' | ')}`);
+});
 
+test('Task 2B: Divided-highway <=85m TD snap (E36 TDS91038 62 km/h Green), roundabout/interchange bottleneck preservation, South Lantau 450m gap & Mui Wo <60m stub pruning', () => {
+  const sb = loadHardcodeAndPlannerSandbox();
+  const bsWindow: any = {};
+  const bsSandbox: any = { window: bsWindow, globalThis: bsWindow, Math, Date, Number, String, Array, Map, Set, Object, Uint8Array, parseFloat, isFinite };
+  vm.createContext(bsSandbox);
+  vm.runInContext(readHardcodeBundle(), bsSandbox);
+  vm.runInContext(fs.readFileSync('public/busspeed.js', 'utf8'), bsSandbox);
+  const engine: any = bsWindow.BusSpeedEngine;
+
+  // 1. E36 divided highway Tuen Mun Road near MTR Siu Hong Station (TDS91038, 62 km/h) placed ~72m laterally off route polyline
+  // 0.00065 deg lat is ~72.2 m (> 45 m, > 60 m, <= 85 m!)
+  const tmrPoly: [number, number][] = [
+    [22.4110, 113.9780],
+    [22.4110, 113.9760],
+    [22.4110, 113.9740],
+    [22.4110, 113.9720],
+  ];
+  const tds91038 = {
+    id: 'TDS91038',
+    lat: 22.41165, // ~72m north of southbound centerline
+    lon: 113.9750,
+    rot: 270, // aligned with westbound/southbound polyline (270°)
+    spd: 62,
+    occ: 18,
+    tier: 'SMOOTH',
+    roadEn: 'Tuen Mun Road near MTR Siu Hong Station - Southbound',
+    roadTc: '屯門公路近港鐵兆康站 - 南行',
+    camKey: 'TM110F',
+  };
+  const e36HwyStops = [
+    { stopKey: 'YL15', stopName_e: 'Yuen Long Park', name_tc: '元朗公園', latitude: '22.4420', longitude: '114.0180' },
+    { stopKey: 'TM16', stopName_e: 'Tuen Mun Chek Lap Kok Tunnel BBI', name_tc: '屯門赤鱲角隧道轉車站', latitude: '22.3716', longitude: '113.9636' },
+  ];
+  const spanMatch = engine.matchTdGroundTruthForSpan(tmrPoly, [tds91038], [], {
+    routeNo: 'E36',
+    fromStop: e36HwyStops[0],
+    toStop: e36HwyStops[1],
+    stops: e36HwyStops,
+    isRoadSnapped: true,
+    isHighwaySpan: true,
+  });
+  assert.equal(spanMatch.hasTd, true, 'TDS91038 at ~72m (<= 85m) on Tuen Mun Road must snap to E36');
+  assert.equal(spanMatch.tdDetId, 'TDS91038');
+  assert.equal(spanMatch.tdSpeedKmh, 62);
+  assert.equal(spanMatch.tdTier, 'SMOOTH');
+
+  const routeGeo = sb.ctx.window.buildRouteSpeedGeoJson(tmrPoly, [tds91038], {
+    isRoadSnapped: true,
+    hasHighwaySpan: true,
+    routeNo: 'E36',
+    noDataColor: '#3b82f6',
+  });
+  const greenFeat = routeGeo.features.find((f: any) => f.properties.detectorId === 'TDS91038');
+  assert.ok(greenFeat, 'buildRouteSpeedGeoJson must snap TDS91038 within <= 85m on divided highway');
+  assert.equal(greenFeat.properties.color, '#16a34a', 'TDS91038 (62 km/h) must paint route polyline Green #16a34a');
+  assert.equal(greenFeat.properties.speedKmh, 62);
+
+  // Verify buildDetailBusPolylineLayer paints Green (Clear • 62 km/h) tooltip for TDS91038
+  const geoTips: string[] = [];
+  const mapCtx: any = {
+    window: {
+      trafficLayerEnabled: true,
+      __LIVE_TRAFFIC_DETECTORS__: [tds91038],
+      buildRouteSpeedGeoJson: sb.ctx.window.buildRouteSpeedGeoJson,
+      isDividedHighwaySnapRoadHardcode: sb.ctx.window.isDividedHighwaySnapRoadHardcode,
+      isRoundaboutOrInterchangeDetectorHardcode: sb.ctx.window.isRoundaboutOrInterchangeDetectorHardcode,
+    },
+    document: { getElementById: () => null },
+    currentLang: 'en',
+    L: {
+      layerGroup: (arr: any[] = []) => ({ _arr: arr }),
+      polyline: () => ({ addTo() { return this; } }),
+      geoJSON: (data: any, opts: any) => {
+        (data.features || []).forEach((f: any) => {
+          const lyr: any = { options: {}, bindTooltip(t: string) { geoTips.push(t); return this; }, on() {} };
+          if (opts.onEachFeature) opts.onEachFeature(f, lyr);
+        });
+        return {};
+      },
+    },
+    console, Math, Number, String, Array, Map, Set, Object,
+  };
+  vm.createContext(mapCtx);
+  vm.runInContext(readMapBundle(), mapCtx);
+  mapCtx.buildDetailBusPolylineLayer(tmrPoly, [], 0, '#FF3B30');
+  assert.ok(geoTips.some((t) => t.includes('Clear • 62 km/h')), `Expected Green Clear • 62 km/h tooltip for TDS91038, got: ${geoTips.join(' | ')}`);
+
+  // 2. Roundabout & interchange bottleneck preservation (Au Tau / Pok Oi Roundabout 12 km/h NOT washed out by 63 km/h downstream highway)
+  const auTauPoly: [number, number][] = [
+    [22.4445, 114.0415], // Au Tau Interchange / Pok Oi Roundabout
+    [22.4432, 114.0435],
+    [22.4418, 114.0458],
+    [22.4402, 114.0480], // Tai Lam Tunnel approach (63 km/h downstream)
+  ];
+  const auTauJamDet = {
+    id: 'TD_AUTAU_RB',
+    lat: 22.4445,
+    lon: 114.0417,
+    rot: 130,
+    spd: 12,
+    occ: 84,
+    tier: 'JAMMED',
+    roadEn: 'Au Tau Interchange / Pok Oi Roundabout - Southbound',
+    roadTc: '凹頭交匯處 / 博愛迴旋處 - 南行',
+  };
+  const taiLamFastDet = {
+    id: 'TD_TAILAM_FAST',
+    lat: 22.4418,
+    lon: 114.0458,
+    rot: 130,
+    spd: 63,
+    occ: 16,
+    tier: 'SMOOTH',
+    roadEn: 'Tsing Long Highway near Tai Lam Tunnel - Southbound',
+    roadTc: '青朗公路近大欖隧道 - 南行',
+  };
+  const rbSpanMatch = engine.matchTdGroundTruthForSpan(auTauPoly, [taiLamFastDet, auTauJamDet], [], {
+    isRoadSnapped: true,
+    isHighwaySpan: true,
+    fromStop: { stopName_e: 'Pok Oi Hospital', name_tc: '博愛醫院' },
+    toStop: { stopName_e: 'Tai Lam Tunnel BBI', name_tc: '大欖隧道轉車站' },
+  });
+  assert.equal(rbSpanMatch.hasTd, true);
+  assert.equal(rbSpanMatch.roundaboutBottleneck, true, 'Jammed Au Tau / Pok Oi Roundabout must flag roundaboutBottleneck=true');
+  assert.equal(rbSpanMatch.tdDetId, 'TD_AUTAU_RB', 'Downstream 63 km/h highway speed must NOT overwrite jammed roundabout detector');
+  assert.equal(rbSpanMatch.tdSpeedKmh, 12);
+  assert.equal(rbSpanMatch.tdTier, 'CONGESTED');
+
+  const rbGeo = sb.ctx.window.buildRouteSpeedGeoJson(auTauPoly, [taiLamFastDet, auTauJamDet], {
+    isRoadSnapped: true,
+    hasHighwaySpan: true,
+    noDataColor: '#3b82f6',
+  });
+  assert.ok(rbGeo.features.some((f: any) => f.properties.detectorId === 'TD_AUTAU_RB' && f.properties.color === '#dc2626'),
+    'Localized red roundabout micro-step at Au Tau / Pok Oi Roundabout MUST survive next to 63 km/h downstream highway');
+
+  // Global speed GeoJSON also preserves jammed roundabout micro-step over an overlapping 63 km/h free-flow link
+  const freeFlowGlobalGeo = {
+    type: 'FeatureCollection',
+    features: [{
+      type: 'Feature',
+      geometry: { type: 'LineString', coordinates: [[114.0410, 22.4449], [114.0422, 22.4440], [114.0435, 22.4430]] },
+      properties: { id: 'LINK_FAST', roadEn: 'Tsing Long Highway', spd: 63, occ: 16, rot: 130, tier: 'SMOOTH' },
+    }],
+  };
+  const globalFiltered = mapCtx.filterAndOffsetGlobalSpeedGeoJson(freeFlowGlobalGeo, 14, [auTauJamDet]);
+  assert.ok(globalFiltered.features.some((f: any) => f.properties.detectorId === 'TD_AUTAU_RB' && f.properties.color === '#ef4444'),
+    'filterAndOffsetGlobalSpeedGeoJson must preserve jammed roundabout bottleneck over free-flow 63 km/h link');
+
+  // 3. Rural South Lantau coastal 450m gap threshold & Mui Wo <60m orphan turnaround stub pruning
+  const coastalSpacedCoords: [number, number][] = [
+    [22.2435, 113.9785],
+    [22.2403, 113.9772], // ~380m hop along South Lantau Road (<= 450m)
+    [22.2371, 113.9759], // ~380m hop along South Lantau Road (<= 450m)
+  ];
+  const muiWoStrayStub: [number, number][] = [
+    [22.2640, 114.0020],
+    [22.26438, 114.0020], // ~42m isolated turnaround stub in Mui Wo headland/pier bbox (< 60m)
+  ];
+  const coastalAgg = engine.aggregateBusMicroStepsToCorridors([
+    {
+      company: 'NLB', routeNo: '11', fromSeq: 1, toSeq: 2,
+      fromNameEn: 'Pui O, South Lantau Road', toNameEn: 'Cheung Sha, South Lantau Road',
+      tier: 'SMOOTH', speedKmh: 36, color: '#16a34a', source: 'BUS_API', isRoadSnapped: true,
+      coords: coastalSpacedCoords,
+    },
+    {
+      company: 'NLB', routeNo: '1', fromSeq: 1, toSeq: 2,
+      fromNameEn: 'Mui Wo Ferry Pier', toNameEn: 'Mui Wo Headland',
+      tier: 'SMOOTH', speedKmh: 24, color: '#16a34a', source: 'BUS_API', isRoadSnapped: true,
+      coords: muiWoStrayStub,
+    },
+  ], [], null, { targetStepM: 50 });
+  assert.equal(coastalAgg.corridors.length, 1, `Expected 1 continuous South Lantau coastal polyline with Mui Wo <60m stub pruned, got ${coastalAgg.corridors.length}`);
+  assert.ok(coastalAgg.corridors[0].coords.length >= 12, '380m South Lantau coastal hops must subdivide continuously with zero dashed gaps');
+  assert.ok(coastalAgg.stats.prunedOrphanStubs >= 1, 'Isolated <60m Mui Wo pier/headland stub must be pruned');
+});
+
+test('Task 2C: Bottom-sheet pull-up gesture & auto-snap to top detent (expandStop, Details, tap handle) + Map/down-drag split restore', () => {
+  const css = fs.readFileSync('public/app.css', 'utf8');
+  const appUi = fs.readFileSync('public/app-ui.js', 'utf8');
+  const mapCode = readMapBundle();
+
+  // 1. Verify CSS removes #view-detail overflow: hidden lock & #map-container min-height: 170px lock, and adds .sheet-expanded-top
+  assert.ok(!/#view-detail\s*\{[^}]*overflow:\s*hidden/.test(css), '#view-detail must NOT have overflow: hidden blocking sheet expansion');
+  assert.ok(/#map-container\s*\{[^}]*min-height:\s*0/.test(css), '#map-container must allow shrinking to 0px (no 170px min-height lock)');
+  assert.ok(css.includes('#view-detail.sheet-expanded-top #map-container'), 'CSS must define full-top detent collapsing #map-container to 0px');
+  assert.ok(/\.map-sheet-handle\s*\{[^}]*touch-action:\s*none/.test(css), '.map-sheet-handle must enforce touch-action: none');
+  assert.ok(appUi.includes('window.expandDetailSheetToTop()'), 'app-ui.js must wire expandStop and Details toggle to expandDetailSheetToTop()');
+
+  // 2. Simulate touch pull-up, tap-handle, expandDetailSheetToTop, and Map-button / downward-drag restore
+  const handleListeners: Record<string, Function[]> = {};
+  const viewClasses = new Set<string>();
+  const handleClasses = new Set<string>();
+  const bodyClasses = new Set<string>();
+  const fakeHandle: any = {
+    addEventListener: (ev: string, fn: Function) => { (handleListeners[ev] = handleListeners[ev] || []).push(fn); },
+    setPointerCapture: () => {},
+    releasePointerCapture: () => {},
+    classList: { add: (c: string) => handleClasses.add(c), remove: (c: string) => handleClasses.delete(c) },
+    setAttribute: () => {},
+  };
+  const fakeMapContainer: any = {
+    offsetHeight: 280,
+    style: { height: '280px' },
+    getBoundingClientRect: () => ({ height: fakeMapContainer.offsetHeight }),
+  };
+  const fakeViewDetail: any = {
+    classList: {
+      add: (c: string) => viewClasses.add(c),
+      remove: (c: string) => viewClasses.delete(c),
+      toggle: (c: string, force?: boolean) => { if (force) viewClasses.add(c); else viewClasses.delete(c); },
+      contains: (c: string) => viewClasses.has(c),
+    },
+  };
+  const fakeToggleBtn: any = { innerHTML: '', classList: { toggle: () => {} } };
+  const ctx: any = {
+    window: { innerHeight: 800, mapInstance: { invalidateSize: () => {} } },
+    document: {
+      readyState: 'complete',
+      body: { classList: { add: (c: string) => bodyClasses.add(c), remove: (c: string) => bodyClasses.delete(c) } },
+      getElementById: (id: string) => {
+        if (id === 'mapSheetHandle') return fakeHandle;
+        if (id === 'map-container') return fakeMapContainer;
+        if (id === 'view-detail') return fakeViewDetail;
+        if (id === 'mapSheetToggleBtn') return fakeToggleBtn;
+        return null;
+      },
+      addEventListener: () => {},
+    },
+    requestAnimationFrame: (cb: Function) => { cb(); return 1; },
+    cancelAnimationFrame: () => {},
+    setTimeout: (cb: Function) => { cb(); return 1; },
+    clearTimeout: () => {},
+    currentLang: 'en',
+    triggerHaptic: () => {},
+    L: { layerGroup: () => ({ addTo() { return this; } }), polyline: () => ({ addTo() { return this; } }), divIcon: (o: any) => o, marker: () => ({ addTo() { return this; } }) },
+  };
+  vm.createContext(ctx);
+  vm.runInContext(mapCode, ctx);
+
+  // Verify touch listeners are bound alongside pointer listeners
+  assert.ok(handleListeners.touchstart?.length === 1 && handleListeners.touchmove?.length === 1 && handleListeners.touchend?.length === 1,
+    'Must bind touchstart, touchmove, and touchend on #mapSheetHandle for reliable mobile sheet drag');
+
+  // Dragging UP via touch (clientY 320 -> 140) snaps smoothly to full-top detent (0px map, .sheet-expanded-top)
+  handleListeners.touchstart[0]({ touches: [{ clientY: 320 }], preventDefault: () => {}, target: { closest: () => null } });
+  handleListeners.touchmove[0]({ touches: [{ clientY: 140 }], preventDefault: () => {} });
+  fakeMapContainer.offsetHeight = parseInt(fakeMapContainer.style.height, 10) || 0;
+  handleListeners.touchend[0]({ changedTouches: [{ clientY: 140 }] });
+  assert.equal(fakeMapContainer.style.height, '0px', 'Upward pull on sheet handle must snap to full-top detent (height: 0px)');
+  assert.equal(viewClasses.has('sheet-expanded-top'), true, 'Full-top detent must add .sheet-expanded-top on #view-detail');
+
+  // Tapping Map button (cycleMapSheetHeight) restores half-screen split map view
+  ctx.window.cycleMapSheetHeight();
+  assert.equal(viewClasses.has('sheet-expanded-top'), false, 'Map button must restore half-screen split map view from top detent');
+  assert.equal(fakeMapContainer.style.height, '35dvh');
+
+  // Auto-snap on expandStop / Details -> expandDetailSheetToTop() snaps to full-top detent
+  ctx.window.expandDetailSheetToTop();
+  assert.equal(fakeMapContainer.style.height, '0px');
+  assert.equal(viewClasses.has('sheet-expanded-top'), true);
+
+  // Downward drag from top detent restores split map view
+  fakeMapContainer.offsetHeight = 0;
+  handleListeners.pointerdown[0]({ pointerId: 11, pointerType: 'touch', button: 0, clientY: 100, preventDefault: () => {}, target: { closest: () => null } });
+  handleListeners.pointermove[0]({ pointerId: 11, clientY: 360, preventDefault: () => {} });
+  fakeMapContainer.offsetHeight = parseInt(fakeMapContainer.style.height, 10) || 260;
+  handleListeners.pointerup[0]({ pointerId: 11, clientY: 360 });
+  assert.equal(viewClasses.has('sheet-expanded-top'), false, 'Downward drag from top detent must restore split map view');
+});

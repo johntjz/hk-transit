@@ -8,7 +8,7 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="apple-mobile-web-app-title" content="Transit HK">
-  <meta name="app-build-version" content="2026-11-27 18:10 HKT">
+  <meta name="app-build-version" content="2026-11-27 20:00 HKT">
   <title>Transit HK — Bus, MTR, Light Rail &amp; Ferry (通)</title>
   <meta name="description" content="Real-time Hong Kong Bus, MTR, Light Rail & Ferry radar and multi-modal route planner.">
   <meta property="og:title" content="Transit HK">
@@ -142,9 +142,14 @@
       };
     })();
   </script>
+  <script src="transit-data.js"></script>
+  <script src="fare-load-engine.js"></script>
   <script src="hardcode.js"></script>
   <script src="busspeed.js"></script>
+  <script src="map-traffic-overlay.js"></script>
   <script src="map.js"></script>
+  <script src="commute-hubs.js"></script>
+  <script src="raptor-cost-engine.js"></script>
   <script src="planner.js"></script>
   <script>
     window.__TRANSIT_SCHEMA_VERSION__ = 9;
@@ -720,7 +725,7 @@
     <div class="settings-section-divider" id="settingSecAppUpdate">App Version &amp; Update</div>
     <div class="settings-update-card" id="settingsAppUpdateCard">
       <div class="settings-update-meta">
-        <div class="settings-update-ver" id="settingBuildVersionText">Build: 2026-11-27 18:10 HKT</div>
+        <div class="settings-update-ver" id="settingBuildVersionText">Build: 2026-11-27 20:00 HKT</div>
         <div class="settings-update-hint" id="settingBuildUpdateHint">Clears app caches &amp; reloads latest build</div>
       </div>
       <button type="button" class="settings-force-update-btn" id="forceUpdateAppBtn" onclick="forceUpdateApp()">↻ Force Update App</button>
@@ -833,15 +838,11 @@
 </div>
 
 <div id="toastMsg" class="toast-msg"></div>
-<div id="pwaUpdateToast" class="pwa-update-toast" role="status" aria-live="polite" aria-hidden="true">
-  <button type="button" class="pwa-update-action-btn" id="pwaUpdateApplyBtn" onclick="applyPendingPwaUpdate()">
-    <span class="pwa-update-label-wrap">
-      <span class="pwa-update-dot" aria-hidden="true"></span>
-      <span class="pwa-update-text" id="pwaUpdateToastText">New version available — Tap to update</span>
-    </span>
-    <span class="pwa-update-chevron" aria-hidden="true">↻</span>
-  </button>
-  <button type="button" class="pwa-update-dismiss-btn" id="pwaUpdateDismissBtn" onclick="dismissPwaUpdateToast()" aria-label="Dismiss update notification">✕</button>
+<div id="pwaUpdateToast" class="pwa-update-toast pwa-update-passive" role="status" aria-live="polite" aria-hidden="true">
+  <span class="pwa-update-label-wrap">
+    <span class="pwa-update-dot" aria-hidden="true"></span>
+    <span class="pwa-update-text" id="pwaUpdateToastText">Updating app…</span>
+  </span>
 </div>
 <script src="eta-engine.js"></script>
 <script src="onboarding-pwa.js"></script>

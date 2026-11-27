@@ -4,6 +4,8 @@ import vm from 'vm';
 const ctx = { window: {} };
 vm.createContext(ctx);
 const hc = vm.runInContext(
+  fs.readFileSync('public/transit-data.js', 'utf8') + '\n' +
+  fs.readFileSync('public/fare-load-engine.js', 'utf8') + '\n' +
   fs.readFileSync('public/hardcode.js', 'utf8') +
   '\n;({ MTR_STATION_DIRECTORY, LRT_STATION_DIRECTORY, FERRY_PIER_DIRECTORY, VERIFIED_MAINLINE_FERRIES });',
   ctx

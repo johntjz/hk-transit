@@ -3,14 +3,14 @@
 // ETA engine, i18n, SafeStorage, signal health, kinematics & expanded-ETA rendering (extracted from index.html)
 // Classic (non-module) script: shares global scope with hardcode.js, busspeed.js,
 // map.js, planner.js and the other app scripts. Load order in index.html:
-// hardcode.js → busspeed.js → map.js → planner.js → eta-engine.js → onboarding-pwa.js → app-ui.js
+// transit-data.js → fare-load-engine.js → hardcode.js → busspeed.js → map-traffic-overlay.js → map.js → commute-hubs.js → raptor-cost-engine.js → planner.js → eta-engine.js → onboarding-pwa.js → app-ui.js
 // ============================================================================
 
 // ============================================================================
-// PART 1: EXECUTION ENGINE (Modularized with hardcode.js, map.js & planner.js)
+// PART 1: EXECUTION ENGINE (Modularized across domain scripts)
 // ============================================================================
-window.__FIXED_JS_BUILD_TS__ = '2026-11-27 18:10 HKT';
-const APP_VERSION = '2026-11-27 18:10 HKT';
+window.__FIXED_JS_BUILD_TS__ = '2026-11-27 20:00 HKT';
+const APP_VERSION = '2026-11-27 20:00 HKT';
 const HK_UNIFIED_API_BASE = '/api/worker';
 let isHydratingInitialData = true;
 window.isHydratingInitialData = true;
@@ -2068,6 +2068,24 @@ function generateExpandedETAsHtml(arrs, group, stopKey, stopIdx) {
         .replace(/\bWestthbound\b/gi, 'Westbound');
     };
 
+    const _effSegTier = (seg) => {
+      if (!seg) return 'NONE';
+      if (seg.source === 'BUS_API') {
+        if (typeof window.capBusApiTierHardcode === 'function') {
+          return window.capBusApiTierHardcode(seg.tier, seg.speedKmh, {
+            isTerminusApproach: Boolean(seg.isTerminusApproach),
+            isScheduledFallback: Boolean(seg.isScheduledFallback),
+            isVerifiedMultiBusStall: Boolean(seg.isVerifiedMultiBusStall)
+          });
+        }
+        if (seg.isTerminusApproach) return 'SMOOTH';
+        const spd = Number(seg.speedKmh);
+        if (seg.isVerifiedMultiBusStall && Number.isFinite(spd) && spd > 0 && Math.abs(spd) < 8) return 'CONGESTED';
+        return (Number.isFinite(spd) && Math.abs(spd) >= 18) ? 'SMOOTH' : 'MODERATE';
+      }
+      return seg.tier || 'SMOOTH';
+    };
+
     // Compact horizontal Board -> Terminus multi-segment journey bar (qualitative Clear/Slow/Jammed/Unmonitored)
     let journeyBarHtml = '';
     const journeyEndIdx = (exitStopIdx !== null && exitStopIdx > stopIdx) ? exitStopIdx : (stops.length - 1);
@@ -2078,19 +2096,26 @@ function generateExpandedETAsHtml(arrs, group, stopKey, stopIdx) {
       const endStopName = stops[journeyEndIdx] ? _cleanLbl(getStopName(stops[journeyEndIdx])) : (isZh ? '總站' : 'Terminus');
       const segButtonsHtml = journeySegs.map((seg) => {
         const isMonitored = seg.source === 'TD' || seg.source === 'BUS_API';
+        const effTier = isMonitored ? _effSegTier(seg) : 'NONE';
         const legTone = !isMonitored
           ? 'none'
-          : (seg.tier === 'CONGESTED' ? 'congested' : (seg.tier === 'MODERATE' ? 'moderate' : 'smooth'));
+          : (effTier === 'CONGESTED' ? 'congested' : (effTier === 'MODERATE' ? 'moderate' : 'smooth'));
         const qualLbl = !isMonitored
           ? (isZh ? '未監測' : 'Unmonitored')
-          : (seg.tier === 'CONGESTED'
+          : (effTier === 'CONGESTED'
             ? (isZh ? '擠塞' : 'Jammed')
-            : (seg.tier === 'MODERATE' ? (isZh ? '緩慢' : 'Slow') : (isZh ? '暢通' : 'Clear')));
+            : (effTier === 'MODERATE' ? (isZh ? '緩慢' : 'Slow') : (isZh ? '暢通' : 'Clear')));
         const rawFrom = isZh ? (seg.fromNameTc || seg.fromNameEn) : (seg.fromNameEn || seg.fromNameTc);
         const rawTo = isZh ? (seg.toNameTc || seg.toNameEn) : (seg.toNameEn || seg.toNameTc);
-        const legTip = `#${seg.fromSeq} ${_cleanLbl(rawFrom)} → #${seg.toSeq} ${_cleanLbl(rawTo)} · ${qualLbl}`;
+        const absLegSpd = Number.isFinite(Number(seg.speedKmh)) && Number(seg.speedKmh) > 0
+          ? Math.abs(Math.round(Number(seg.speedKmh)))
+          : null;
+        const busTipPart = (seg.source === 'BUS_API' && absLegSpd !== null && !seg.isScheduledFallback)
+          ? (isZh ? ` · 巴士推算 • ${absLegSpd} km/h` : ` · Bus API • ${absLegSpd} km/h`)
+          : '';
+        const legTip = `#${seg.fromSeq} ${_cleanLbl(rawFrom)} → #${seg.toSeq} ${_cleanLbl(rawTo)} · ${qualLbl}${busTipPart}`;
         const flexWeight = Math.max(1, Math.min(40, Math.round(Math.abs(Number(seg.roadDistKm) || 0.35) * 10)));
-        return `<button type="button" class="traffic-journey-seg tone-${legTone}" data-from-idx="${seg.fromIdx}" data-seg-tier="${escapeHtml(seg.tier || 'NONE')}" style="flex:${flexWeight} 1 0;" title="${escapeHtml(legTip)}" aria-label="${escapeHtml(legTip)}" onclick="event.stopPropagation(); if(typeof focusJourneySegmentOnDetailMap==='function'){focusJourneySegmentOnDetailMap(${seg.fromIdx});}else if(typeof openStopSegmentTrafficModal==='function'){openStopSegmentTrafficModal(${seg.fromIdx});}"></button>`;
+        return `<button type="button" class="traffic-journey-seg tone-${legTone}" data-from-idx="${seg.fromIdx}" data-seg-tier="${escapeHtml(effTier)}" style="flex:${flexWeight} 1 0;" title="${escapeHtml(legTip)}" aria-label="${escapeHtml(legTip)}" onclick="event.stopPropagation(); if(typeof focusJourneySegmentOnDetailMap==='function'){focusJourneySegmentOnDetailMap(${seg.fromIdx});}else if(typeof openStopSegmentTrafficModal==='function'){openStopSegmentTrafficModal(${seg.fromIdx});}"></button>`;
       }).join('');
       const headLeft = isZh
         ? `全程路況 · 第${stopIdx + 1}站 → 第${journeyEndIdx + 1}站 (${endStopName})`
@@ -2156,20 +2181,24 @@ function generateExpandedETAsHtml(arrs, group, stopKey, stopIdx) {
       let inlineBreakdownHtml = '';
       if (hasInlineBreakdown) {
         const breakdownRows = breakdownSegs.slice(0, 10).map((seg) => {
-          const sDot = seg.tier === 'CONGESTED' ? '🔴' : (seg.tier === 'MODERATE' ? '🟠' : '🟢');
+          const effTier = _effSegTier(seg);
+          const sDot = effTier === 'CONGESTED' ? '🔴' : (effTier === 'MODERATE' ? '🟠' : '🟢');
           const rawFrom = isZh ? (seg.fromNameTc || seg.fromNameEn) : (seg.fromNameEn || seg.fromNameTc);
           const rawTo = isZh ? (seg.toNameTc || seg.toNameEn) : (seg.toNameEn || seg.toNameTc);
           const pairLbl = (rawFrom && rawTo)
             ? `${seg.fromSeq ? `#${seg.fromSeq} ` : ''}${_cleanLbl(rawFrom)} → ${seg.toSeq ? `#${seg.toSeq} ` : ''}${_cleanLbl(rawTo)}`
             : (_cleanLbl(isZh ? (seg.roadTc || seg.roadEn) : (seg.roadEn || seg.roadTc)) || (isZh ? '前方路段' : 'Forward stretch'));
-          const absSpd = Math.abs(Math.round(Number(seg.speedKmh)));
-          const spdVal = Number.isFinite(Number(seg.speedKmh))
-            ? (seg.source === 'TD' ? `${absSpd} km/h` : `${absSpd} km/h`)
-            : '-- km/h';
+          const hasSpd = Number.isFinite(Number(seg.speedKmh)) && Number(seg.speedKmh) > 0;
+          const absSpd = hasSpd ? Math.abs(Math.round(Number(seg.speedKmh))) : null;
+          const spdVal = absSpd !== null ? `${absSpd} km/h` : '-- km/h';
           const srcLabel = seg.source === 'TD'
-            ? (isZh ? '運輸署測速 (TD Detector)' : 'TD Detector')
-            : (isZh ? '巴士實時推算 (Bus API inferred)' : 'Bus API inferred');
-          return `<div class="traffic-inline-item" data-seg-source="${escapeHtml(seg.source)}" data-seg-tier="${escapeHtml(seg.tier)}" style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;padding:5px 0;border-bottom:1px solid rgba(148,163,184,0.18);">
+            ? (seg.roundaboutBottleneck
+              ? (isZh ? '運輸署測速 · 迴旋處/交匯處瓶頸 (TD Detector)' : 'TD Detector · Roundabout/Interchange')
+              : (isZh ? '運輸署測速 (TD Detector)' : 'TD Detector'))
+            : (absSpd !== null
+              ? (isZh ? `巴士推算 • ${absSpd} km/h` : `Bus API • ${absSpd} km/h`)
+              : (isZh ? '巴士實時推算 (Bus API inferred)' : 'Bus API inferred'));
+          return `<div class="traffic-inline-item" data-seg-source="${escapeHtml(seg.source)}" data-seg-tier="${escapeHtml(effTier)}" style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;padding:5px 0;border-bottom:1px solid rgba(148,163,184,0.18);">
             <span style="min-width:0;flex:1;line-height:1.3;">${sDot} <strong>${escapeHtml(pairLbl)}</strong><br><span class="traffic-inline-src" style="font-size:0.68rem;color:var(--text-sub);">${escapeHtml(srcLabel)}</span></span>
             <span style="white-space:nowrap;font-weight:700;font-variant-numeric:tabular-nums;">${escapeHtml(spdVal)}</span>
           </div>`;

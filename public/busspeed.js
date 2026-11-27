@@ -109,20 +109,36 @@
       .replace(/\bWestthbound\b/gi, 'Westbound');
   }
 
-  function normalizeTrafficTier(rawTier, speedKmh = null) {
+  function normalizeTrafficTier(rawTier, speedKmh = null, occ = null) {
     const spd = Number(speedKmh);
-    const hasSpd = speedKmh !== null && speedKmh !== undefined && Number.isFinite(spd);
+    const hasSpd = speedKmh !== null && speedKmh !== undefined && Number.isFinite(spd) && spd > 0;
+    const absSpd = hasSpd ? Math.abs(spd) : NaN;
+    const occNum = (occ !== null && occ !== undefined && Number.isFinite(Number(occ))) ? Math.abs(Number(occ)) : null;
     // Expressways / trunk roads at >= 40 km/h are ALWAYS Flowing (SMOOTH / Green), never Slow (Amber)
-    if (hasSpd && Math.abs(spd) >= 40) return 'SMOOTH';
+    if (hasSpd && absSpd >= 40) return 'SMOOTH';
+    // Strict live TD Red (Jammed) reservation: speed < 15 km/h OR occupancy >= 75%
+    if ((hasSpd && absSpd < 15) || (occNum !== null && occNum >= 75)) return 'CONGESTED';
     const t = String(rawTier || '').toUpperCase();
+    if (hasSpd && absSpd >= 15 && absSpd < 40) {
+      // When explicit speed is 15–39 km/h and occupancy < 75% (or unknown), cap at MODERATE (Slow Amber)
+      if (occNum !== null && occNum < 75) return 'MODERATE';
+      if (t === 'CONGESTED' || t === 'JAMMED') return occNum === null ? 'MODERATE' : 'CONGESTED';
+      return 'MODERATE';
+    }
     if (t === 'CONGESTED' || t === 'JAMMED') return 'CONGESTED';
     if (t === 'MODERATE' || t === 'SLOW') return 'MODERATE';
     if (t === 'SMOOTH') return 'SMOOTH';
-    if (!hasSpd) return 'SMOOTH';
-    const absSpd = Math.abs(spd);
-    if (absSpd < 20) return 'CONGESTED';
-    if (absSpd < 40) return 'MODERATE';
     return 'SMOOTH';
+  }
+
+  // Cap Bus API inferred segments (without a live TD detector) at Clear (Green >= 18 km/h) or Slow (Amber < 18 km/h),
+  // reserving Red (Jammed) strictly for verified severe multi-bus stalls (< 8 km/h across >= 2 consecutive buses).
+  function capBusApiTier(rawTier, speedKmh, isVerifiedMultiBusStall = false) {
+    const spd = Math.abs(Number(speedKmh));
+    if (!Number.isFinite(spd) || spd <= 0) return 'SMOOTH';
+    if (isVerifiedMultiBusStall && spd < 8) return 'CONGESTED';
+    if (spd >= 18) return 'SMOOTH';
+    return 'MODERATE';
   }
 
   // Detect scheduled / timetable-only ETA entries so timetable padding is never misread as a live road jam.
@@ -146,6 +162,59 @@
   function isRuralWindingCorridor(fromStop = null, toStop = null) {
     const names = `${fromStop?.stopName_e || ''} ${toStop?.stopName_e || ''} ${fromStop?.name_tc || ''} ${toStop?.name_tc || ''}`;
     return /south\s*lantau|pui\s*o|mui\s*wo|cheung\s*sha|tong\s*fuk|shui\s*hau|shek\s*pik|ngong\s*ping|tai\s*o|tung\s*chung\s*road|pak\s*kung\s*au|san\s*shek\s*wan|nam\s*shan|lai\s*chi\s*yuen|sai\s*kung|clear\s*water\s*bay|hiram'?s\s*highway|shek\s*o|stanley|repulse\s*bay|tai\s*tam|peak\s*road|route\s*twisk|lam\s*kam|bride'?s\s*pool|貝澳|梅窩|長沙|塘福|水口|石壁|昂坪|大澳|東涌道|伯公坳|嶼南道|散石灣|南山|荔枝園|西貢|清水灣|西貢公路|石澳|赤柱|淺水灣|大潭|山頂道|荃錦公路|林錦公路|新娘潭/i.test(names);
+  }
+
+  // Continuous rural coastal / mountain highway spans (e.g. South Lantau Rd Pui O -> Cheung Sha)
+  // where road-snapped vertices can sit up to 450 m apart on sweeping bends (excludes Mui Wo pier-to-market town shortcuts)
+  function isRuralCoastalHighwaySpan(textEn = '', textTc = '') {
+    const names = `${textEn || ''} ${textTc || ''}`;
+    if (!names.trim()) return false;
+    const isMuiWoTownShortcut = /mui\s*wo\s*(?:ferry\s*pier|market|cooked\s*food)|silver\s*river|梅窩碼頭|梅窩街市/i.test(names) &&
+      !/south\s*lantau|pui\s*o|san\s*shek\s*wan|cheung\s*sha|tong\s*fuk|nam\s*shan|lai\s*chi\s*yuen|嶼南道|貝澳|散石灣|長沙|塘福|南山|荔枝園/i.test(names);
+    if (isMuiWoTownShortcut) return false;
+    return /south\s*lantau|pui\s*o|san\s*shek\s*wan|cheung\s*sha|tong\s*fuk|shui\s*hau|shek\s*pik|nam\s*shan|lai\s*chi\s*yuen|tung\s*chung\s*r(?:oa)?d|pak\s*kung\s*au|tai\s*o|keung\s*shan|ngong\s*ping|sai\s*kung|clear\s*water\s*bay|hiram'?s\s*highway|shek\s*o|stanley|repulse\s*bay|tai\s*tam|route\s*twisk|lam\s*kam|bride'?s\s*pool|嶼南道|貝澳|散石灣|長沙|塘福|水口|石壁|南山|荔枝園|東涌道|伯公坳|大澳|羗山|昂坪|西貢|清水灣|西貢公路|石澳|赤柱|淺水灣|大潭|荃錦公路|林錦公路|新娘潭/i.test(names);
+  }
+
+  const DIVIDED_HIGHWAY_SNAP_RE = /tuen\s*mun\s*r(?:oa)?d|\btmr\b|yuen\s*long\s*h(?:igh)?w(?:a)?y|\bylh\b|north\s*lantau\s*h(?:igh)?w(?:a)?y|\bnlh\b|tuen\s*mun[\s–—-]*chek\s*lap\s*kok|tm[\s-]*clk(?:l)?|shun\s*long\s*r(?:oa)?d|lantau\s*link|屯門公路|元朗公路|北大嶼山公路|屯門[至\-–—]?赤鱲角隧道|屯赤|順朗路|青嶼幹線/i;
+  function isDividedHighwaySnapRoad(roadEn = '', roadTc = '', id = '') {
+    const combined = `${id || ''} ${roadEn || ''} ${roadTc || ''}`;
+    if (!combined.trim()) return false;
+    return DIVIDED_HIGHWAY_SNAP_RE.test(combined);
+  }
+
+  const ROUNDABOUT_OR_INTERCHANGE_RE = /roundabout|rotary|au\s*tau\s*(?:interchange|roundabout)?|pok\s*oi\s*(?:interchange|roundabout)?|long\s*tin\s*r(?:oa)?d|hung\s*tin\s*r(?:oa)?d|lung\s*mun\s*r(?:oa)?d.*(?:roundabout|tm[\s-]*clk)|tm[\s-]*clk(?:l)?.*(?:roundabout|lung\s*mun)|tong\s*yan\s*san\s*tsuen\s*interchange|迴旋處|凹頭交匯處|博愛交匯處|博愛迴旋處|朗天路|洪天路|龍門路迴旋處|唐人新村交匯處/i;
+  function isRoundaboutOrInterchangeDetector(roadEn = '', roadTc = '', id = '', lat = NaN, lon = NaN) {
+    const combined = `${id || ''} ${roadEn || ''} ${roadTc || ''}`;
+    if (combined.trim() && ROUNDABOUT_OR_INTERCHANGE_RE.test(combined)) return true;
+    const la = Number(lat), lo = Number(lon);
+    if (Number.isFinite(la) && Number.isFinite(lo)) {
+      const hubs = [
+        [22.4445, 114.0415], // Au Tau Interchange / Pok Oi Roundabout
+        [22.4355, 114.0108], // Long Tin Rd / YLH roundabout
+        [22.4422, 114.0005], // Hung Tin Rd / YLH interchange
+        [22.3745, 113.9565]  // TM-CLKL / Lung Mun Rd roundabout
+      ];
+      for (let i = 0; i < hubs.length; i++) {
+        if (_haversineKmLocal(la, lo, hubs[i][0], hubs[i][1]) <= 0.28) return true;
+      }
+    }
+    return false;
+  }
+
+  function isRoundaboutBottleneckSample(detOrSpd, occ = 0) {
+    if (detOrSpd && typeof detOrSpd === 'object') {
+      const det = detOrSpd;
+      const roadEn = det.roadEn || det.props?.roadEn || '';
+      const roadTc = det.roadTc || det.props?.roadTc || '';
+      const id = det.id || det.detId || det.props?.id || '';
+      if (!isRoundaboutOrInterchangeDetector(roadEn, roadTc, id, det.lat, det.lon)) return false;
+      const s = Math.abs(Number(det.spd ?? det.speedKmh));
+      const o = Math.abs(Number(det.occ ?? det.maxOcc ?? 0) || 0);
+      return (Number.isFinite(s) && s > 0 && s < 18) || o >= 70;
+    }
+    const s = Math.abs(Number(detOrSpd));
+    const o = Math.abs(Number(occ) || 0);
+    return (Number.isFinite(s) && s > 0 && s < 18) || o >= 70;
   }
 
   // Airport perimeter / cargo service roads operate as 30–40 km/h zones where 22–35 km/h is Flowing (Green)
@@ -299,7 +368,7 @@
     return { subSegs, minLat, maxLat, minLon, maxLon };
   }
 
-  function _matchTdSpeedLinksForSubSegs(subSegs, minLat, maxLat, minLon, maxLon, tdSpeedGeoJson, maxDistKm = 0.10, maxAngDeg = 45) {
+  function _matchTdSpeedLinksForSubSegs(subSegs, minLat, maxLat, minLon, maxLon, tdSpeedGeoJson, maxDistKm = 0.10, maxAngDeg = 45, adaptiveSnap = false) {
     const feats = Array.isArray(tdSpeedGeoJson)
       ? tdSpeedGeoJson
       : (Array.isArray(tdSpeedGeoJson?.features) ? tdSpeedGeoJson.features : []);
@@ -332,6 +401,18 @@
         continue;
       }
 
+      const lMidLat = (lMinLat + lMaxLat) * 0.5;
+      const lMidLon = (lMinLon + lMaxLon) * 0.5;
+      const linkRoadEn = p.roadEn || p.roadTc || '';
+      const linkRoadTc = p.roadTc || p.roadEn || '';
+      const linkId = p.id || p.detectorId || '';
+      const isLinkRoundabout = adaptiveSnap && isRoundaboutOrInterchangeDetector(linkRoadEn, linkRoadTc, linkId, lMidLat, lMidLon);
+      const isLinkDividedHwy = adaptiveSnap && isDividedHighwaySnapRoad(linkRoadEn, linkRoadTc, linkId);
+      const effMaxDistKm = isLinkRoundabout
+        ? Math.max(maxDistKm, 0.120)
+        : (isLinkDividedHwy ? Math.max(maxDistKm, 0.085) : maxDistKm);
+      const effMaxAngDeg = isLinkRoundabout ? Math.max(maxAngDeg, 65) : maxAngDeg;
+
       let bestKm = Infinity;
       let matchedLink = false;
       for (let k = 0; k < rc.length - 1; k++) {
@@ -349,7 +430,7 @@
 
         for (let s = 0; s < subSegs.length; s++) {
           const ss = subSegs[s];
-          if (linkBrg !== null && _angDiffLocal(linkBrg, ss.brg) > maxAngDeg) continue;
+          if (linkBrg !== null && _angDiffLocal(linkBrg, ss.brg) > effMaxAngDeg) continue;
           const dMidToBus = _pointToSegKmLocal(linkMidLat, linkMidLon, ss.aLat, ss.aLon, ss.bLat, ss.bLon).distKm;
           const dBusMidToLink = _pointToSegKmLocal(ss.midLat, ss.midLon, la1, lo1, la2, lo2).distKm;
           const dA = _pointToSegKmLocal(la1, lo1, ss.aLat, ss.aLon, ss.bLat, ss.bLon).distKm;
@@ -358,25 +439,28 @@
           if (dMin < bestKm) {
             bestKm = dMin;
           }
-          if (dMin <= maxDistKm) {
+          if (dMin <= effMaxDistKm) {
             matchedLink = true;
           }
         }
       }
 
-      if (matchedLink && bestKm <= maxDistKm) {
+      if (matchedLink && bestKm <= effMaxDistKm) {
         matches.push({
           feat: f,
           props: p,
+          lat: lMidLat,
+          lon: lMidLon,
           distKm: bestKm,
           spd: Math.abs(spd),
           occ: Math.abs(Number(p.occ) || 0),
-          id: p.id || p.detectorId || '',
-          roadEn: _sanitizeDirectionTypos(p.roadEn || p.roadTc || ''),
-          roadTc: _sanitizeDirectionTypos(p.roadTc || p.roadEn || ''),
+          id: linkId,
+          roadEn: _sanitizeDirectionTypos(linkRoadEn),
+          roadTc: _sanitizeDirectionTypos(linkRoadTc),
           tier: p.tier || '',
           camKey: p.camKey || '',
-          rot: Number.isFinite(Number(p.rot)) ? Number(p.rot) : null
+          rot: Number.isFinite(Number(p.rot)) ? Number(p.rot) : null,
+          isRoundabout: isLinkRoundabout
         });
       }
     }
@@ -1002,9 +1086,14 @@
         }
       }
 
+      const segRoadEn = [seg.roadEn, seg.fromNameEn, seg.toNameEn].filter(Boolean).join(' ');
+      const segRoadTc = [seg.roadTc, seg.fromNameTc, seg.toNameTc].filter(Boolean).join(' ');
+      const isRuralCoastal = Boolean(seg.isRuralWinding || isRuralCoastalHighwaySpan(segRoadEn, segRoadTc));
       const rawHopCapM = Number(opts.maxRawHopM) > 0
         ? Number(opts.maxRawHopM)
-        : ((!seg.isRoadSnapped || seg.coords.length >= 3) ? 250 : 0);
+        : (seg.isRoadSnapped && isRuralCoastal
+          ? 450
+          : ((!seg.isRoadSnapped || seg.coords.length >= 3) ? 250 : 0));
       const microSteps = subdividePolylineMicroSteps(
         seg.coords,
         targetStepM,
@@ -1022,8 +1111,6 @@
         continue;
       }
 
-      const segRoadEn = [seg.roadEn, seg.fromNameEn, seg.toNameEn].filter(Boolean).join(' ');
-      const segRoadTc = [seg.roadTc, seg.fromNameTc, seg.toNameTc].filter(Boolean).join(' ');
       const isCenteredTwoWay = Boolean(seg.isCenteredTwoWay || isNarrowTwoWayLocalRoad(segRoadEn, segRoadTc));
       const isAirportPerimeter = Boolean(
         seg.roadClass === 'AIRPORT_PERIMETER' ||
@@ -1032,18 +1119,22 @@
 
       const spd = Math.abs(Number(seg.speedKmh));
       const effSpd = Number.isFinite(spd) && spd > 0 ? spd : 26;
-      const smoothMin = isAirportPerimeter ? Math.min(Number(seg.smoothMinKmh) || 20, 20) : (Number(seg.smoothMinKmh) || 17);
+      const smoothMin = isAirportPerimeter ? Math.min(Number(seg.smoothMinKmh) || 20, 20) : 18;
       const modMin = isAirportPerimeter ? Math.min(Number(seg.moderateMinKmh) || 8, 8) : (Number(seg.moderateMinKmh) || 10.5);
       const expKmh = isAirportPerimeter ? 34 : (Number(seg.expectedKmh) || 26);
-      const rawTier = normalizeTrafficTier(seg.tier, effSpd);
-      const allowRed = Boolean(
+      const isVerifiedMultiBusStall = Boolean(
+        seg.isVerifiedMultiBusStall &&
+        effSpd < 8 &&
         !isSchedFb &&
         !seg.isScheduledOnly &&
         !seg.isTerminusApproach &&
-        !seg.isOriginLayover &&
+        !seg.isOriginLayover
+      );
+      const rawTier = capBusApiTier(seg.tier, effSpd, isVerifiedMultiBusStall);
+      const allowRed = Boolean(
+        isVerifiedMultiBusStall &&
         rawTier === 'CONGESTED' &&
-        seg.allowRed !== false &&
-        (!isAirportPerimeter || effSpd < 8)
+        seg.allowRed !== false
       );
       const routeTag = seg.routeLabel || `${seg.company || ''} ${seg.routeNo || ''}`.trim();
       const keptSteps = [];
@@ -1138,7 +1229,7 @@
       }
 
       if (keptSteps.length) {
-        stagedRoutes.push({ seg, routeTag, isSchedFb, isCenteredTwoWay, keptSteps });
+        stagedRoutes.push({ seg, routeTag, isSchedFb, isCenteredTwoWay, isRuralCoastal, keptSteps });
       }
     }
 
@@ -1148,29 +1239,19 @@
       const hasLive = b.liveSpeeds.length > 0;
       const speeds = hasLive ? b.liveSpeeds : b.schedSpeeds;
       const medSpd = Math.abs(Number(_medianNumber(speeds).toFixed(1)));
-      const medSmooth = b.isAirportPerimeter ? 20 : (_medianNumber(b.smoothMins) || 17);
-      const medMod = b.isAirportPerimeter ? 8 : (_medianNumber(b.modMins) || 10.5);
-      const medExp = b.isAirportPerimeter ? 34 : (_medianNumber(b.expectedKmhs) || 26);
-      const ratio = medSpd / Math.max(15, medExp);
+      const verifiedStall = Boolean(hasLive && b.allowRedCount > 0 && medSpd < 8);
 
+      // Strict Bus API severity cap: Clear (Green, >= 18 km/h) or Slow (Amber, < 18 km/h);
+      // Red (CONGESTED) strictly reserved for verified severe multi-bus stalls (< 8 km/h across >= 2 consecutive buses).
       let tier = 'SMOOTH';
-      if (b.isAirportPerimeter) {
-        // Airport perimeter / cargo service roads: 20–35+ km/h is Flowing Green; Red ONLY if < 8 km/h with allowRed
-        if (medSpd < 8) {
-          tier = (hasLive && b.allowRedCount > 0) ? 'CONGESTED' : 'MODERATE';
-        } else if (medSpd < 20) {
-          tier = 'MODERATE';
-        } else {
-          tier = 'SMOOTH';
-        }
-      } else if (medSpd >= 40) {
-        tier = 'SMOOTH';
-      } else if (medSpd < medMod || ratio < 0.44) {
-        tier = (hasLive && b.allowRedCount > 0) ? 'CONGESTED' : 'MODERATE';
-      } else if (medSpd < medSmooth || ratio < 0.72) {
-        tier = 'MODERATE';
+      if (verifiedStall) {
+        tier = 'CONGESTED';
+      } else if (b.isAirportPerimeter) {
+        tier = medSpd >= 20 ? 'SMOOTH' : 'MODERATE';
+      } else {
+        tier = medSpd >= 18 ? 'SMOOTH' : 'MODERATE';
       }
-      // Scheduled/headway fallback is strictly Green/Yellow only — NEVER Red!
+      // Scheduled/headway fallback is strictly Green/Amber only — NEVER Red!
       if (!hasLive && tier === 'CONGESTED') {
         tier = 'MODERATE';
       }
@@ -1182,7 +1263,8 @@
         routeCount: Math.max(1, b.routes.size),
         routes: Array.from(b.routes),
         isScheduledFallback: !hasLive,
-        isCenteredTwoWay: Boolean(b.isCenteredTwoWay)
+        isCenteredTwoWay: Boolean(b.isCenteredTwoWay),
+        isVerifiedMultiBusStall: verifiedStall
       });
     });
 
@@ -1225,7 +1307,7 @@
     };
 
     for (let r = 0; r < stagedRoutes.length; r++) {
-      const { seg, routeTag, isCenteredTwoWay, keptSteps } = stagedRoutes[r];
+      const { seg, routeTag, isCenteredTwoWay, isRuralCoastal, keptSteps } = stagedRoutes[r];
       let activeChain = null;
 
       const flushChain = () => {
@@ -1264,7 +1346,7 @@
             activeChain.coords[activeChain.coords.length - 1][1],
             st.a[0],
             st.a[1]
-          ) <= 0.02
+          ) <= (isRuralCoastal ? 0.045 : 0.02)
         );
 
         if (canAppend) {
@@ -1299,6 +1381,11 @@
             toNameTc: seg.toNameTc || '',
             isScheduledFallback: cellInfo.isScheduledFallback,
             isCenteredTwoWay: Boolean(isCenteredTwoWay || cellInfo.isCenteredTwoWay),
+            isVerifiedMultiBusStall: Boolean(cellInfo.isVerifiedMultiBusStall),
+            isRuralCoastal: Boolean(isRuralCoastal),
+            isOriginLayover: Boolean(seg.isOriginLayover),
+            isTerminusApproach: Boolean(seg.isTerminusApproach),
+            isTerminalTurnaround: Boolean(seg.isTerminalTurnaround),
             source: 'BUS_API'
           };
         }
@@ -1306,8 +1393,8 @@
       flushChain();
     }
 
-    // Merge adjacent collinear corridor chains (same tier/color/mode, endpoint gap <= 35 m, bearing within 35°)
-    // so consecutive rural/arterial stop spans (e.g. South Lantau Road) render as one continuous polyline.
+    // Merge adjacent collinear corridor chains (same tier/color/mode, endpoint gap <= 35 m [<= 65 m on curved rural coastal roads], bearing within 35° [<= 55° rural coastal])
+    // so consecutive rural/arterial stop spans (e.g. South Lantau Road Pui O -> Cheung Sha) render as one continuous polyline.
     const mergedCorridors = [];
     for (let i = 0; i < corridors.length; i++) {
       const cur = corridors[i];
@@ -1330,9 +1417,12 @@
         const prevEnd = prev.coords[pLen - 1];
         const prevPrev = prev.coords[pLen - 2];
         const gapKm = _haversineKmLocal(prevEnd[0], prevEnd[1], curStart[0], curStart[1]);
-        if (gapKm > 0.035) continue;
+        const ruralCurve = Boolean(prev.isRuralCoastal || cur.isRuralCoastal);
+        const maxChainGapKm = ruralCurve ? 0.065 : 0.035;
+        const maxChainAngDeg = ruralCurve ? 55 : 35;
+        if (gapKm > maxChainGapKm) continue;
         const prevEndBrg = _bearingDegLocal(prevPrev[0], prevPrev[1], prevEnd[0], prevEnd[1]);
-        if (_angDiffLocal(prevEndBrg, curStartBrg) > 35) continue;
+        if (_angDiffLocal(prevEndBrg, curStartBrg) > maxChainAngDeg) continue;
 
         const sliceStart = gapKm <= 0.005 ? 1 : 0;
         for (let k = sliceStart; k < cur.coords.length; k++) {
@@ -1348,6 +1438,7 @@
         if (cur.toIdx !== null && cur.toIdx !== undefined) prev.toIdx = cur.toIdx;
         if (cur.toNameEn) prev.toNameEn = cur.toNameEn;
         if (cur.toNameTc) prev.toNameTc = cur.toNameTc;
+        if (cur.isRuralCoastal) prev.isRuralCoastal = true;
         attached = true;
         break;
       }
@@ -1356,9 +1447,57 @@
       }
     }
 
+    // Prune isolated < 60 m orphan / terminal turnaround stubs around Mui Wo headland & pier
+    let prunedOrphanStubs = 0;
+    const filteredCorridors = mergedCorridors.filter((c, idx) => {
+      const lenM = _polylineLengthKm(c.coords) * 1000;
+      if (lenM >= 60) return true;
+      const firstPt = c.coords[0];
+      const lastPt = c.coords[c.coords.length - 1];
+      const midPt = c.coords[Math.floor(c.coords.length / 2)];
+      const midLat = Number(midPt?.[0]), midLon = Number(midPt?.[1]);
+      // Check if connected to any adjacent corridor within 65 m
+      let hasAdjacentNeighbor = false;
+      for (let j = 0; j < mergedCorridors.length; j++) {
+        if (j === idx) continue;
+        const o = mergedCorridors[j];
+        if (!o || !Array.isArray(o.coords) || o.coords.length < 2) continue;
+        const oFirst = o.coords[0];
+        const oLast = o.coords[o.coords.length - 1];
+        const dMinKm = Math.min(
+          _haversineKmLocal(firstPt[0], firstPt[1], oFirst[0], oFirst[1]),
+          _haversineKmLocal(firstPt[0], firstPt[1], oLast[0], oLast[1]),
+          _haversineKmLocal(lastPt[0], lastPt[1], oFirst[0], oFirst[1]),
+          _haversineKmLocal(lastPt[0], lastPt[1], oLast[0], oLast[1])
+        );
+        if (dMinKm <= 0.065) {
+          hasAdjacentNeighbor = true;
+          break;
+        }
+      }
+      if (hasAdjacentNeighbor) return true;
+      const inMuiWoHeadlandOrPier = Number.isFinite(midLat) && Number.isFinite(midLon) &&
+        midLat >= 22.2540 && midLat <= 22.2662 && midLon >= 114.0008 && midLon <= 114.0140;
+      const isTurnaroundStub = Boolean(c.isOriginLayover || c.isTerminusApproach || c.isTerminalTurnaround);
+      if (inMuiWoHeadlandOrPier || isTurnaroundStub) {
+        prunedOrphanStubs++;
+        _recordDebugSkip(skipReasons, {
+          scope: 'corridor',
+          routeNo: c.routeLabel || '',
+          company: '',
+          fromSeq: c.fromSeq || null,
+          toSeq: c.toSeq || null,
+          reason: 'mui_wo_orphan_stub',
+          detail: `Isolated ${Math.round(lenM)}m stub suppressed`
+        });
+        return false;
+      }
+      return true;
+    });
+
     // Strip internal helper properties
-    const cleanCorridors = mergedCorridors.map((c) => {
-      const { _routeSet, speedSum, ...rest } = c;
+    const cleanCorridors = filteredCorridors.map((c) => {
+      const { _routeSet, speedSum, isRuralCoastal, isOriginLayover, isTerminusApproach, isTerminalTurnaround, ...rest } = c;
       return rest;
     });
 
@@ -1371,6 +1510,7 @@
         survivingMicroSteps,
         occupiedCells: resolvedCells.size,
         mergedDuplicateMicroSteps,
+        prunedOrphanStubs,
         renderedCorridors: cleanCorridors.length
       },
       skipReasons
@@ -1479,12 +1619,11 @@
       /airport|tung\s*chung|tm[\s-]*clk|chek\s*lap\s*kok|機場|東涌|屯門赤鱲角/i.test(routeContext)
     );
     if (isE36Explicit || isE36ByStops) {
-      // E36 exits Yuen Long Hwy onto Tsing Long Hwy (Route 3 / Tai Lam Tunnel) BEFORE Kong Sham Western Hwy,
-      // and NEVER runs on Tuen Mun Road (Brilliant Garden / Fung Tei / Siu Hong).
+      // Block far off-route Kong Sham Western Hwy / Shenzhen Bay / Brilliant Garden / Fung Tei leaks,
+      // while allowing E36's actual divided-highway Tuen Mun Rd Siu Hong detector (TDS91038).
       if (/TDS91037|TDS91040/i.test(idStr)) return true;
       if (/kong\s*sham\s*western|shenzhen\s*bay|港深西部公路|深圳灣/i.test(txt)) return true;
-      if (/brilliant\s*garden|fung\s*tei|siu\s*hong|寶怡|鳳地|兆康/i.test(txt)) return true;
-      if (isE36Explicit && /\b(?:tuen\s*mun\s*r(?:oa)?d|tmr)\b|屯門公路/i.test(txt)) return true;
+      if (/brilliant\s*garden|fung\s*tei|寶怡|鳳地/i.test(txt)) return true;
     }
     // Block HZMB Hong Kong Link Road / elevated viaducts from bleeding onto parallel ground roads (e.g. South Perimeter Rd)
     const isViaductOrHzmb = /\b(?:hzmb|hong\s*kong\s*link\s*r(?:oa)?d|viaduct)\b|港珠澳大橋香港連接路|高架/i.test(txt);
@@ -1507,6 +1646,8 @@
       tdRoadTc: '',
       tdDet: null,
       tdMatchCount: 0,
+      roundaboutBottleneck: false,
+      roundaboutDetectors: [],
       cam: null
     };
     if (!Array.isArray(segCoords) || segCoords.length < 2) return empty;
@@ -1544,8 +1685,9 @@
     );
     const isNonHighwaySideStreet = !isHighwaySpan;
 
-    // Require <= 60 m from actual route shape polyline on highways/trunk spans and <= 45 m on non-highway side streets,
-    // with strict <= 45° corridor bearing alignment so parallel highways never leak onto side roads or off-route branches.
+    // Base lateral radius: <= 60 m on highways/trunk spans, <= 45 m on side streets;
+    // relaxed to <= 85 m (<= 45° bearing) on major divided highways (Tuen Mun Rd, Yuen Long Hwy,
+    // North Lantau Hwy, TM-CLKL) and <= 120 m (<= 65° bearing) on major roundabouts/interchanges.
     const maxDetDistKm = Number(opts.maxDetDistKm) || (isNonHighwaySideStreet ? 0.045 : 0.060);
     const maxDetAngDeg = Number(opts.maxDetAngDeg) || 45;
     const maxCamDistKm = Number(opts.maxCamDistKm) || (isNonHighwaySideStreet ? 0.045 : 0.060);
@@ -1558,16 +1700,17 @@
       fromStems.en.some((a) => toStems.en.some((b) => a === b || a.includes(b) || b.includes(a)))
     );
 
-    const isCompatibleTdFeature = (roadEn, roadTc, id) => {
+    const isCompatibleTdFeature = (roadEn, roadTc, id, lat = NaN, lon = NaN) => {
       if (_isOffRouteHighwayLeakForSpan(roadEn, roadTc, id, opts)) return false;
+      const detIsRoundabout = isRoundaboutOrInterchangeDetector(roadEn || '', roadTc || '', id || '', lat, lon);
       const detIsHighway = _isExpresswayOrTunnelRoad(`${roadEn || ''} ${roadTc || ''}`, id || '');
       // Never allow an expressway/highway/tunnel detector to leak onto a non-highway side street
-      // unless the stop itself explicitly names that highway/tunnel.
-      if (isNonHighwaySideStreet && detIsHighway && !_isExpresswayOrTunnelRoad(`${spanTextEn} ${spanTextTc}`)) {
+      // unless the stop itself explicitly names that highway/tunnel or it is a direct interchange/roundabout approach.
+      if (isNonHighwaySideStreet && detIsHighway && !detIsRoundabout && !_isExpresswayOrTunnelRoad(`${spanTextEn} ${spanTextTc}`)) {
         return false;
       }
       return areRoadNamesCompatible(spanTextEn, spanTextTc, roadEn || '', roadTc || '', {
-        isHighwaySpan,
+        isHighwaySpan: isHighwaySpan || (detIsRoundabout && !bothStopsSameLocalRoad),
         detIsHighway,
         bothStopsSameLocalRoad
       });
@@ -1586,7 +1729,14 @@
         const spd = Number(d.spd);
         if (!Number.isFinite(dLat) || !Number.isFinite(dLon) || !Number.isFinite(spd) || spd <= 0) continue;
         if (dLat < minLat - padDeg || dLat > maxLat + padDeg || dLon < minLon - padDeg || dLon > maxLon + padDeg) continue;
-        if (!isCompatibleTdFeature(d.roadEn || '', d.roadTc || '', d.id || '')) continue;
+        if (!isCompatibleTdFeature(d.roadEn || '', d.roadTc || '', d.id || '', dLat, dLon)) continue;
+
+        const detIsRoundabout = isRoundaboutOrInterchangeDetector(d.roadEn || '', d.roadTc || '', d.id || '', dLat, dLon);
+        const detIsDividedHwy = isDividedHighwaySnapRoad(d.roadEn || '', d.roadTc || '', d.id || '');
+        const effMaxDistKm = detIsRoundabout
+          ? Math.max(maxDetDistKm, 0.120)
+          : (detIsDividedHwy ? Math.max(maxDetDistKm, 0.085) : maxDetDistKm);
+        const effMaxAngDeg = detIsRoundabout ? Math.max(maxDetAngDeg, 65) : maxDetAngDeg;
 
         let bestKm = Infinity;
         let bestBrg = null;
@@ -1602,18 +1752,25 @@
             bestRawT = proj.t;
           }
         }
-        if (bestKm > maxDetDistKm || bestBrg === null) continue;
+        if (bestKm > effMaxDistKm || bestBrg === null) continue;
         // Reject fork/turn-off overshoot past the endpoints of the span polyline
         if ((bestS === 0 && bestRawT < -0.02) || (bestS === subSegs.length - 1 && bestRawT > 1.02)) continue;
         if (Number.isFinite(Number(d.rot))) {
           const diff = _angDiffLocal(Number(d.rot), bestBrg);
-          if (diff > maxDetAngDeg) continue;
+          if (diff > effMaxAngDeg) continue;
         }
-        matchedDets.push({ det: d, distKm: bestKm, spd: Math.abs(spd), occ: Math.abs(Number(d.occ) || 0) });
+        matchedDets.push({
+          det: d,
+          distKm: bestKm,
+          spd: Math.abs(spd),
+          occ: Math.abs(Number(d.occ) || 0),
+          isRoundabout: detIsRoundabout,
+          isRoundaboutBottleneck: isRoundaboutBottleneckSample(d)
+        });
       }
     }
 
-    // Match nearest same-direction TD camera along this span (<= 60 m highway / <= 45 m side street, <= 45° bearing)
+    // Match nearest same-direction TD camera along this span (<= 85 m divided hwy / <= 60 m highway / <= 45 m side street)
     let bestCam = null;
     if (Array.isArray(tdCameras) && tdCameras.length) {
       let bestCamScore = Infinity;
@@ -1623,7 +1780,14 @@
         const cLat = Number(c.lat), cLon = Number(c.lon);
         if (!Number.isFinite(cLat) || !Number.isFinite(cLon)) continue;
         if (cLat < minLat - padDeg || cLat > maxLat + padDeg || cLon < minLon - padDeg || cLon > maxLon + padDeg) continue;
-        if (!isCompatibleTdFeature(c.desc || '', c.descTc || '', c.key || '')) continue;
+        if (!isCompatibleTdFeature(c.desc || '', c.descTc || '', c.key || '', cLat, cLon)) continue;
+
+        const camIsRoundabout = isRoundaboutOrInterchangeDetector(c.desc || '', c.descTc || '', c.key || '', cLat, cLon);
+        const camIsDividedHwy = isDividedHighwaySnapRoad(c.desc || '', c.descTc || '', c.key || '');
+        const effMaxCamDistKm = camIsRoundabout
+          ? Math.max(maxCamDistKm, 0.120)
+          : (camIsDividedHwy ? Math.max(maxCamDistKm, 0.085) : maxCamDistKm);
+        const effMaxCamAngDeg = camIsRoundabout ? Math.max(maxCamAngDeg, 65) : maxCamAngDeg;
 
         let bestKm = Infinity;
         let bestBrg = null;
@@ -1639,10 +1803,10 @@
             bestRawT = proj.t;
           }
         }
-        if (bestKm > maxCamDistKm || bestBrg === null) continue;
+        if (bestKm > effMaxCamDistKm || bestBrg === null) continue;
         if ((bestS === 0 && bestRawT < -0.02) || (bestS === subSegs.length - 1 && bestRawT > 1.02)) continue;
         if (Number.isFinite(Number(c.bearingDeg))) {
-          if (_angDiffLocal(Number(c.bearingDeg), bestBrg) > maxCamAngDeg) continue;
+          if (_angDiffLocal(Number(c.bearingDeg), bestBrg) > effMaxCamAngDeg) continue;
         }
         if (bestKm < bestCamScore) {
           bestCamScore = bestKm;
@@ -1660,22 +1824,30 @@
       }
     }
 
-    // If no direct detector point hit, also check live TD speed-map GeoJSON links (respecting <=60m / <=45m & road-name compatibility)
+    // If no direct detector point hit, also check live TD speed-map GeoJSON links (with adaptive 85m divided-hwy / 120m roundabout snap)
     const tdSpeedGeoJson = (opts.tdSpeedGeoJson !== undefined)
       ? opts.tdSpeedGeoJson
       : (globalScope.__LIVE_TRAFFIC_SPEED_GEOJSON__ || null);
     if (!matchedDets.length && tdSpeedGeoJson) {
-      const rawLinkMatches = _matchTdSpeedLinksForSubSegs(subSegs, minLat, maxLat, minLon, maxLon, tdSpeedGeoJson, maxDetDistKm, maxDetAngDeg);
-      const linkMatches = rawLinkMatches.filter((m) => isCompatibleTdFeature(m.roadEn, m.roadTc, m.id));
+      const rawLinkMatches = _matchTdSpeedLinksForSubSegs(subSegs, minLat, maxLat, minLon, maxLon, tdSpeedGeoJson, maxDetDistKm, maxDetAngDeg, true);
+      const linkMatches = rawLinkMatches.filter((m) => isCompatibleTdFeature(m.roadEn, m.roadTc, m.id, m.lat, m.lon));
       if (linkMatches.length) {
+        const roundaboutLinkBottlenecks = linkMatches.filter((x) => isRoundaboutBottleneckSample(x));
         const activeSlowLinks = linkMatches.filter(x => {
-          const tr = normalizeTrafficTier(x.tier, x.spd);
+          const tr = normalizeTrafficTier(x.tier, x.spd, x.occ);
           return tr === 'CONGESTED' || tr === 'MODERATE';
         });
         let focusLink = linkMatches[0];
         let resolvedSpd = 0;
-        if (activeSlowLinks.length) {
-          activeSlowLinks.sort((a, b) => a.spd - b.spd);
+        let isRbBottleneck = false;
+        if (roundaboutLinkBottlenecks.length) {
+          // Never overwrite a jammed roundabout/approach TD link with downstream free-flow highway speed
+          roundaboutLinkBottlenecks.sort((a, b) => (a.spd - b.spd) || (b.occ - a.occ));
+          focusLink = roundaboutLinkBottlenecks[0];
+          resolvedSpd = Math.abs(Math.round(focusLink.spd));
+          isRbBottleneck = true;
+        } else if (activeSlowLinks.length) {
+          activeSlowLinks.sort((a, b) => (a.spd - b.spd) || (b.occ - a.occ));
           focusLink = activeSlowLinks[0];
           resolvedSpd = Math.abs(Math.round(focusLink.spd));
         } else {
@@ -1683,20 +1855,24 @@
           focusLink = linkMatches[0];
           resolvedSpd = Math.abs(Math.round(linkMatches.reduce((acc, x) => acc + x.spd, 0) / linkMatches.length));
         }
-        const tdTier = normalizeTrafficTier(activeSlowLinks.length ? focusLink.tier : 'SMOOTH', resolvedSpd);
+        const resolvedOcc = Math.abs(Math.round(focusLink.occ || 0));
+        const tdTier = normalizeTrafficTier((isRbBottleneck || activeSlowLinks.length) ? focusLink.tier : 'SMOOTH', resolvedSpd, resolvedOcc);
         const tdStatus = tdTier === 'CONGESTED' ? 'JAMMED' : (tdTier === 'MODERATE' ? 'SLOW' : 'SMOOTH');
         const _isLinkedCamSafe = (linked, camKey) => {
           if (!linked) return true; // No catalog coords; parent detector/link already passed strict lateral + road-name filter
-          if (!isCompatibleTdFeature(linked.desc || '', linked.descTc || '', camKey || '')) return false;
+          if (!isCompatibleTdFeature(linked.desc || '', linked.descTc || '', camKey || '', linked.lat, linked.lon)) return false;
           const cLat = Number(linked.lat), cLon = Number(linked.lon);
           if (!Number.isFinite(cLat) || !Number.isFinite(cLon)) return true;
+          const limKm = isDividedHighwaySnapRoad(linked.desc || '', linked.descTc || '', camKey || '')
+            ? Math.max(maxCamDistKm, 0.085)
+            : (isRoundaboutOrInterchangeDetector(linked.desc || '', linked.descTc || '', camKey || '', cLat, cLon) ? Math.max(maxCamDistKm, 0.120) : maxCamDistKm);
           let minKm = Infinity;
           for (let s = 0; s < subSegs.length; s++) {
             const ss = subSegs[s];
             const dKm = _pointToSegKmLocal(cLat, cLon, ss.aLat, ss.aLon, ss.bLat, ss.bLon).distKm;
             if (dKm < minKm) minKm = dKm;
           }
-          return minKm <= maxCamDistKm;
+          return minKm <= limKm;
         };
 
         if (!bestCam && focusLink.camKey) {
@@ -1720,12 +1896,14 @@
           tdTier,
           tdStatus,
           tdColor: getBusSpeedColorHex(tdTier, resolvedSpd),
-          tdOcc: Math.abs(Math.round(focusLink.occ || 0)),
+          tdOcc: resolvedOcc,
           tdDetId: focusLink.id || '',
           tdRoadEn: _sanitizeDirectionTypos(focusLink.roadEn || focusLink.roadTc || ''),
           tdRoadTc: _sanitizeDirectionTypos(focusLink.roadTc || focusLink.roadEn || ''),
           tdDet: focusLink.props || null,
           tdMatchCount: linkMatches.length,
+          roundaboutBottleneck: isRbBottleneck,
+          roundaboutDetectors: roundaboutLinkBottlenecks.map(x => x.props || x),
           cam: bestCam
         };
       }
@@ -1735,15 +1913,24 @@
       return { ...empty, cam: bestCam };
     }
 
-    // Summarize TD ground-truth detectors on this span
+    // Summarize TD ground-truth detectors on this span.
+    // Preserve jammed roundabout/interchange bottlenecks (spd < 18 or occ >= 70%) without
+    // letting downstream free-flow highway speed (e.g. 63 km/h) overwrite or wash them out.
+    const roundaboutBottlenecks = matchedDets.filter(x => x.isRoundaboutBottleneck);
     const activeSlow = matchedDets.filter(x => {
-      const tr = normalizeTrafficTier(x.det.tier, x.spd);
+      const tr = normalizeTrafficTier(x.det.tier, x.spd, x.occ);
       return tr === 'CONGESTED' || tr === 'MODERATE';
     });
     let focus = matchedDets[0];
     let resolvedSpd = 0;
-    if (activeSlow.length) {
-      activeSlow.sort((a, b) => a.spd - b.spd);
+    let isRbBottleneck = false;
+    if (roundaboutBottlenecks.length) {
+      roundaboutBottlenecks.sort((a, b) => (a.spd - b.spd) || (b.occ - a.occ));
+      focus = roundaboutBottlenecks[0];
+      resolvedSpd = Math.abs(Math.round(focus.spd));
+      isRbBottleneck = true;
+    } else if (activeSlow.length) {
+      activeSlow.sort((a, b) => (a.spd - b.spd) || (b.occ - a.occ));
       focus = activeSlow[0];
       resolvedSpd = Math.abs(Math.round(focus.spd));
     } else {
@@ -1751,7 +1938,8 @@
       focus = matchedDets[0];
       resolvedSpd = Math.abs(Math.round(matchedDets.reduce((acc, x) => acc + x.spd, 0) / matchedDets.length));
     }
-    const tdTier = normalizeTrafficTier(activeSlow.length ? focus.det.tier : 'SMOOTH', resolvedSpd);
+    const resolvedOcc = Math.abs(Math.round(focus.occ || 0));
+    const tdTier = normalizeTrafficTier((isRbBottleneck || activeSlow.length) ? focus.det.tier : 'SMOOTH', resolvedSpd, resolvedOcc);
     const tdStatus = tdTier === 'CONGESTED' ? 'JAMMED' : (tdTier === 'MODERATE' ? 'SLOW' : 'SMOOTH');
 
     // If detector itself links a camKey and we didn't find a closer directional camera, attach that camera metadata only if nearby & road-compatible
@@ -1759,18 +1947,21 @@
       const linked = Array.isArray(tdCameras) ? tdCameras.find(c => c.key === focus.det.camKey) : null;
       let camOk = true;
       if (linked) {
-        if (!isCompatibleTdFeature(linked.desc || '', linked.descTc || '', focus.det.camKey || '')) {
+        if (!isCompatibleTdFeature(linked.desc || '', linked.descTc || '', focus.det.camKey || '', linked.lat, linked.lon)) {
           camOk = false;
         } else {
           const cLat = Number(linked.lat), cLon = Number(linked.lon);
           if (Number.isFinite(cLat) && Number.isFinite(cLon)) {
+            const limKm = isDividedHighwaySnapRoad(linked.desc || '', linked.descTc || '', focus.det.camKey || '')
+              ? Math.max(maxCamDistKm, 0.085)
+              : (isRoundaboutOrInterchangeDetector(linked.desc || '', linked.descTc || '', focus.det.camKey || '', cLat, cLon) ? Math.max(maxCamDistKm, 0.120) : maxCamDistKm);
             let minKm = Infinity;
             for (let s = 0; s < subSegs.length; s++) {
               const ss = subSegs[s];
               const dKm = _pointToSegKmLocal(cLat, cLon, ss.aLat, ss.aLon, ss.bLat, ss.bLon).distKm;
               if (dKm < minKm) minKm = dKm;
             }
-            if (minKm > maxCamDistKm) camOk = false;
+            if (minKm > limKm) camOk = false;
           }
         }
       }
@@ -1794,12 +1985,14 @@
       tdTier,
       tdStatus,
       tdColor: getBusSpeedColorHex(tdTier, resolvedSpd),
-      tdOcc: Math.abs(Math.round(focus.occ || 0)),
+      tdOcc: resolvedOcc,
       tdDetId: focus.det.id || '',
       tdRoadEn: _sanitizeDirectionTypos(focus.det.roadEn || focus.det.roadTc || ''),
       tdRoadTc: _sanitizeDirectionTypos(focus.det.roadTc || focus.det.roadEn || ''),
       tdDet: focus.det,
       tdMatchCount: matchedDets.length,
+      roundaboutBottleneck: isRbBottleneck,
+      roundaboutDetectors: roundaboutBottlenecks.map(x => x.det),
       cam: bestCam
     };
   }
@@ -2121,8 +2314,32 @@
       // Guard 0: Sub-minute ETA rounding artifact (Δt <= 65s over > 600 m) is always Flowing / Green
       const isEtaRoundingArtifact = Boolean(deltaSec <= 65 && roadDistKm > 0.60);
 
-      // Classify Bus API tier using calibrated HK road-class thresholds
-      const ratio = busSpeedKmh / Math.max(15, roadProfile.expectedKmh);
+      // Count how many distinct matched live buses on this span crawled at < 8 km/h (strict multi-bus stall gate)
+      const matchedBusCount = matched.deltas.length;
+      let severeSlowBusCount = 0;
+      if (!matched.isScheduledOnly && matchedBusCount >= 2) {
+        for (let di = 0; di < matchedBusCount; di++) {
+          const dSecI = Math.abs(matched.deltas[di]);
+          const qAdjI = (matched.allRounded && dSecI >= 90) ? (roadDistKm < 0.78 ? 25 : 14) : 0;
+          const allowI = Math.min(dSecI * (dSecI <= 75 ? 0.35 : 0.62), dwellSec + qAdjI);
+          const movI = Math.max(20, dSecI - allowI);
+          const spdI = roadDistKm / (movI / 3600);
+          if (spdI < 8) severeSlowBusCount++;
+        }
+      }
+      const hasMultiBusStallOnSpan = Boolean(
+        !matched.isScheduledOnly &&
+        !isTerminusApproach &&
+        !isOriginLayoverLoop &&
+        matchedBusCount >= 2 &&
+        severeSlowBusCount >= 2 &&
+        busSpeedKmh < 8
+      );
+
+      // Classify Bus API tier:
+      // - Clear (Green): >= 18 km/h (or >= 20 km/h on Airport Perimeter)
+      // - Slow (Amber): < 18 km/h (single-bus speeds 6–17 km/h ALWAYS cap at Slow Amber, NEVER Red!)
+      // - Jammed (Red): strictly reserved for verified severe multi-bus stalls (< 8 km/h across >= 2 consecutive buses)
       let busTier = 'SMOOTH';
       if (isEtaRoundingArtifact) {
         busTier = 'SMOOTH';
@@ -2136,27 +2353,20 @@
           reason: 'eta_rounding_artifact',
           detail: `dt=${Math.round(deltaSec)}s over ${Math.round(roadDistKm * 1000)}m clamped Flowing`
         });
-      } else if (isAirportPerimeter) {
-        // Airport perimeter / cargo service roads: 20–35+ km/h = Flowing Green; Red only if < 8 km/h across >= 2 consecutive spans
-        if (busSpeedKmh < 8) {
-          busTier = 'CONGESTED';
-        } else if (busSpeedKmh < 20) {
-          busTier = 'MODERATE';
-        } else {
-          busTier = 'SMOOTH';
-        }
-      } else if (busSpeedKmh >= 40) {
-        busTier = 'SMOOTH';
-      } else if (busSpeedKmh < roadProfile.moderateMinKmh || ratio < 0.44) {
+      } else if (hasMultiBusStallOnSpan) {
         busTier = 'CONGESTED';
-      } else if (busSpeedKmh < roadProfile.smoothMinKmh || ratio < 0.72) {
+      } else if (isAirportPerimeter) {
+        busTier = busSpeedKmh >= 20 ? 'SMOOTH' : 'MODERATE';
+      } else if (busSpeedKmh >= 18) {
+        busTier = 'SMOOTH';
+      } else {
         busTier = 'MODERATE';
       }
 
       // Guard 1: Short urban/new-town hop (<= 2 min rounded ETA) is normal bus pacing — NEVER false RED!
       if (roadDistKm < 0.78 && deltaSec <= 125 && busTier === 'CONGESTED') {
         busTier = 'SMOOTH';
-        busSpeedKmh = Math.max(busSpeedKmh, roadProfile.smoothMinKmh);
+        busSpeedKmh = Math.max(busSpeedKmh, 18);
       }
       // Guard 2: Terminus departure (stop 0 -> 1) <= 3 min or origin layover loop within 150m is normal departure padding — NEVER false slow/red!
       if (isOriginLayoverLoop && !coveredByTd) {
@@ -2171,11 +2381,11 @@
         });
         if (busTier !== 'SMOOTH') {
           busTier = 'SMOOTH';
-          busSpeedKmh = Math.max(busSpeedKmh, roadProfile.smoothMinKmh);
+          busSpeedKmh = Math.max(busSpeedKmh, 18);
         }
       } else if (i === 0 && roadDistKm < 1.2 && deltaSec <= 185 && busTier === 'CONGESTED') {
         busTier = 'SMOOTH';
-        busSpeedKmh = Math.max(busSpeedKmh, roadProfile.smoothMinKmh);
+        busSpeedKmh = Math.max(busSpeedKmh, 18);
       }
       // Guard 3: Exclude final terminus-approach span (last 1 stop into terminus like Pat Heung Road)
       // from triggering false "Slow Bus Flow" / "Heavy Bus Flow" warnings caused by terminus arrival padding!
@@ -2191,14 +2401,14 @@
         });
         if (busTier !== 'SMOOTH') {
           busTier = 'SMOOTH';
-          busSpeedKmh = Math.max(busSpeedKmh, roadProfile.smoothMinKmh);
+          busSpeedKmh = Math.max(busSpeedKmh, 18);
         }
       }
 
       // Guard 4: Scheduled/headway ETA handling:
       // - Origin terminal departure headway (stop 0 -> 1 from Ferry Pier / Terminus) is ALWAYS Flowing (Green),
       //   so layover/headway gaps at Mui Wo Ferry Pier never trigger false "Slow" warnings!
-      // - For NLB corridors when live ETA pairs are sparse between intermediate stops: allow Green/Yellow ONLY (never Red!)
+      // - For NLB corridors when live ETA pairs are sparse between intermediate stops: allow Green/Amber ONLY (never Red!)
       //   via scheduled/headway interval inference so South Lantau renders cleanly without fabricating speeds.
       // - For all other routes: scheduled-only ETAs never fabricate amber/red delays.
       const isScheduledFallback = Boolean(matched.isScheduledOnly && allowNlbScheduledFallback);
@@ -2215,7 +2425,7 @@
               detail: 'Origin terminal scheduled departure headway classified Flowing'
             });
             busTier = 'SMOOTH';
-            busSpeedKmh = Math.max(busSpeedKmh, roadProfile.smoothMinKmh);
+            busSpeedKmh = Math.max(busSpeedKmh, 18);
           }
         } else if (isScheduledFallback) {
           if (busTier === 'CONGESTED') {
@@ -2224,7 +2434,7 @@
           }
         } else if (busTier !== 'SMOOTH') {
           busTier = 'SMOOTH';
-          busSpeedKmh = Math.max(busSpeedKmh, roadProfile.smoothMinKmh);
+          busSpeedKmh = Math.max(busSpeedKmh, 18);
         }
       }
 
@@ -2240,6 +2450,7 @@
         });
       }
 
+      const verifiedMultiBusStall = Boolean(hasMultiBusStallOnSpan && busTier === 'CONGESTED');
       rawSegs.push({
         fromIdx: i,
         toIdx: j,
@@ -2258,21 +2469,24 @@
         isTerminusApproach,
         isEtaRoundingArtifact,
         isRoadSnapped: Boolean(sliced.isRoadSnapped),
-        smoothMinKmh: roadProfile.smoothMinKmh,
+        smoothMinKmh: isAirportPerimeter ? 20 : 18,
         moderateMinKmh: roadProfile.moderateMinKmh,
         roadDistKm: Math.abs(Number(roadDistKm.toFixed(2))),
         deltaSec: Math.abs(Math.round(deltaSec)),
+        matchedBusCount,
+        severeSlowBusCount,
+        isVerifiedMultiBusStall: verifiedMultiBusStall,
         busInferredSpeedKmh: Math.abs(busSpeedKmh),
         busInferredTier: busTier,
         speedKmh: Math.abs(busSpeedKmh),
         expectedKmh: roadProfile.expectedKmh,
         tier: busTier,
         isBottleneck: !matched.isScheduledOnly && !isTerminusApproach && !isOriginLayoverLoop && (busTier === 'CONGESTED' || busTier === 'MODERATE'),
-        allowRed: false,
+        allowRed: verifiedMultiBusStall,
         hasConsecutiveSlowSpan: false,
         color: getBusSpeedColorHex(busTier, busSpeedKmh),
         source: 'BUS_API',
-        confidence: matched.isScheduledOnly ? 'LOW' : (matched.deltas.length >= 2 ? 'HIGH' : 'MEDIUM'),
+        confidence: matched.isScheduledOnly ? 'LOW' : (matchedBusCount >= 2 ? 'HIGH' : 'MEDIUM'),
         isScheduledOnly: matched.isScheduledOnly,
         isScheduledFallback,
         coveredByTd,
@@ -2288,6 +2502,7 @@
     for (let k = 0; k < rawSegs.length; k++) {
       const seg = rawSegs[k];
       if (seg.coveredByTd || seg.isScheduledOnly || seg.isTerminusApproach || seg.isOriginLayover || seg.tier === 'SMOOTH' || seg.roadDistKm >= 0.70) continue;
+      if (seg.isVerifiedMultiBusStall) continue;
       const prev = (k > 0 && rawSegs[k - 1].toIdx === seg.fromIdx && !rawSegs[k - 1].isScheduledOnly) ? rawSegs[k - 1] : null;
       const next = (k + 1 < rawSegs.length && rawSegs[k + 1].fromIdx === seg.toIdx && !rawSegs[k + 1].isScheduledOnly) ? rawSegs[k + 1] : null;
       const neighbors = [prev, next].filter(Boolean);
@@ -2304,19 +2519,24 @@
         const blended = Math.abs(Number((seg.speedKmh * 0.4 + macroKmh * 0.6).toFixed(1)));
         seg.speedKmh = blended;
         seg.busInferredSpeedKmh = blended;
-        seg.tier = blended >= (seg.smoothMinKmh || 17) ? 'SMOOTH' : 'MODERATE';
+        seg.tier = blended >= 18 ? 'SMOOTH' : 'MODERATE';
         seg.busInferredTier = seg.tier;
         seg.isBottleneck = seg.tier !== 'SMOOTH';
+        seg.isVerifiedMultiBusStall = false;
+        seg.allowRed = false;
         seg.color = getBusSpeedColorHex(seg.tier, seg.speedKmh);
       }
     }
 
-    // Pass 2.5: Require >= 2 consecutive slow/congested live spans before flagging Red (CONGESTED)
-    // On Airport Perimeter roads, require speed < 8 km/h across >= 2 consecutive non-terminus spans!
+    // Pass 2.5:
+    // - Red (CONGESTED) is strictly reserved for verified severe multi-bus stalls (< 8 km/h across >= 2 consecutive live buses).
+    // - Isolated single slow rural span without a slow neighbor smooths cleanly to Clear (SMOOTH).
+    // - All other non-TD Bus API slow spans (< 18 km/h, including single-bus 6–17 km/h) strictly cap at Slow (MODERATE Amber).
     const preConsecTiers = rawSegs.map(s => ((s.isScheduledOnly || s.isTerminusApproach || s.isOriginLayover) ? 'SMOOTH' : s.tier));
     for (let k = 0; k < rawSegs.length; k++) {
       const seg = rawSegs[k];
-      if (seg.coveredByTd || seg.isScheduledOnly || seg.isTerminusApproach || seg.isOriginLayover || seg.tier !== 'CONGESTED') continue;
+      if (seg.coveredByTd || seg.isScheduledOnly || seg.isTerminusApproach || seg.isOriginLayover) continue;
+      if (seg.tier === 'SMOOTH') continue;
       const isApZone = seg.roadClass === 'AIRPORT_PERIMETER';
       const neighborQualifies = (idx) => {
         if (idx < 0 || idx >= rawSegs.length) return false;
@@ -2327,21 +2547,29 @@
       };
       const hasPrevSlow = (k > 0 && rawSegs[k - 1].toIdx === seg.fromIdx && neighborQualifies(k - 1));
       const hasNextSlow = (k + 1 < rawSegs.length && rawSegs[k + 1].fromIdx === seg.toIdx && neighborQualifies(k + 1));
-      if ((!isApZone || seg.speedKmh < 8) && (hasPrevSlow || hasNextSlow)) {
-        seg.hasConsecutiveSlowSpan = true;
+
+      if (seg.tier === 'CONGESTED' && seg.isVerifiedMultiBusStall && seg.speedKmh < 8 && (hasPrevSlow || hasNextSlow || seg.severeSlowBusCount >= 2)) {
+        seg.hasConsecutiveSlowSpan = Boolean(hasPrevSlow || hasNextSlow);
         seg.allowRed = true;
       } else {
-        const isRuralOrTerminus = Boolean(seg.isRuralWinding || seg.roadClass === 'RURAL_ARTERIAL' || seg.fromIdx === 0 || seg.isTerminusDep);
-        const downgradedTier = isApZone
-          ? (seg.speedKmh >= 20 ? 'SMOOTH' : 'MODERATE')
-          : ((isRuralOrTerminus || seg.roadDistKm < 0.85) ? 'SMOOTH' : 'MODERATE');
-        const floorKmh = downgradedTier === 'SMOOTH' ? (seg.smoothMinKmh || 20) : (seg.moderateMinKmh || 14);
+        const isIsolatedRuralGlitch = Boolean(
+          (seg.isRuralWinding || seg.roadClass === 'RURAL_ARTERIAL') &&
+          !hasPrevSlow &&
+          !hasNextSlow &&
+          !seg.isVerifiedMultiBusStall
+        );
+        const downgradedTier = isIsolatedRuralGlitch
+          ? 'SMOOTH'
+          : capBusApiTier(seg.tier, seg.speedKmh, false);
         seg.tier = downgradedTier;
         seg.busInferredTier = downgradedTier;
-        seg.speedKmh = Math.abs(Math.max(seg.speedKmh, floorKmh));
-        seg.busInferredSpeedKmh = seg.speedKmh;
+        if (isIsolatedRuralGlitch) {
+          seg.speedKmh = Math.abs(Math.max(seg.speedKmh, seg.smoothMinKmh || 20));
+          seg.busInferredSpeedKmh = seg.speedKmh;
+        }
         seg.isBottleneck = downgradedTier !== 'SMOOTH';
         seg.hasConsecutiveSlowSpan = false;
+        seg.isVerifiedMultiBusStall = false;
         seg.allowRed = false;
         seg.color = getBusSpeedColorHex(downgradedTier, seg.speedKmh);
       }
@@ -2366,6 +2594,8 @@
           occ: Math.abs(Number(td.tdOcc) || 0),
           roadEn: _sanitizeDirectionTypos(td.tdRoadEn),
           roadTc: _sanitizeDirectionTypos(td.tdRoadTc),
+          roundaboutBottleneck: td.roundaboutBottleneck || null,
+          isRoundaboutBottleneck: Boolean(td.roundaboutBottleneck),
           cam: td.cam,
           camKey: td.cam?.camKey || td.cam?.key || '',
           camDesc: _sanitizeDirectionTypos(td.cam?.desc || '')
@@ -2391,8 +2621,8 @@
   // Unified Stop-by-Stop Traffic Timeline Builder (Single Source of Truth for stop-row pills,
   // horizontal Board -> Terminus journey bar, expanded card banner, and inline "Details >" breakdown!)
   // Strictly enforces 3-tier priority per stop-to-stop span:
-  //   1) TD Speed Detector (+ TD Camera if present, with <=60m highway / <=45m side-street & road-name compatibility)
-  //   2) Calibrated Bus Speed Inference (+ TD Camera if present, excluding terminus-approach false warnings)
+  //   1) TD Speed Detector (+ TD Camera if present, with <=85m divided highway / <=60m highway / <=45m side-street & road-name compatibility)
+  //   2) Calibrated Bus Speed Inference (+ TD Camera if present, capped at Clear/Slow unless verified severe multi-bus stall)
   //   3) TD Camera only (if no speed data yet)
   function buildStopByStopSegmentTraffic(stops, roadPolylinePoints = null, tdDetectors = [], tdCameras = [], busSpeedSegments = [], opts = {}) {
     if (!Array.isArray(stops) || stops.length < 2) return [];
@@ -2490,6 +2720,8 @@
           det: tdTruth.tdDet || null,
           roadEn: _sanitizeDirectionTypos(tdTruth.tdRoadEn),
           roadTc: _sanitizeDirectionTypos(tdTruth.tdRoadTc),
+          roundaboutBottleneck: tdTruth.roundaboutBottleneck || null,
+          isRoundaboutBottleneck: Boolean(tdTruth.roundaboutBottleneck),
           cam: tdTruth.cam,
           camKey: tdTruth.cam?.camKey || tdTruth.cam?.key || '',
           camDesc: _sanitizeDirectionTypos(tdTruth.cam?.desc || ''),
@@ -2507,8 +2739,9 @@
 
       // Tier 2: Calibrated Bus Speed Inference (only when no TD detector or TD speed link covers this stretch)
       if (busSeg && !busSeg.coveredByTd && !busSeg.tdCovered && busSeg.source !== 'TD' && Number.isFinite(Number(busSeg.speedKmh))) {
-        let tier = normalizeTrafficTier(busSeg.tier, Math.abs(Number(busSeg.speedKmh)));
         let effSpeed = Math.abs(Math.round(Number(busSeg.speedKmh)));
+        const verifiedStall = Boolean(busSeg.isVerifiedMultiBusStall && !isTerminusApproach && !busSeg.isScheduledOnly && !busSeg.isScheduledFallback && effSpeed < 8);
+        let tier = capBusApiTier(busSeg.tier, effSpeed, verifiedStall);
         if (isTerminusApproach && tier !== 'SMOOTH') {
           tier = 'SMOOTH';
           effSpeed = Math.max(effSpeed, Math.round(Number(busSeg.smoothMinKmh) || 18));
@@ -2539,10 +2772,12 @@
           deltaSec: busSeg.deltaSec ? Math.abs(Number(busSeg.deltaSec)) : null,
           expectedKmh: busSeg.expectedKmh || null,
           confidence: busSeg.confidence || 'MEDIUM',
+          matchedBusCount: Number(busSeg.matchedBusCount) || 1,
+          isVerifiedMultiBusStall: verifiedStall,
           isScheduledOnly: Boolean(busSeg.isScheduledOnly),
           isScheduledFallback: Boolean(busSeg.isScheduledFallback),
           isTerminusApproach,
-          allowRed: Boolean(busSeg.allowRed && !isTerminusApproach),
+          allowRed: Boolean(verifiedStall && busSeg.allowRed !== false),
           coords: segCoords
         });
         continue;
@@ -2975,9 +3210,14 @@
     getBusSpeedColorHex,
     sanitizeDirectionTypos: _sanitizeDirectionTypos,
     normalizeTrafficTier,
+    capBusApiTier,
     isScheduledBusEtaEntry,
     isTerminusLikeStop,
     isRuralWindingCorridor,
+    isRuralCoastalHighwaySpan,
+    isDividedHighwaySnapRoad,
+    isRoundaboutOrInterchangeDetector,
+    isRoundaboutBottleneckSample,
     isUndividedUrbanRoad,
     isAirportPerimeterZone,
     isNarrowTwoWayLocalRoad,

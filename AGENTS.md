@@ -6,3 +6,13 @@
 - Keep `public/assets/aistudio/` ignored in `.gitignore` and absent from the local workspace.
 - Never reference `assets/aistudio` from `src/`, `public/`, or `index.html`.
 - Only intentional, production application assets belong in `public/`.
+
+## Branch & Deployment Safety
+
+- **Work strictly on the `dev` branch.** Never commit or push directly to `main`.
+- Every push to `dev` deploys to `https://dev.hkway.pages.dev` via Cloudflare Preview Deployments; run `npm run build` (and typecheck) to confirm zero build errors before finishing a task.
+
+## Tool & Layer Boundaries (Dual-Tool Workflow)
+
+- **Backend / Transit Telemetry (`functions/api/`, `scripts/`, data parsers, types):** Owned by Antigravity Web (`Orchestrator (Neon)`). Do not alter frontend layout or CSS classes unless explicitly instructed.
+- **Frontend / Map & Bus Card UI (`src/`, `index.html`, styling):** Owned by Google AI Studio Web. Do not alter Cloudflare Functions (`functions/api/`), data schemas, or `scripts/` when making UI or screenshot-driven visual fixes.

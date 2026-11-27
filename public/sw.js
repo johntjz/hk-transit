@@ -1,4 +1,4 @@
-/* Transit HK (通) Service Worker — Explicit SKIP_WAITING Update Lifecycle */
+/* Transit HK (通) Service Worker — Silent Auto-Update + SKIP_WAITING Lifecycle */
 const SW_BUILD_VERSION = '2026-11-27 11:06 HKT';
 const CACHE_PREFIX = 'transit-hk-shell-';
 const CACHE_NAME = `${CACHE_PREFIX}${SW_BUILD_VERSION.replace(/[^0-9A-Za-z_-]+/g, '-')}`;
@@ -11,8 +11,7 @@ const CORE_SHELL_URLS = [
 ];
 
 self.addEventListener('install', (event) => {
-  // Intentionally do NOT call self.skipWaiting() here so updates enter the waiting state
-  // and only activate when the user explicitly taps the update toast ({ type: 'SKIP_WAITING' }).
+  self.skipWaiting();
   event.waitUntil(
     caches.open(CACHE_NAME)
       .then((cache) => Promise.allSettled(CORE_SHELL_URLS.map((u) => cache.add(u))))
@@ -32,7 +31,7 @@ self.addEventListener('activate', (event) => {
     caches.keys()
       .then((keys) => Promise.all(
         keys
-          .filter((k) => k.startsWith(CACHE_PREFIX) && k !== CACHE_NAME)
+          .filter((k) => k !== CACHE_NAME)
           .map((k) => caches.delete(k))
       ))
       .then(() => self.clients.claim())

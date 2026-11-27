@@ -1923,7 +1923,10 @@ function drawRouteOnMap(group, activeStopIdx = 0) {
         detailPolylineLayer = buildDetailBusPolylineLayer(roadCoords, stops, curActive, routeAccent).addTo(window.mapInstance);
         // Re-run strict forward-only route traffic & camera filtering against the exact road-snapped polyline
         renderTrafficOverlayOnMap(window.mapInstance, true);
-        if (window.busSpeedLayerEnabled) {
+        if (typeof window.refreshStopByStopTrafficUI === 'function') {
+          window.refreshStopByStopTrafficUI();
+        }
+        if (isBusRoute) {
           syncDetailRouteBusSpeedSegments(group, stops);
         }
         if (typeof window.onBusRouteGeometryReady === 'function') {
@@ -1969,7 +1972,7 @@ function drawRouteOnMap(group, activeStopIdx = 0) {
     } catch (e) {}
   }
   renderTrafficOverlayOnMap(window.mapInstance, true);
-  if (isBusRoute && window.busSpeedLayerEnabled) {
+  if (isBusRoute) {
     syncDetailRouteBusSpeedSegments(group, stops);
   }
 }
@@ -3146,8 +3149,9 @@ function _drawBusSpeedSegmentsIntoLayer(segments, layerGroup, routeLabel = '') {
       const rawTo = isZh ? (seg.toNameTc || seg.toNameEn) : (seg.toNameEn || seg.toNameTc);
       const fromNm = sanitizeBottleneckLabel(rawFrom || `Stop ${seg.fromSeq || ((seg.fromIdx || 0) + 1)}`);
       const toNm = sanitizeBottleneckLabel(rawTo || `Stop ${seg.toSeq || ((seg.toIdx || 0) + 2)}`);
+      const srcBadge = seg.source === 'TD' ? '🚦 TD' : '🚌';
       line.bindTooltip(
-        `🚌 ${prefix}${Math.round(seg.speedKmh)} km/h (${fromNm} → ${toNm})`,
+        `${srcBadge} ${prefix}${Math.round(seg.speedKmh)} km/h (${fromNm} → ${toNm})`,
         { sticky: true, className: 'kmb-map-stop-label' }
       );
     }
@@ -3182,6 +3186,7 @@ async function syncDetailRouteBusSpeedSegments(group, stops, preloadedEtaByStopI
   }
   const myToken = ++_detailBusSpeedSyncToken;
   const tdDetectors = Array.isArray(window.__LIVE_TRAFFIC_DETECTORS__) ? window.__LIVE_TRAFFIC_DETECTORS__ : [];
+  const tdCameras = Array.isArray(window.__LIVE_TRAFFIC_CAMERAS__) ? window.__LIVE_TRAFFIC_CAMERAS__ : [];
   const roadCoords = (Array.isArray(currentDetailRoadCoords) && currentDetailRoadCoords.length >= 2)
     ? currentDetailRoadCoords
     : stops.map(s => [parseFloat(s.latitude), parseFloat(s.longitude)]).filter(p => Number.isFinite(p[0]) && Number.isFinite(p[1]));
@@ -3206,10 +3211,10 @@ async function syncDetailRouteBusSpeedSegments(group, stops, preloadedEtaByStopI
         }
       } catch (e) {}
     } else if (typeof fetchEtaRaw === 'function') {
-      // Sample up to 6 stops around the expanded stop for CTB / NLB / GMB routes
+      // Sample up to 12 stops around the expanded stop for CTB / NLB / GMB routes (covers South Lantau 3M / HKI CTB)
       const centerIdx = (typeof detailExpandedStopIdx === 'number' && detailExpandedStopIdx >= 0) ? detailExpandedStopIdx : 0;
-      const startIdx = Math.max(0, centerIdx - 1);
-      const endIdx = Math.min(stops.length - 1, startIdx + 5);
+      const startIdx = Math.max(0, centerIdx - 2);
+      const endIdx = Math.min(stops.length - 1, startIdx + 11);
       const indices = [];
       for (let i = startIdx; i <= endIdx; i++) indices.push(i);
       try {
@@ -3235,11 +3240,15 @@ async function syncDetailRouteBusSpeedSegments(group, stops, preloadedEtaByStopI
 
   if (!etaByStopIdx || !Object.keys(etaByStopIdx).length) {
     window.__DETAIL_BUS_SPEED_SEGMENTS__ = [];
+    if (typeof window.refreshStopByStopTrafficUI === 'function') window.refreshStopByStopTrafficUI();
     return [];
   }
 
   const segs = window.inferBusApiSegmentSpeeds(stops, etaByStopIdx, roadCoords, {
     tdDetectors,
+    tdCameras,
+    routeNo: group.routeNo || '',
+    company: group.company || '',
     nowMs: Date.now()
   });
   window.__DETAIL_BUS_SPEED_SEGMENTS__ = segs;
@@ -3248,6 +3257,9 @@ async function syncDetailRouteBusSpeedSegments(group, stops, preloadedEtaByStopI
   }
   if (typeof window.onDetailBusSpeedReady === 'function') {
     window.onDetailBusSpeedReady(group?.key || '');
+  }
+  if (typeof window.refreshStopByStopTrafficUI === 'function') {
+    window.refreshStopByStopTrafficUI();
   }
   return segs;
 }
@@ -3267,58 +3279,73 @@ function renderGlobalBusSpeedOverlay(targetMap = window.browseMapInstance) {
   const routePool = (typeof groupedRoutes !== 'undefined' && Array.isArray(groupedRoutes) && groupedRoutes.length)
     ? groupedRoutes
     : ((typeof routeGroups !== 'undefined' && Array.isArray(routeGroups)) ? routeGroups : []);
-  if (typeof window.inferBusApiSegmentSpeeds !== 'function' || typeof fetchKmbRouteBulkEta !== 'function' || !routePool.length) return;
+  if (typeof window.inferBusApiSegmentSpeeds !== 'function' || !routePool.length) return;
 
   const bounds = targetMap.getBounds ? targetMap.getBounds() : null;
   if (!bounds || typeof bounds.contains !== 'function') return;
   const tdDetectors = Array.isArray(window.__LIVE_TRAFFIC_DETECTORS__) ? window.__LIVE_TRAFFIC_DETECTORS__ : [];
+  const tdCameras = Array.isArray(window.__LIVE_TRAFFIC_CAMERAS__) ? window.__LIVE_TRAFFIC_CAMERAS__ : [];
 
-  // Select up to 6 visible KMB/LWB bus routes in the current viewport (prioritizing corridors with TD gaps)
-  const candidates = [];
-  for (let i = 0; i < routePool.length && candidates.length < 28; i++) {
-    const g = routePool[i];
-    if (!g || (g.mode && g.mode !== 'BUS')) continue;
-    const rId = g.routeIds?.[0] || '';
-    if (g.company !== 'KMB' && g.company !== 'LWB' && !rId.startsWith('KMB_') && !rId.startsWith('LWB_')) continue;
-    const stops = (typeof getStopsForGroup === 'function') ? getStopsForGroup(g, null) : [];
-    if (!Array.isArray(stops) || stops.length < 4) continue;
-    let inBoundsCount = 0;
-    for (let s = 0; s < stops.length; s += 2) {
-      const la = parseFloat(stops[s]?.latitude), lo = parseFloat(stops[s]?.longitude);
-      if (Number.isFinite(la) && Number.isFinite(lo) && bounds.contains([la, lo])) {
-        inBoundsCount++;
-      }
-    }
-    if (inBoundsCount >= 2) {
-      candidates.push({ group: g, stops, inBoundsCount });
-    }
-  }
-  candidates.sort((a, b) => b.inBoundsCount - a.inBoundsCount);
-  const picked = candidates.slice(0, 6);
+  // Multi-operator selection (KMB, LWB, NLB for South Lantau Rd / Mui Wo / Pui O, CTB for HKI, GMB)
+  const picked = (typeof window.selectGlobalBusSpeedRoutes === 'function')
+    ? window.selectGlobalBusSpeedRoutes(routePool, bounds, (typeof getStopsForGroup === 'function' ? getStopsForGroup : null), 7)
+    : [];
   if (!picked.length) return;
 
   const myToken = ++_globalBusSpeedFetchToken;
-  Promise.all(picked.map(async ({ group, stops }) => {
+  Promise.all(picked.map(async ({ group, stops, operator, inBoundsIndices }) => {
     const rId = group.routeIds?.[0] || '';
     const parts = rId.split('_');
     const svcType = parts[3] || group.serviceType || '1';
     const dirChar = parts[2] || (String(group.bound || '').toUpperCase().startsWith('I') ? 'I' : 'O');
     const cacheKey = `${group.company || ''}|${group.routeNo || ''}|${dirChar}|${svcType}`;
     const cached = window.__GLOBAL_BUS_SPEED_CACHE__?.get(cacheKey);
-    let etaByStopIdx = (cached && (Date.now() - cached.ts) < 45000) ? cached.etaByStopIdx : null;
+    const etaByStopIdx = (cached && (Date.now() - cached.ts) < 45000) ? cached.etaByStopIdx : null;
+
     const [etaRes, snappedRoad] = await Promise.all([
       (async () => {
         if (etaByStopIdx) return etaByStopIdx;
-        try {
-          const bulkMap = await fetchKmbRouteBulkEta(parts[1] || group.routeNo, svcType, false);
-          const extracted = _extractKmbEtaByStopIdx(group, stops, bulkMap);
-          if (extracted) {
-            window.__GLOBAL_BUS_SPEED_CACHE__?.set(cacheKey, { ts: Date.now(), etaByStopIdx: extracted });
+        if (operator === 'KMB' && typeof fetchKmbRouteBulkEta === 'function') {
+          try {
+            const bulkMap = await fetchKmbRouteBulkEta(parts[1] || group.routeNo, svcType, false);
+            const extracted = _extractKmbEtaByStopIdx(group, stops, bulkMap);
+            if (extracted) {
+              window.__GLOBAL_BUS_SPEED_CACHE__?.set(cacheKey, { ts: Date.now(), etaByStopIdx: extracted });
+            }
+            return extracted;
+          } catch (e) {
+            return null;
           }
-          return extracted;
-        } catch (e) {
-          return null;
         }
+        // Live stop-by-stop sampling for NLB (South Lantau Rd / Mui Wo / Pui O), CTB (HK Island), and GMB
+        if (typeof fetchEtaRaw === 'function') {
+          try {
+            const vis = Array.isArray(inBoundsIndices) && inBoundsIndices.length ? inBoundsIndices : [0, 1, 2, 3, 4, 5];
+            const firstVis = Math.max(0, vis[0] - 1);
+            const lastVis = Math.min(stops.length - 1, vis[vis.length - 1] + 1);
+            const sampleIdxs = [];
+            for (let idx = firstVis; idx <= lastVis && sampleIdxs.length < 9; idx++) {
+              sampleIdxs.push(idx);
+            }
+            const nowMs = Date.now();
+            const results = await Promise.all(sampleIdxs.map(async (idx) => {
+              const s = stops[idx];
+              const stKey = s?.stopKey || (typeof getGlobalStopKey === 'function' ? getGlobalStopKey(s) : '');
+              if (!stKey) return [idx, []];
+              const arr = await fetchEtaRaw(group, stKey, true, nowMs, idx);
+              return [idx, Array.isArray(arr) ? arr : []];
+            }));
+            const mapOut = {};
+            results.forEach(([idx, arr]) => {
+              if (Array.isArray(arr) && arr.length) mapOut[idx] = arr;
+            });
+            if (Object.keys(mapOut).length >= 2) {
+              window.__GLOBAL_BUS_SPEED_CACHE__?.set(cacheKey, { ts: Date.now(), etaByStopIdx: mapOut });
+              return mapOut;
+            }
+          } catch (e) {}
+        }
+        return null;
       })(),
       (async () => {
         const cachedPoly = getCachedBusRoutePolyline(group, stops);
@@ -3332,12 +3359,16 @@ function renderGlobalBusSpeedOverlay(targetMap = window.browseMapInstance) {
         return null;
       })()
     ]);
+
     if (!etaRes || !Array.isArray(snappedRoad) || snappedRoad.length < 3) return null;
     const segs = window.inferBusApiSegmentSpeeds(stops, etaRes, snappedRoad, {
       tdDetectors,
+      tdCameras,
+      routeNo: group.routeNo || '',
+      company: group.company || '',
       nowMs: Date.now()
     });
-    return { routeLabel: `${group.routeNo}`, segs };
+    return { routeLabel: `${group.company || ''} ${group.routeNo}`.trim(), segs };
   })).then((batches) => {
     if (myToken !== _globalBusSpeedFetchToken || !window.busSpeedLayerEnabled || !_globalBusSpeedLayerGroup) return;
     batches.forEach((b) => {

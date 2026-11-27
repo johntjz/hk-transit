@@ -143,6 +143,7 @@
     })();
   </script>
   <script src="hardcode.js"></script>
+  <script src="busspeed.js"></script>
   <script src="map.js"></script>
   <script src="planner.js"></script>
   <script>
@@ -1110,14 +1111,37 @@
     #stop-list-container { flex: 1; overflow-y: auto; background: var(--bg-white); padding-bottom: 60px; position: relative; }
 
     .stop-line, .stop-dot { display: none !important; }
-    .stop-item { position: relative; padding: 13px 16px 13px 74px; border-bottom: 1px solid var(--border-color); cursor: pointer; background: var(--bg-white); transition: background-color 0.15s ease; }
+    .stop-item { position: relative; padding: 13px 16px 13px 74px; border-left: 3.5px solid transparent; border-bottom: 1px solid var(--border-color); cursor: pointer; background: var(--bg-white); transition: background-color 0.15s ease, border-left-color 0.18s ease; }
+    .stop-item.seg-tone-smooth { border-left-color: #16a34a; }
+    .stop-item.seg-tone-moderate { border-left-color: #f59e0b; }
+    .stop-item.seg-tone-congested { border-left-color: #dc2626; }
     .stop-item.active-stop { background: var(--bg-surface); box-shadow: inset 3.5px 0 0 var(--ios-blue); }
+    .stop-item.active-stop.seg-tone-smooth,
+    .stop-item.active-stop.seg-tone-moderate,
+    .stop-item.active-stop.seg-tone-congested { box-shadow: none; }
     .stop-alight-col { position: absolute; left: 10px; top: 14px; width: 52px; display: flex; flex-direction: column; align-items: flex-end; justify-content: center; gap: 2px; z-index: 2; pointer-events: none; }
     .stop-board-badge { display: inline-block; padding: 2px 7px; border-radius: 999px; background: var(--ios-blue); color: #FFFFFF; font-size: 0.58rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; line-height: 1.25; }
     .stop-alight-time { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.78rem; font-weight: 600; color: var(--ios-blue); font-variant-numeric: tabular-nums; line-height: 1.2; }
     .stop-header-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
     .stop-name { font-size: 0.94rem; font-weight: 600; letter-spacing: -0.01em; color: var(--text-main); }
     .stop-fare-sub { font-size: 0.74rem; color: var(--text-sub); font-weight: 500; margin-top: 2px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .stop-seg-speed-slot { display: inline-flex; align-items: center; gap: 5px; margin-top: 4px; flex-wrap: wrap; }
+    .stop-seg-speed-slot:empty { display: none; }
+    .stop-seg-speed-pill {
+      display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px;
+      font-size: 0.68rem; font-weight: 700; line-height: 1.3; font-variant-numeric: tabular-nums;
+      border: 1px solid var(--border-color); background: var(--bg-surface); color: var(--text-main);
+      cursor: pointer; max-width: 100%; white-space: nowrap; transition: filter 0.12s ease, transform 0.12s ease;
+    }
+    .stop-seg-speed-pill:hover { filter: brightness(0.96); }
+    .stop-seg-speed-pill:active { transform: scale(0.97); }
+    .stop-seg-speed-pill.tone-smooth { border-color: rgba(22, 163, 74, 0.36); background: rgba(22, 163, 74, 0.10); color: #15803d; }
+    .stop-seg-speed-pill.tone-moderate { border-color: rgba(245, 158, 11, 0.44); background: rgba(245, 158, 11, 0.13); color: #b45309; }
+    .stop-seg-speed-pill.tone-congested { border-color: rgba(220, 38, 38, 0.44); background: rgba(220, 38, 38, 0.12); color: #b91c1c; }
+    .stop-seg-speed-pill.tone-cam { border-color: rgba(0, 122, 255, 0.32); background: rgba(0, 122, 255, 0.09); color: var(--ios-blue); }
+    :root:not(.light-mode) .stop-seg-speed-pill.tone-smooth { color: #4ade80; }
+    :root:not(.light-mode) .stop-seg-speed-pill.tone-moderate { color: #fbbf24; }
+    :root:not(.light-mode) .stop-seg-speed-pill.tone-congested { color: #f87171; }
     .stop-bm-btn, .del-fav-btn, .fav-grip-btn { background: transparent; border: none; color: var(--text-sub); width: 30px; height: 30px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; font-size: 0.95rem; flex-shrink: 0; }
     .stop-bm-btn:hover { background: var(--bg-surface); }
     .stop-bm-btn.saved { color: #FFFFFF; background: var(--ios-orange); }
@@ -2312,7 +2336,7 @@
     <button type="button" class="settings-row" id="settingAboutRow" onclick="closeSettingsModal(); openAboutModal();">
       <div>
         <div id="settingRowLblAbout">ℹ️ About &amp; HK Apps</div>
-        <span class="settings-row-sub" id="settingRowSubAbout">Transit HK info · HKProperty, DrySmart HK &amp; HK Past</span>
+        <span class="settings-row-sub" id="settingRowSubAbout">Transit HK, HK Layer, HK Sundry, HK Property, HK MPF &amp; HKFX</span>
       </div>
       <span class="settings-val-pill" id="settingValAboutOpen">Open ›</span>
     </button>
@@ -2351,45 +2375,38 @@
         </div>
         <span class="about-ecosystem-cta">Open ↗</span>
       </a>
-      <a href="https://hkfleet.pages.dev" target="_blank" rel="noopener noreferrer" class="about-ecosystem-link">
+      <a href="https://hklayer.pages.dev" target="_blank" rel="noopener noreferrer" class="about-ecosystem-link">
         <div>
-          <div class="about-ecosystem-title" id="settingRowLblFleet">Pulse HK (車)</div>
-          <div class="about-ecosystem-sub" id="settingRowSubFleet">Live Fleet &amp; Multi-Modal Radar</div>
+          <div class="about-ecosystem-title" id="settingRowLblLayer">HK Layer (著衫)</div>
+          <div class="about-ecosystem-sub" id="settingRowSubLayer">Daily commute outfit &amp; weather layer guide</div>
+        </div>
+        <span class="about-ecosystem-cta">Open ↗</span>
+      </a>
+      <a href="https://hksundry.pages.dev" target="_blank" rel="noopener noreferrer" class="about-ecosystem-link" onclick="event.preventDefault(); openCompanionAppAtCurrentStop('sundry');">
+        <div>
+          <div class="about-ecosystem-title" id="settingRowLblSundry">HK Sundry (曬衫)</div>
+          <div class="about-ecosystem-sub" id="settingRowSubSundry">Should I hang laundry outside today?</div>
         </div>
         <span class="about-ecosystem-cta">Open ↗</span>
       </a>
       <a href="https://hkproperty.pages.dev" target="_blank" rel="noopener noreferrer" class="about-ecosystem-link" onclick="event.preventDefault(); openCompanionAppAtCurrentStop('property');">
         <div>
           <div class="about-ecosystem-title" id="settingRowLblProp">HK Property (樓)</div>
-          <div class="about-ecosystem-sub" id="settingRowSubProp">Historical Transactions &amp; Valuation</div>
+          <div class="about-ecosystem-sub" id="settingRowSubProp">Value vs. price across HK districts</div>
         </div>
         <span class="about-ecosystem-cta">Open ↗</span>
       </a>
-      <a href="https://hkpast.pages.dev" target="_blank" rel="noopener noreferrer" class="about-ecosystem-link" onclick="event.preventDefault(); openCompanionAppAtCurrentStop('past');">
+      <a href="https://hkmpf.pages.dev" target="_blank" rel="noopener noreferrer" class="about-ecosystem-link">
         <div>
-          <div class="about-ecosystem-title" id="settingRowLblPast">HK Past 1889 (昔)</div>
-          <div class="about-ecosystem-sub" id="settingRowSubPast">Historical Maps &amp; Heritage Split-View</div>
-        </div>
-        <span class="about-ecosystem-cta">Open ↗</span>
-      </a>
-      <a href="https://hksundry.pages.dev" target="_blank" rel="noopener noreferrer" class="about-ecosystem-link" onclick="event.preventDefault(); openCompanionAppAtCurrentStop('sundry');">
-        <div>
-          <div class="about-ecosystem-title" id="settingRowLblSundry">HK Sundry (雜)</div>
-          <div class="about-ecosystem-sub" id="settingRowSubSundry">Local Utilities &amp; Daily Tools</div>
-        </div>
-        <span class="about-ecosystem-cta">Open ↗</span>
-      </a>
-      <a href="https://boat-eg5.pages.dev" target="_blank" rel="noopener noreferrer" class="about-ecosystem-link">
-        <div>
-          <div class="about-ecosystem-title" id="settingRowLblBoat">Aero-Marine (翼)</div>
-          <div class="about-ecosystem-sub" id="settingRowSubBoat">BAYWING Electric Hydrofoil &amp; MCS</div>
+          <div class="about-ecosystem-title" id="settingRowLblMpf">HK MPF (強積金)</div>
+          <div class="about-ecosystem-sub" id="settingRowSubMpf">Decode MPF letters &amp; compare fund fees</div>
         </div>
         <span class="about-ecosystem-cta">Open ↗</span>
       </a>
       <a href="https://hkfx.pages.dev" target="_blank" rel="noopener noreferrer" class="about-ecosystem-link">
         <div>
-          <div class="about-ecosystem-title" id="settingRowLblFx">ModelSignal FX</div>
-          <div class="about-ecosystem-sub" id="settingRowSubFx">Quantitative FX &amp; Macro Signal Ledger</div>
+          <div class="about-ecosystem-title" id="settingRowLblFx">HKFX (外匯)</div>
+          <div class="about-ecosystem-sub" id="settingRowSubFx">Bank FX consensus vs. AI forecast accuracy</div>
         </div>
         <span class="about-ecosystem-cta">Open ↗</span>
       </a>
@@ -4515,10 +4532,10 @@ function generateExpandedETAsHtml(arrs, group, stopKey, stopIdx) {
       const cleanHeadline = _cleanLbl(roadSum.headline);
       const cleanDetail = roadSum.detail ? _cleanLbl(roadSum.detail) : '';
 
-      // Upstream "Jam Before Stop" strip (0 - 2.5 km approaching stopIdx)
+      // Upstream "Jam Before Stop" strip (only when NOT already shown as the primary headline banner!)
       let approachingHtml = '';
       const app = roadSum.approaching;
-      if (app && (app.tier === 'CONGESTED' || app.tier === 'MODERATE')) {
+      if (app && !roadSum.isApproaching && (app.tier === 'CONGESTED' || app.tier === 'MODERATE')) {
         const appTone = app.tier === 'CONGESTED' ? 'jammed' : 'slow';
         const appDot = app.tier === 'CONGESTED' ? '🔴' : '🟠';
         const appRoad = _cleanLbl(isZh ? (app.roadTc || app.roadEn) : (app.roadEn || app.roadTc)) || (isZh ? '本站前方來車路段' : 'Approach before stop');
@@ -7034,8 +7051,11 @@ async function expandStop(idx, isSilent = false, autoScrolled = false, skipMapPa
   }
   if (expEl) expEl.innerHTML = generateExpandedETAsHtml(arrs, detailRouteGroup, stKey, idx);
   updateDownstreamAlightTimes(detailRouteGroup, idx, arrs, detailSelectedEtaBusIdx, reqToken);
-  if (window.busSpeedLayerEnabled && (!detailRouteGroup.mode || detailRouteGroup.mode === 'BUS') && typeof window.syncDetailRouteBusSpeedSegments === 'function') {
+  if ((!detailRouteGroup.mode || detailRouteGroup.mode === 'BUS') && typeof window.syncDetailRouteBusSpeedSegments === 'function') {
     window.syncDetailRouteBusSpeedSegments(detailRouteGroup, stops);
+  }
+  if (typeof window.refreshStopByStopTrafficUI === 'function') {
+    window.refreshStopByStopTrafficUI();
   }
 }
 
@@ -7221,7 +7241,7 @@ function syncSettingsModalLabels() {
   const driftTotal = (window.__DATA_DRIFT_ALERTS__?.length || 0) + (window.__LIVE_FERRY_DRIFT_ALERTS__?.size || 0);
   setV('settingValStatusOpen', driftTotal > 0 ? (isZh ? `⚠️ ${driftTotal}項提示 ›` : `⚠️ ${driftTotal} Alert ›`) : (isZh ? '開啟 ›' : 'Open ›'));
   setV('settingRowLblAbout', isZh ? 'ℹ️ 關於及香港生態應用' : 'ℹ️ About & HK Apps');
-  setV('settingRowSubAbout', isZh ? 'Transit HK、Pulse HK、樓市、歷史地圖、雜項、Aero-Marine 及 ModelSignal FX' : 'Transit HK, Pulse HK, Property, Past, Sundry, Aero-Marine & FX');
+  setV('settingRowSubAbout', isZh ? 'Transit HK、著衫天氣、曬衫指數、樓市估值、強積金及外匯追蹤' : 'Transit HK, HK Layer, HK Sundry, HK Property, HK MPF & HKFX');
   setV('settingValAboutOpen', isZh ? '開啟 ›' : 'Open ›');
 
   setV('aboutBackBtn', isZh ? '‹ 返回' : '‹ Back');
@@ -7235,18 +7255,16 @@ function syncSettingsModalLabels() {
   setV('aboutSecCompanion', isZh ? '同系列香港生態應用' : 'HK Ecosystem Apps');
   setV('settingRowLblTransit', isZh ? 'Transit HK (通)' : 'Transit HK (通)');
   setV('settingRowSubTransit', isZh ? '實時巴士、港鐵及渡輪到站預報' : 'Real-time Bus, MTR & Ferry ETAs');
-  setV('settingRowLblFleet', isZh ? 'Pulse HK (車)' : 'Pulse HK (車)');
-  setV('settingRowSubFleet', isZh ? '實時車隊及多式聯運雷達' : 'Live Fleet & Multi-Modal Radar');
+  setV('settingRowLblLayer', isZh ? 'HK Layer (著衫)' : 'HK Layer (著衫)');
+  setV('settingRowSubLayer', isZh ? '香港實時天氣及每日通勤穿搭指南' : 'Daily commute outfit & weather layer guide');
+  setV('settingRowLblSundry', isZh ? 'HK Sundry (曬衫)' : 'HK Sundry (曬衫)');
+  setV('settingRowSubSundry', isZh ? '今日啱唔啱晾衫？香港天氣晾衫指數' : 'Should I hang laundry outside today?');
   setV('settingRowLblProp', isZh ? 'HK Property (樓)' : 'HK Property (樓)');
-  setV('settingRowSubProp', isZh ? '歷年成交紀錄及物業估值' : 'Historical Transactions & Valuation');
-  setV('settingRowLblPast', isZh ? 'HK Past 1889 (昔)' : 'HK Past 1889 (昔)');
-  setV('settingRowSubPast', isZh ? '歷史舊地圖及古蹟對照拉頁' : 'Historical Maps & Heritage Split-View');
-  setV('settingRowLblSundry', isZh ? 'HK Sundry (雜)' : 'HK Sundry (雜)');
-  setV('settingRowSubSundry', isZh ? '本地實用工具及日常小幫手' : 'Local Utilities & Daily Tools');
-  setV('settingRowLblBoat', isZh ? 'Aero-Marine (翼)' : 'Aero-Marine (翼)');
-  setV('settingRowSubBoat', isZh ? 'BAYWING 電動水翼船及海事系統' : 'BAYWING Electric Hydrofoil & MCS');
-  setV('settingRowLblFx', isZh ? 'ModelSignal FX' : 'ModelSignal FX');
-  setV('settingRowSubFx', isZh ? '量化外匯及宏觀信號日誌' : 'Quantitative FX & Macro Signal Ledger');
+  setV('settingRowSubProp', isZh ? '全港各區屋苑估值及歷年成交走勢' : 'Value vs. price across HK districts');
+  setV('settingRowLblMpf', isZh ? 'HK MPF (強積金)' : 'HK MPF (強積金)');
+  setV('settingRowSubMpf', isZh ? '拆解強積金年報及比較基金收費' : 'Decode MPF letters & compare fund fees');
+  setV('settingRowLblFx', isZh ? 'HKFX (外匯)' : 'HKFX (外匯)');
+  setV('settingRowSubFx', isZh ? '銀行外匯預測共識與 AI 準確度追蹤' : 'Bank FX consensus vs. AI forecast accuracy');
   setV('statusModalTitle', isZh ? '⚡ 狀態及時間表監察' : '⚡ Status & Watchdog');
 
   setV('settingValLang', userLangPref === 'auto' ? (isZh ? '自動' : 'Auto') : (userLangPref === 'zh' ? '繁體中文' : 'English'));
@@ -8157,6 +8175,8 @@ function renderStopList() {
   const isPenultimateDualBranch = (detailRouteGroup.mode === 'MTR' && stops.length >= 3 && isParallelRailTerminusPair(stops[stops.length - 2]?.stopId, stops[stops.length - 1]?.stopId));
   const maxFareIdx = isPenultimateDualBranch ? stops.length - 3 : stops.length - 2;
 
+  const isBusDetailMode = !detailRouteGroup.mode || detailRouteGroup.mode === 'BUS';
+
   container.innerHTML = stops.map((s, idx) => {
     const stKey = s.stopKey || getGlobalStopKey(s);
     const bmId = `${detailRouteGroup.key}|${stKey}`;
@@ -8170,6 +8190,9 @@ function renderStopList() {
       : '';
     const hospBadge = isHospitalBranchStop(s) ? `<span class="state-pill">${t('viaHospitalTag')}</span>` : '';
     const exitLbl = isExit ? (isZh ? '下車 ✓' : 'Exit ✓') : (isZh ? '下車' : 'Exit');
+    const segSlotHtml = (isBusDetailMode && idx < stops.length - 1)
+      ? `<div class="stop-seg-speed-slot" id="stop-seg-speed-slot-${idx}"></div>`
+      : '';
     return `
       <div class="stop-item" id="detail-stop-item-${idx}" onclick="if(!isUserSelectingText())expandStop(${idx}, false, false, false)">
         <div class="stop-alight-col" id="stop-alight-col-${idx}"></div>
@@ -8177,6 +8200,7 @@ function renderStopList() {
           <div class="stop-title-group">
             <div class="stop-name"><span>${idx + 1}. ${escapeHtml(getStopName(s))}</span> ${hospBadge}</div>
             ${(fareHtml || dStr) ? `<div class="stop-fare-sub">${fareHtml}${dStr ? `<span class="location-dist-pill">· ${escapeHtml(dStr)}</span>` : ''}</div>` : ''}
+            ${segSlotHtml}
           </div>
           <div class="stop-meta-right">
             <button type="button" class="stop-exit-pill ${isExit ? 'active' : ''}" id="stop-exit-btn-${idx}" style="display:${isDownstream ? 'inline-flex' : 'none'};" aria-pressed="${isExit ? 'true' : 'false'}" onclick="event.stopPropagation(); toggleDetailExitStop(${idx});">${exitLbl}</button>
@@ -8186,7 +8210,167 @@ function renderStopList() {
         <div class="eta-expanded-container" id="detail-eta-expanded-${idx}"></div>
       </div>`;
   }).join('') + renderMtrStyleReportFooterHtml();
+
+  if (isBusDetailMode && typeof window.refreshStopByStopTrafficUI === 'function') {
+    window.refreshStopByStopTrafficUI();
+  }
 }
+
+window.__DETAIL_STOP_SEGMENTS__ = [];
+
+window.refreshStopByStopTrafficUI = function() {
+  try {
+    if (currentView !== 'detail' || !detailRouteGroup) return;
+    if (detailRouteGroup.mode && detailRouteGroup.mode !== 'BUS') {
+      window.__DETAIL_STOP_SEGMENTS__ = [];
+      return;
+    }
+    if (typeof window.buildStopByStopSegmentTraffic !== 'function') return;
+    const stops = getStopsForGroup(detailRouteGroup, detailBoardStopKey || detailTargetStopKey);
+    if (!Array.isArray(stops) || stops.length < 2) return;
+
+    const roadPoly = (typeof window.getCurrentDetailRoadPolyline === 'function')
+      ? window.getCurrentDetailRoadPolyline(detailRouteGroup.key)
+      : null;
+    const tdDetectors = Array.isArray(window.__LIVE_TRAFFIC_DETECTORS__) ? window.__LIVE_TRAFFIC_DETECTORS__ : [];
+    const tdCameras = Array.isArray(window.__LIVE_TRAFFIC_CAMERAS__) ? window.__LIVE_TRAFFIC_CAMERAS__ : [];
+    const busSegs = Array.isArray(window.__DETAIL_BUS_SPEED_SEGMENTS__) ? window.__DETAIL_BUS_SPEED_SEGMENTS__ : [];
+
+    const segs = window.buildStopByStopSegmentTraffic(stops, roadPoly, tdDetectors, tdCameras, busSegs);
+    window.__DETAIL_STOP_SEGMENTS__ = segs;
+    const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
+
+    for (let i = 0; i < segs.length; i++) {
+      const seg = segs[i];
+      const rowEl = document.getElementById(`detail-stop-item-${i}`);
+      const slotEl = document.getElementById(`stop-seg-speed-slot-${i}`);
+      if (!rowEl || !slotEl) continue;
+
+      rowEl.classList.remove('seg-tone-smooth', 'seg-tone-moderate', 'seg-tone-congested');
+      if (seg.tier === 'CONGESTED') rowEl.classList.add('seg-tone-congested');
+      else if (seg.tier === 'MODERATE') rowEl.classList.add('seg-tone-moderate');
+      else if (seg.tier === 'SMOOTH') rowEl.classList.add('seg-tone-smooth');
+
+      if (seg.source === 'NONE') {
+        slotEl.innerHTML = '';
+        continue;
+      }
+
+      const toneCls = seg.source === 'CAM_ONLY'
+        ? 'tone-cam'
+        : (seg.tier === 'CONGESTED' ? 'tone-congested' : (seg.tier === 'MODERATE' ? 'tone-moderate' : 'tone-smooth'));
+      const dot = seg.source === 'CAM_ONLY'
+        ? '📷'
+        : (seg.tier === 'CONGESTED' ? '🔴' : (seg.tier === 'MODERATE' ? '🟠' : '🟢'));
+
+      let labelTxt = '';
+      if (seg.source === 'TD') {
+        const srcTag = seg.camKey ? '📷' : 'TD';
+        labelTxt = `${dot} ${Math.round(seg.speedKmh)} km/h · ${srcTag}`;
+      } else if (seg.source === 'BUS_API') {
+        const srcTag = seg.camKey ? '🚌 📷' : (isZh ? '🚌 實測' : '🚌 Bus');
+        labelTxt = `${dot} ~${Math.round(seg.speedKmh)} km/h · ${srcTag}`;
+      } else {
+        labelTxt = isZh ? '📷 路段鏡頭' : '📷 Road Cam';
+      }
+
+      const ariaDesc = isZh
+        ? `第 ${i + 1} 至 ${i + 2} 站路況：${labelTxt}`
+        : `Traffic from stop ${i + 1} to ${i + 2}: ${labelTxt}`;
+      slotEl.innerHTML = `<button type="button" class="stop-seg-speed-pill ${toneCls}" data-seg-source="${escapeHtml(seg.source)}" data-seg-tier="${escapeHtml(seg.tier)}" aria-label="${escapeHtml(ariaDesc)}" onclick="event.stopPropagation(); openStopSegmentTrafficModal(${i});">${escapeHtml(labelTxt)} ›</button>`;
+    }
+  } catch (e) {}
+};
+
+window.openStopSegmentTrafficModal = function(fromIdx) {
+  triggerHaptic(10);
+  const segs = Array.isArray(window.__DETAIL_STOP_SEGMENTS__) ? window.__DETAIL_STOP_SEGMENTS__ : [];
+  const seg = segs.find(s => Number(s.fromIdx) === Number(fromIdx));
+  if (!seg) return;
+  const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
+  const fromLbl = isZh ? (seg.fromNameTc || seg.fromNameEn) : (seg.fromNameEn || seg.fromNameTc);
+  const toLbl = isZh ? (seg.toNameTc || seg.toNameEn) : (seg.toNameEn || seg.toNameTc);
+  const spanLabel = `${seg.fromSeq}. ${fromLbl} → ${seg.toSeq}. ${toLbl}`;
+
+  // Tier 1: TD Speed Detector (+ matched TD camera if available)
+  if (seg.source === 'TD' && seg.detId && typeof window.openTrafficDecisionModal === 'function') {
+    window.openTrafficDecisionModal(seg.detId, '', spanLabel, false, seg.cam || null);
+    return;
+  }
+
+  // Tier 3: TD Camera only
+  if (seg.source === 'CAM_ONLY' && seg.camKey && typeof window.openTrafficCameraByKey === 'function') {
+    window.openTrafficCameraByKey(seg.camKey, seg.camDesc || spanLabel);
+    return;
+  }
+
+  // Tier 2 (Lowest layer): Calibrated Bus Speed Inference breakdown (plus TD camera if one exists nearby)
+  const modal = document.getElementById('trafficDecisionModal');
+  const bodyEl = document.getElementById('trafficModalBody');
+  if (!modal || !bodyEl) return;
+
+  const titleEl = document.getElementById('trafficModalTitle');
+  const subEl = document.getElementById('trafficModalSub');
+  const closeEl = document.getElementById('trafficModalCloseBtn');
+  if (titleEl) titleEl.innerText = isZh ? `🚌 巴士實測路況 (${seg.fromSeq}→${seg.toSeq}站)` : `🚌 Bus Speed Segment (#${seg.fromSeq}→#${seg.toSeq})`;
+  if (subEl) subEl.innerHTML = `<span>${escapeHtml(spanLabel)}</span>`;
+  if (closeEl) closeEl.innerText = isZh ? '✕ 關閉' : '✕ Close';
+
+  const tone = seg.tier === 'CONGESTED' ? 'jammed' : (seg.tier === 'MODERATE' ? 'slow' : 'smooth');
+  const toneDot = seg.tier === 'CONGESTED' ? '🔴' : (seg.tier === 'MODERATE' ? '🟠' : '🟢');
+  const verdict = seg.tier === 'CONGESTED'
+    ? (isZh ? '此路段巴士行車緩慢' : 'Slow bus flow on this stretch')
+    : (seg.tier === 'MODERATE'
+      ? (isZh ? '此路段車流稍慢' : 'Moderate bus speed on this stretch')
+      : (isZh ? '此路段巴士行車暢順' : 'Smooth bus flow on this stretch'));
+  const distTxt = seg.roadDistKm < 1 ? `${Math.round(seg.roadDistKm * 1000)}m` : `${Number(seg.roadDistKm).toFixed(2)} km`;
+  const etaDeltaTxt = Number.isFinite(Number(seg.deltaSec))
+    ? (seg.deltaSec >= 60 ? `${(seg.deltaSec / 60).toFixed(1)}m` : `${Math.round(seg.deltaSec)}s`)
+    : '—';
+  const expectedTxt = Number.isFinite(Number(seg.expectedKmh)) ? `${Math.round(seg.expectedKmh)} km/h` : '—';
+
+  const camUrl = seg.camKey ? buildTrafficCamProxyUrl(seg.camKey, Math.floor(Date.now() / 60000)) : '';
+  const camHtml = camUrl
+    ? `<div class="traffic-cam-frame" id="trafficDecisionCamFrame">
+         <img id="trafficDecisionCamImg" src="${camUrl}" alt="${escapeHtml(seg.camDesc || spanLabel)} TD live camera snapshot" loading="eager" data-cam-key="${escapeHtml(seg.camKey)}" onload="handleTrafficCamImageLoad(this, '${escapeJsAttr(seg.camKey)}')" onerror="handleTrafficCamImageError(this, '${escapeJsAttr(seg.camKey)}')">
+         <div id="trafficCamStatusBanner" class="traffic-cam-status-banner" role="status" aria-live="polite"></div>
+       </div>
+       <div class="traffic-cam-caption">
+         <span id="trafficCamCaptionText">📷 ${isZh ? '附近運輸署實時快拍' : 'Nearby HKSAR TD Live Snapshot'} (${escapeHtml(seg.camKey)})</span>
+         <button type="button" style="border:none; background:none; color:var(--ios-blue); font-weight:700; font-size:0.72rem; cursor:pointer; padding:2px 4px;" onclick="refreshTrafficDecisionCam('${escapeJsAttr(seg.camKey)}')">↻ ${isZh ? '更新圖片' : 'Refresh'}</button>
+       </div>`
+    : `<div style="font-size:0.76rem; color:var(--text-sub); text-align:center; padding:12px; border-radius:11px; background:var(--bg-surface);">
+         ${isZh
+           ? '此路段暫無運輸署車速感應器或鏡頭覆蓋，以上車速由實時巴士站間到站時間（扣除上落客及燈位停頓）推算。'
+           : 'No HKSAR TD road sensor or camera covers this stretch — speed is calibrated from live bus stop-to-stop ETAs (dwell & signal adjusted).'}
+       </div>`;
+
+  bodyEl.innerHTML = `
+    <div class="traffic-verdict-banner tone-${tone}">
+      <div class="traffic-verdict-title">${toneDot} ${escapeHtml(verdict)}</div>
+      <div class="traffic-verdict-tip">${isZh ? '數據來源：實時巴士 API 站間速度推算（未有運輸署感應器路段）' : 'Source: Calibrated Bus API stop-to-stop inference (non-TD road)'}</div>
+    </div>
+    <div class="traffic-metrics-grid">
+      <div class="traffic-metric-box">
+        <div class="traffic-metric-val">~${Math.round(seg.speedKmh || 0)} km/h</div>
+        <div class="traffic-metric-lbl">${isZh ? '推算車速' : 'Est. Speed'}</div>
+      </div>
+      <div class="traffic-metric-box">
+        <div class="traffic-metric-val">${escapeHtml(distTxt)}</div>
+        <div class="traffic-metric-lbl">${isZh ? '站間距離' : 'Span Dist'}</div>
+      </div>
+      <div class="traffic-metric-box">
+        <div class="traffic-metric-val">${escapeHtml(etaDeltaTxt)}</div>
+        <div class="traffic-metric-lbl">${isZh ? `站間時間 (正常 ${expectedTxt})` : `ETA Δ (Typ ${expectedTxt})`}</div>
+      </div>
+    </div>
+    ${camHtml}
+    <div class="traffic-modal-actions">
+      <button type="button" class="traffic-modal-btn primary" onclick="closeTrafficDecisionModal()">${isZh ? '知道了' : 'Got it'}</button>
+    </div>
+  `;
+  modal.style.display = 'flex';
+};
 
 // ============================================================================
 // SAVED BOOKMARKS VIEW
@@ -8664,6 +8848,9 @@ async function syncEdgeTrafficCorridors() {
       if (typeof window.syncTrafficOverlaysAllMaps === 'function') {
         window.syncTrafficOverlaysAllMaps();
       }
+      if (typeof window.refreshStopByStopTrafficUI === 'function') {
+        window.refreshStopByStopTrafficUI();
+      }
       if (currentView === 'detail' && detailRouteGroup && detailExpandedStopIdx >= 0 && Array.isArray(detailLastFetchedArrs)) {
         const stops = getStopsForGroup(detailRouteGroup, detailBoardStopKey || detailTargetStopKey);
         const stObj = stops[detailExpandedStopIdx];
@@ -8681,13 +8868,18 @@ async function syncEdgeTrafficCorridors() {
 
 window.onBusRouteGeometryReady = function(groupKey) {
   try {
-    if (currentView === 'detail' && detailRouteGroup && detailRouteGroup.key === groupKey && detailExpandedStopIdx >= 0 && Array.isArray(detailLastFetchedArrs)) {
-      const stops = getStopsForGroup(detailRouteGroup, detailBoardStopKey || detailTargetStopKey);
-      const stObj = stops[detailExpandedStopIdx];
-      const stKey = stObj?.stopKey || getGlobalStopKey(stObj);
-      const expEl = document.getElementById(`detail-eta-expanded-${detailExpandedStopIdx}`);
-      if (expEl && stObj) {
-        expEl.innerHTML = generateExpandedETAsHtml(detailLastFetchedArrs, detailRouteGroup, stKey, detailExpandedStopIdx);
+    if (currentView === 'detail' && detailRouteGroup && detailRouteGroup.key === groupKey) {
+      if (typeof window.refreshStopByStopTrafficUI === 'function') {
+        window.refreshStopByStopTrafficUI();
+      }
+      if (detailExpandedStopIdx >= 0 && Array.isArray(detailLastFetchedArrs)) {
+        const stops = getStopsForGroup(detailRouteGroup, detailBoardStopKey || detailTargetStopKey);
+        const stObj = stops[detailExpandedStopIdx];
+        const stKey = stObj?.stopKey || getGlobalStopKey(stObj);
+        const expEl = document.getElementById(`detail-eta-expanded-${detailExpandedStopIdx}`);
+        if (expEl && stObj) {
+          expEl.innerHTML = generateExpandedETAsHtml(detailLastFetchedArrs, detailRouteGroup, stKey, detailExpandedStopIdx);
+        }
       }
     }
   } catch (e) {}
@@ -8695,13 +8887,18 @@ window.onBusRouteGeometryReady = function(groupKey) {
 
 window.onDetailBusSpeedReady = function(groupKey) {
   try {
-    if (currentView === 'detail' && detailRouteGroup && detailRouteGroup.key === groupKey && detailExpandedStopIdx >= 0 && Array.isArray(detailLastFetchedArrs)) {
-      const stops = getStopsForGroup(detailRouteGroup, detailBoardStopKey || detailTargetStopKey);
-      const stObj = stops[detailExpandedStopIdx];
-      const stKey = stObj?.stopKey || getGlobalStopKey(stObj);
-      const expEl = document.getElementById(`detail-eta-expanded-${detailExpandedStopIdx}`);
-      if (expEl && stObj) {
-        expEl.innerHTML = generateExpandedETAsHtml(detailLastFetchedArrs, detailRouteGroup, stKey, detailExpandedStopIdx);
+    if (currentView === 'detail' && detailRouteGroup && detailRouteGroup.key === groupKey) {
+      if (typeof window.refreshStopByStopTrafficUI === 'function') {
+        window.refreshStopByStopTrafficUI();
+      }
+      if (detailExpandedStopIdx >= 0 && Array.isArray(detailLastFetchedArrs)) {
+        const stops = getStopsForGroup(detailRouteGroup, detailBoardStopKey || detailTargetStopKey);
+        const stObj = stops[detailExpandedStopIdx];
+        const stKey = stObj?.stopKey || getGlobalStopKey(stObj);
+        const expEl = document.getElementById(`detail-eta-expanded-${detailExpandedStopIdx}`);
+        if (expEl && stObj) {
+          expEl.innerHTML = generateExpandedETAsHtml(detailLastFetchedArrs, detailRouteGroup, stKey, detailExpandedStopIdx);
+        }
       }
     }
   } catch (e) {}
@@ -8743,7 +8940,9 @@ window.openCompanionAppAtCurrentStop = function(target) {
     ? `https://hkproperty.pages.dev/#lat=${lat.toFixed(5)}&lng=${lon.toFixed(5)}&from=transit`
     : (target === 'sundry'
       ? 'https://hksundry.pages.dev/'
-      : `https://hkpast.pages.dev/#1889-victoria/16/${lat.toFixed(4)}/${lon.toFixed(4)}/hk/split`);
+      : (target === 'layer'
+        ? 'https://hklayer.pages.dev/'
+        : 'https://hkway.pages.dev/'));
   const a = document.createElement('a');
   a.href = targetUrl;
   a.target = '_blank';

@@ -4092,7 +4092,7 @@ function inferDirectionalRoadTrafficForStops(stops, startIdx = 0, detectors = []
       const seqKey = `${bs.fromSeq}_${bs.toSeq}`;
       const segDistKm = Number((cumBusKm + (bs.roadDistKm || 0) * 0.5).toFixed(1));
       cumBusKm += (bs.roadDistKm || 0);
-      if (tdCoveredSeqs.has(seqKey)) continue;
+      if (tdCoveredSeqs.has(seqKey) || bs.coveredByTd || bs.source === 'TD') continue;
       if (segDistKm > maxLookaheadKm + 0.05) break;
       const tier = _normalizeBottleneckTier(bs.tier, bs.speedKmh);
       const etaMins = _estimateRouteArrivalMins(segDistKm, bs.speedKmh, (bs.roadDistKm || 0) >= 1.2);
@@ -4356,6 +4356,9 @@ function getBusSpeedLayerColorHex(tier, speedKmh = null) {
 }
 
 function inferBusApiSegmentSpeeds(stops, etaByStopIdx, roadPolylinePoints = null, opts = {}) {
+  if (typeof window !== 'undefined' && window.BusSpeedEngine && typeof window.BusSpeedEngine.inferBusApiSegmentSpeeds === 'function') {
+    return window.BusSpeedEngine.inferBusApiSegmentSpeeds(stops, etaByStopIdx, roadPolylinePoints, opts);
+  }
   if (!Array.isArray(stops) || stops.length < 2 || !etaByStopIdx) return [];
   const getArrForIdx = (idx) => {
     if (etaByStopIdx instanceof Map) return etaByStopIdx.get(idx) || [];

@@ -1923,11 +1923,12 @@ test('planner.js & index.html: deduplicates opposite-side stops in Settings Hub 
     html.includes('id="aboutModal"') &&
     html.includes('id="settingAboutRow"') &&
     html.includes('HK Property (樓)') &&
-    html.includes('HK Sundry (雜)') &&
+    html.includes('HK Sundry (曬衫)') &&
     html.includes('https://hksundry.pages.dev') &&
-    html.includes('HK Past 1889 (昔)') &&
+    html.includes('HK Layer (著衫)') &&
+    html.includes('https://hklayer.pages.dev') &&
     html.includes("openCompanionAppAtCurrentStop('sundry')"),
-    'About subpage in Settings must include updated HK Property, HK Sundry (hksundry.pages.dev), and HK Past ecosystem links'
+    'About subpage in Settings must include updated HK Property, HK Sundry (hksundry.pages.dev), and HK Layer ecosystem links'
   );
   assert.ok(html.includes('ONBOARDING_SEEN_KEY') && html.includes('maybeShowFirstVisitOnboarding') && html.includes('openPlannerFromTutorial'), 'First-use visual onboarding carousel with Skip/Next/Open Planner must be wired');
 });
@@ -4953,28 +4954,42 @@ test('Global Camera Orientation, Full-Frame Camera Modal & 7-App HK Ecosystem Li
   assert.ok(mEb >= 18 && mEb <= 40, `map.js TDS90070 must align NNE along Yuen Long Hwy (~26-30°), got ${mEb}°`);
   assert.ok(mWb >= 185 && mWb <= 212, `map.js TDS91054 must align SSW along Yuen Long Hwy (~198-200°), got ${mWb}°`);
 
-  // 3. Verify About modal contains all 7 HK ecosystem app links & preserves companion GPS hooks
+  // 3. Verify About modal contains the curated 6 HK public ecosystem app links & preserves companion GPS hooks (excluding private/redirect apps)
   const aboutStart = html.indexOf('id="aboutModal"');
   const aboutEnd = html.indexOf('id="tutorialModal"');
   assert.ok(aboutStart > 0 && aboutEnd > aboutStart, 'Must locate #aboutModal block in index.html');
   const aboutSlice = html.slice(aboutStart, aboutEnd);
   const expectedEcosystemUrls = [
     'https://hkway.pages.dev',
-    'https://hkfleet.pages.dev',
-    'https://hkproperty.pages.dev',
-    'https://hkpast.pages.dev',
+    'https://hklayer.pages.dev',
     'https://hksundry.pages.dev',
-    'https://boat-eg5.pages.dev',
+    'https://hkproperty.pages.dev',
+    'https://hkmpf.pages.dev',
     'https://hkfx.pages.dev',
   ];
   for (const url of expectedEcosystemUrls) {
-    assert.ok(aboutSlice.includes(`href="${url}"`), `#aboutModal must include ecosystem link ${url}`);
+    assert.ok(aboutSlice.includes(`href="${url}"`), `#aboutModal must include curated ecosystem link ${url}`);
   }
-  assert.ok(aboutSlice.includes('ModelSignal FX'), '#aboutModal must display ModelSignal FX');
-  assert.ok(aboutSlice.includes('Aero-Marine (翼)'), '#aboutModal must display Aero-Marine (翼)');
-  assert.ok(aboutSlice.includes('Pulse HK (車)'), '#aboutModal must display Pulse HK (車)');
+  const excludedEcosystemStrings = [
+    'https://hkfleet.pages.dev',
+    'https://modelsignal.pages.dev',
+    'https://boat-eg5.pages.dev',
+    'https://pearl-marine.pages.dev',
+    'https://hkpast.pages.dev',
+    'https://redalert.pages.dev',
+    'ModelSignal FX',
+    'Aero-Marine',
+    'Pulse HK',
+    'HK Past 1889',
+  ];
+  for (const forbidden of excludedEcosystemStrings) {
+    assert.ok(!aboutSlice.includes(forbidden), `#aboutModal must NOT include private/redirect/irrelevant app ${forbidden}`);
+  }
+  assert.ok(aboutSlice.includes('HK Layer (著衫)'), '#aboutModal must display HK Layer (著衫)');
+  assert.ok(aboutSlice.includes('HK Sundry (曬衫)'), '#aboutModal must display HK Sundry (曬衫)');
+  assert.ok(aboutSlice.includes('HK MPF (強積金)'), '#aboutModal must display HK MPF (強積金)');
+  assert.ok(aboutSlice.includes('HKFX (外匯)'), '#aboutModal must display HKFX (外匯)');
   assert.ok(aboutSlice.includes("openCompanionAppAtCurrentStop('property')"), '#aboutModal must preserve HK Property GPS hook');
-  assert.ok(aboutSlice.includes("openCompanionAppAtCurrentStop('past')"), '#aboutModal must preserve HK Past GPS hook');
   assert.ok(aboutSlice.includes("openCompanionAppAtCurrentStop('sundry')"), '#aboutModal must preserve HK Sundry hook');
 
   // 4. Verify full-frame uncropped camera view CSS (no forced 4/3 letterbox or dark #0F172A backdrop) & opposite-carriageway 1-tap switcher
@@ -5165,5 +5180,167 @@ test('Issues 1-4: Zoom-Gated Global Cameras, Upstream Jam & Time-Decay Corridor 
   assert.ok(html.includes('class="traffic-ahead-cam-chip"') && html.includes('Road Ahead'), 'Expanded stop traffic card must include compact Road Ahead camera chip');
   assert.ok(html.includes('class="traffic-approaching-strip') && html.includes('class="traffic-segment-list"'), 'Expanded stop traffic card must render upstream Jam Before Stop and segment-by-segment bottlenecks');
 });
+
+test('Dedicated busspeed.js Calibration, South Lantau NLB Coverage, TD Ground-Truth Conflict Priority, Stop-by-Stop 3-Tier Cards, and Duplicate Jam Banner Fix', () => {
+  const bsWindow: any = {};
+  const bsSandbox: any = { window: bsWindow, globalThis: bsWindow, Math, Date, Number, String, Array, Map, Set, Object, parseFloat, isFinite };
+  vm.createContext(bsSandbox);
+  vm.runInContext(fs.readFileSync('public/busspeed.js', 'utf8'), bsSandbox);
+  const busSpeedEngine: any = bsWindow.BusSpeedEngine;
+  assert.ok(busSpeedEngine, 'public/busspeed.js must export window.BusSpeedEngine');
+  const html = fs.readFileSync('index.html', 'utf8');
+  const t0 = Date.UTC(2026, 10, 27, 1, 15, 0);
+
+  // 1. Empty new-town road (Yu Tung Rd / Tung Chung Waterfront Rd):
+  // Terminus departure (Yat Tung Estate -> Yu Tung Rd, 450m, 3 min rounded ETA) + short urban hop (420m, 2 min rounded ETA)
+  // MUST classify as SMOOTH — NEVER false red congestion!
+  const yuTungStops = [
+    { stopKey: 'YT0', stopName_e: 'Yat Tung Estate Bus Terminus', latitude: '22.2810', longitude: '113.9350' },
+    { stopKey: 'YT1', stopName_e: 'Mun Tung Estate, Yu Tung Road', latitude: '22.2830', longitude: '113.9388' },
+    { stopKey: 'YT2', stopName_e: 'Yu Nga Court, Tung Chung Waterfront Road', latitude: '22.2862', longitude: '113.9412' },
+  ];
+  const yuTungEtas = {
+    0: [{ eta: new Date(t0).toISOString(), seq: 1 }],
+    1: [{ eta: new Date(t0 + 180000).toISOString(), seq: 1 }], // 3 min terminus departure padding
+    2: [{ eta: new Date(t0 + 300000).toISOString(), seq: 1 }], // 2 min minute-rounded urban hop
+  };
+  const yuTungSegs = busSpeedEngine.inferBusApiSegmentSpeeds(yuTungStops, yuTungEtas, null, { tdDetectors: [], nowMs: t0 });
+  assert.equal(yuTungSegs.length, 2, 'Must produce calibrated segments for Yu Tung Rd');
+  assert.notEqual(yuTungSegs[0].tier, 'CONGESTED', `Terminus departure on empty Yu Tung Rd must NOT be false RED, got ${yuTungSegs[0].tier} (${yuTungSegs[0].speedKmh} km/h)`);
+  assert.equal(yuTungSegs[1].tier, 'SMOOTH', `Short 2-min rounded urban hop on empty Waterfront Rd must be SMOOTH, got ${yuTungSegs[1].tier} (${yuTungSegs[1].speedKmh} km/h)`);
+
+  // 1b. Fast 1-min (60s) 490m urban hop must NOT inflate to unrealistic 60-75 km/h on local roads
+  const fastUrbanEtas = {
+    0: [{ eta: new Date(t0).toISOString(), seq: 1 }],
+    1: [{ eta: new Date(t0 + 60000).toISOString(), seq: 1 }],
+  };
+  const fastUrbanSegs = busSpeedEngine.inferBusApiSegmentSpeeds(
+    [
+      { stopKey: 'KP0', stopName_e: 'Ko Po Tsuen', latitude: '22.4350', longitude: '114.0580' },
+      { stopKey: 'KP1', stopName_e: 'Ha Ko Po Tsuen', latitude: '22.4392', longitude: '114.0570' },
+    ],
+    fastUrbanEtas,
+    null,
+    { tdDetectors: [], nowMs: t0 }
+  );
+  assert.equal(fastUrbanSegs[0].tier, 'SMOOTH');
+  assert.ok(fastUrbanSegs[0].speedKmh <= 40, `Fast 1-min 490m urban hop must stay realistically capped (<= 40 km/h), got ${fastUrbanSegs[0].speedKmh} km/h`);
+
+  // 2. Scheduled timetable-only ETAs (no live GPS) must NEVER fabricate red/amber jams
+  const schedEtas = {
+    0: [{ eta: new Date(t0).toISOString(), rmk_en: 'Scheduled Bus', isScheduled: true }],
+    1: [{ eta: new Date(t0 + 480000).toISOString(), rmk_en: 'Scheduled Bus', isScheduled: true }],
+  };
+  const schedSegs = busSpeedEngine.inferBusApiSegmentSpeeds(yuTungStops.slice(0, 2), schedEtas, null, { tdDetectors: [], nowMs: t0 });
+  assert.equal(schedSegs.length, 1);
+  assert.equal(schedSegs[0].tier, 'SMOOTH', 'Scheduled-only ETAs must never fabricate red/amber jams');
+  assert.equal(schedSegs[0].isScheduledOnly, true);
+
+  // 3. South Lantau Road (NLB 3M Mui Wo / Pui O):
+  // Must be selected by selectGlobalBusSpeedRoutes (not filtered out as KMB-only!) and accurately detect smooth vs real jam
+  const southLantauStops = [
+    { stopKey: 'SL0', stopName_e: 'Pui O, South Lantau Road', latitude: '22.2435', longitude: '113.9785' },
+    { stopKey: 'SL1', stopName_e: 'Lo Uk Tsuen, South Lantau Road', latitude: '22.2422', longitude: '113.9710' },
+    { stopKey: 'SL2', stopName_e: 'San Shek Wan, South Lantau Road', latitude: '22.2385', longitude: '113.9615' },
+  ];
+  const nlbRoute = { key: 'NLB_3M_O', routeNo: '3M', company: 'NLB', bound: 'O', mode: 'BUS', routeIds: ['NLB_3M_O'], stops: southLantauStops };
+  const mockBounds = {
+    contains: ([la, lo]: [number, number]) => la >= 22.23 && la <= 22.26 && lo >= 113.95 && lo <= 113.99
+  };
+  const selectedGlobal = busSpeedEngine.selectGlobalBusSpeedRoutes([nlbRoute], mockBounds, (g: any) => g.stops, 6);
+  assert.equal(selectedGlobal.length, 1, 'selectGlobalBusSpeedRoutes must include NLB routes on South Lantau Rd');
+  assert.equal(selectedGlobal[0].operator, 'NLB');
+
+  const slSmoothEtas = {
+    0: [{ eta: new Date(t0).toISOString() }],
+    1: [{ eta: new Date(t0 + 100000).toISOString() }], // ~850m in 100s -> smooth rural flow
+    2: [{ eta: new Date(t0 + 700000).toISOString() }], // ~1.1km in 600s -> real South Lantau jam
+  };
+  const slSegs = busSpeedEngine.inferBusApiSegmentSpeeds(southLantauStops, slSmoothEtas, null, { tdDetectors: [], nowMs: t0 });
+  assert.equal(slSegs[0].tier, 'SMOOTH', `Normal South Lantau Rd flow must be SMOOTH, got ${slSegs[0].tier}`);
+  assert.equal(slSegs[1].tier, 'CONGESTED', `10-min crawl over 1.1km on South Lantau Rd must be CONGESTED, got ${slSegs[1].tier}`);
+
+  // 4. Strict TD Ground-Truth Priority on Conflict (Castle Peak Rd-Ping Shan 70 km/h GREEN beats slower Bus API ETA!)
+  const pingShanStops = [
+    { stopKey: 'PS0', stopName_e: 'Tong Yan San Tsuen, Castle Peak Road - Ping Shan', latitude: '22.4418', longitude: '114.0110' },
+    { stopKey: 'PS1', stopName_e: 'Ping Shan, Castle Peak Road - Ping Shan', latitude: '22.4438', longitude: '114.0030' },
+  ];
+  const pingShanPoly = [
+    [22.4418, 114.0110],
+    [22.4428, 114.0070],
+    [22.4438, 114.0030],
+  ];
+  const pingShanTdDetector = [{
+    id: 'TDSCPRPS20003',
+    lat: 22.4428,
+    lon: 114.0070,
+    spd: 70,
+    occ: 0,
+    tier: 'SMOOTH',
+    rot: 285, // WNW aligned with PS0 -> PS1
+    roadEn: 'Castle Peak Road - Ping Shan',
+    roadTc: '青山公路－屏山段',
+    camKey: 'NL126',
+  }];
+  const pingShanCam = [{
+    key: 'NL126',
+    lat: 22.4428,
+    lon: 114.0070,
+    desc: 'Castle Peak Road - Ping Shan near Tong Yan San Tsuen Playground',
+    bearingDeg: 285,
+  }];
+  const slowBusConflictEtas = {
+    0: [{ eta: new Date(t0).toISOString() }],
+    1: [{ eta: new Date(t0 + 270000).toISOString() }], // Slow bus ETA would infer amber/red (~13 km/h)
+  };
+  const resolvedSegs = busSpeedEngine.inferBusApiSegmentSpeeds(pingShanStops, slowBusConflictEtas, pingShanPoly, {
+    tdDetectors: pingShanTdDetector,
+    tdCameras: pingShanCam,
+    nowMs: t0,
+  });
+  assert.equal(resolvedSegs.length, 1);
+  assert.equal(resolvedSegs[0].source, 'TD', 'TD ground truth MUST override Bus API on conflict');
+  assert.equal(resolvedSegs[0].tier, 'SMOOTH', 'Castle Peak Rd-Ping Shan 70 km/h TD detector must force SMOOTH green');
+  assert.equal(resolvedSegs[0].speedKmh, 70);
+  assert.equal(resolvedSegs[0].tdConflictResolved, true);
+  assert.equal(resolvedSegs[0].camKey, 'NL126');
+
+  // 5. Unified 3-tier Stop-by-Stop Segment Builder: Tier 1 (TD) > Tier 2 (BUS_API) > Tier 3 (CAM_ONLY)
+  const fourStops = [
+    { stopKey: 'A', stopName_e: 'Stop A', latitude: '22.3000', longitude: '114.1000' },
+    { stopKey: 'B', stopName_e: 'Stop B', latitude: '22.3060', longitude: '114.1000' }, // Covered by TD
+    { stopKey: 'C', stopName_e: 'Stop C', latitude: '22.3120', longitude: '114.1000' }, // Covered by BUS_API only
+    { stopKey: 'D', stopName_e: 'Stop D', latitude: '22.3180', longitude: '114.1000' }, // Covered by TD Camera only
+  ];
+  const fourPoly = [[22.3000, 114.1000], [22.3060, 114.1000], [22.3120, 114.1000], [22.3180, 114.1000]];
+  const fourDets = [{ id: 'DET_AB', lat: 22.3030, lon: 114.1000, spd: 64, occ: 12, tier: 'SMOOTH', rot: 0, roadEn: 'Corridor A-B', camKey: 'CAM_AB' }];
+  const fourCams = [
+    { key: 'CAM_AB', lat: 22.3030, lon: 114.1000, desc: 'Cam A-B', bearingDeg: 0 },
+    { key: 'CAM_CD', lat: 22.3150, lon: 114.1000, desc: 'Cam C-D', bearingDeg: 0 },
+  ];
+  const fourBusSegs = [
+    { fromIdx: 0, toIdx: 1, speedKmh: 12, tier: 'CONGESTED', roadDistKm: 0.67, deltaSec: 210, expectedKmh: 35 }, // overridden by TD!
+    { fromIdx: 1, toIdx: 2, speedKmh: 28, tier: 'SMOOTH', roadDistKm: 0.67, deltaSec: 110, expectedKmh: 30 },
+  ];
+  const timeline = busSpeedEngine.buildStopByStopSegmentTraffic(fourStops, fourPoly, fourDets, fourCams, fourBusSegs);
+  assert.equal(timeline.length, 3);
+  assert.equal(timeline[0].source, 'TD', 'Span 0->1 must pick Tier 1 TD over Bus API');
+  assert.equal(timeline[0].speedKmh, 64);
+  assert.equal(timeline[0].camKey, 'CAM_AB');
+  assert.equal(timeline[1].source, 'BUS_API', 'Span 1->2 must pick Tier 2 BUS_API when no TD sensor');
+  assert.equal(timeline[1].speedKmh, 28);
+  assert.equal(timeline[2].source, 'CAM_ONLY', 'Span 2->3 must pick Tier 3 CAM_ONLY when only camera exists');
+  assert.equal(timeline[2].camKey, 'CAM_CD');
+
+  // 6. Verify index.html wires busspeed.js, stops duplicate "Jam before stop" banner, and renders stop-by-stop pills + 3-tier modal
+  assert.ok(html.includes('<script src="busspeed.js"></script>'), 'index.html must load busspeed.js');
+  assert.ok(
+    html.includes("if (app && !roadSum.isApproaching && (app.tier === 'CONGESTED' || app.tier === 'MODERATE'))"),
+    'index.html must suppress duplicate .traffic-approaching-strip when roadSum.isApproaching is already the primary headline'
+  );
+  assert.ok(html.includes('stop-seg-speed-slot-') && html.includes('window.refreshStopByStopTrafficUI') && html.includes('window.openStopSegmentTrafficModal'),
+    'index.html must wire stop-by-stop traffic pills and 3-tier click modal on every bus stop row');
+});
+
 
 

@@ -3015,9 +3015,9 @@ function synthesizeTrafficDecision(same, opp = null, isZh = false) {
         tone: 'jammed',
         modeRec: 'SWITCH_MTR',
         estDelayMins: dispMins,
-        verdictEn: `Switch to MTR · Heavy jam on ${roadShortEn} (${delayEn})`,
+        verdictEn: `Switch to MTR · Jammed on ${roadShortEn} (${delayEn})`,
         verdictTc: `改乘港鐵 · ${roadShortTc}嚴重擠塞 (${delayTc})`,
-        actionEn: `Heavy jam (${spd} km/h) — MTR avoids highway gridlock`,
+        actionEn: `Jammed (${spd} km/h) — MTR avoids highway gridlock`,
         actionTc: `路面嚴重擠塞 (${spd} km/h)，建議改乘港鐵更快捷穩定`,
         delayLabelEn: delayEn,
         delayLabelTc: delayTc,
@@ -3089,7 +3089,7 @@ function synthesizeTrafficDecision(same, opp = null, isZh = false) {
     tone: 'smooth',
     modeRec: 'TAKE_BUS',
     estDelayMins: 0,
-    verdictEn: oppJam ? `Take Bus · Opposite bound jammed (${opp.minSpd} km/h)` : `Take Bus · Nearby road clear (~${opp.avgSpd} km/h)`,
+    verdictEn: oppJam ? `Take Bus · Opposite bound jammed (${opp.minSpd} km/h)` : `Take Bus · Nearby road clear (${Math.abs(Math.round(Number(opp.avgSpd) || 0))} km/h)`,
     verdictTc: oppJam ? `可乘巴士 · 僅對面線擠塞 (${opp.minSpd} km/h)` : `可乘巴士 · 鄰近路面暢通 (約 ${opp.avgSpd} km/h)`,
     actionEn: oppJam ? 'Opposite carriageway congested; monitor return leg' : 'Nearby road flowing normally',
     actionTc: oppJam ? '對面線擠塞，回程時請留意' : '鄰近路段交通暢順',
@@ -4097,6 +4097,90 @@ function _findNearestCamForPoint(lat, lon, forwardCameras = [], fallbackCameras 
   return best;
 }
 
+// ============================================================================
+// SHARED WORST-AHEAD STOP SEGMENT SELECTOR (Single Source of Truth)
+// Stop-row pills (refreshStopByStopTrafficUI) and the expanded stop-card banner
+// (generateExpandedETAsHtml -> getDirectionalRoadSummary) BOTH call this exact function over the
+// exact same unified stop-by-stop segment array & forward window, so they can NEVER contradict.
+// ============================================================================
+function _resolveUnifiedSegTierHardcode(u, stops = null) {
+  if (!u) return 'SMOOTH';
+  let tier = _normalizeBottleneckTier(u.tier, u.speedKmh);
+  if (u.source === 'BUS_API') {
+    const isTermApproach = Boolean(
+      u.isTerminusApproach ||
+      (Array.isArray(stops) && _isTerminusApproachStopSpan(stops, u.toIdx, stops[u.toIdx]))
+    );
+    // Exclude final terminus-approach span from triggering false slow/jam warnings
+    if (isTermApproach && tier !== 'SMOOTH') tier = 'SMOOTH';
+    // Scheduled/headway fallback is strictly Green/Yellow only — never Red
+    if (u.isScheduledFallback && tier === 'CONGESTED') tier = 'MODERATE';
+  }
+  return tier;
+}
+
+function _isMonitoredUnifiedSegHardcode(u) {
+  if (!u || !Number.isFinite(Number(u.speedKmh))) return false;
+  if (u.source === 'TD') return true;
+  if (u.source === 'BUS_API') return !(u.isScheduledOnly && !u.isScheduledFallback);
+  return false;
+}
+
+function selectWorstAheadStopSegment(unifiedSegs, stops, fromIdx = 0, opts = {}) {
+  if (!Array.isArray(unifiedSegs) || !unifiedSegs.length) return null;
+  const startIdx = Math.max(0, Number(fromIdx) || 0);
+  const stopCount = Array.isArray(stops) ? stops.length : (unifiedSegs.length + 1);
+  const rawExit = opts?.exitStopIdx;
+  const hasExitClamp = (
+    rawExit !== null && rawExit !== undefined &&
+    Number.isFinite(Number(rawExit)) &&
+    Number(rawExit) > startIdx &&
+    Number(rawExit) < stopCount
+  );
+  const effLookahead = Math.max(2, Number(opts?.lookaheadStops) || 40);
+  const endIdx = hasExitClamp
+    ? Math.min(stopCount, Number(rawExit) + 1)
+    : Math.min(stopCount, startIdx + effLookahead + 1);
+  const baseMaxKm = Math.max(0.5, (Number(opts?.maxLookaheadMeters) || 12000) / 1000);
+  const maxLookaheadKm = Number.isFinite(Number(opts?.maxLookaheadKm))
+    ? Number(opts.maxLookaheadKm)
+    : (hasExitClamp ? Math.max(baseMaxKm, 45.0) : baseMaxKm);
+
+  const rank = { CONGESTED: 2, MODERATE: 1, SMOOTH: 0 };
+  let best = null;
+  let cumKm = 0;
+  for (let i = 0; i < unifiedSegs.length; i++) {
+    const u = unifiedSegs[i];
+    if (!u || Number(u.fromIdx) < startIdx) continue;
+    if (Number(u.toIdx) > endIdx - 1) break;
+    const hopKm = Math.max(0.05, Number(u.roadDistKm) || 0.4);
+    const distKm = Number((cumKm + hopKm * 0.5).toFixed(1));
+    cumKm += hopKm;
+    if (distKm > maxLookaheadKm + 0.05) break;
+    if (!_isMonitoredUnifiedSegHardcode(u)) continue;
+    const tier = _resolveUnifiedSegTierHardcode(u, stops);
+    const r = rank[tier] ?? 0;
+    const spd = Math.abs(Number(u.speedKmh));
+    if (
+      !best ||
+      r > best.rank ||
+      (r === best.rank && r > 0 && spd < best.spd)
+    ) {
+      best = { seg: u, tier, rank: r, spd, distKm };
+    }
+  }
+  if (!best) return null;
+  return {
+    seg: best.seg,
+    tier: best.tier,
+    status: best.tier === 'CONGESTED' ? 'JAMMED' : (best.tier === 'MODERATE' ? 'SLOW' : 'SMOOTH'),
+    speedKmh: Math.abs(Math.round(best.spd)),
+    distKm: best.distKm,
+    fromIdx: Number(best.seg.fromIdx),
+    toIdx: Number(best.seg.toIdx)
+  };
+}
+
 // Strict forward-only downstream corridor evaluation (optionally clamped to exitStopIdx)
 // PLUS upstream "Jam Before Stop" (0–2.5 km leading into stops[startIdx]), segment-by-segment
 // corridor bottlenecks with time-to-reach decay weighting, and Hong Kong time-of-day context.
@@ -4584,14 +4668,41 @@ function inferDirectionalRoadTrafficForStops(stops, startIdx = 0, detectors = []
   const sameSide = summarizeDetectorBucket(effectiveSameHits);
   const oppSide = summarizeDetectorBucket(oppHits);
 
-  // Override worstDet on sameSide using time-to-reach weighted bottleneck ranking so
-  // a minor jam 25 km away never outranks an active bottleneck 2 km ahead!
-  const topTdSeg = rankedBottlenecks.find(s => !s.isApproaching && s.source === 'TD' && s.det);
-  if (sameSide && topTdSeg && topTdSeg.det) {
-    sameSide.worstDet = topTdSeg.det;
-    sameSide.aheadKm = topTdSeg.distKm;
-    sameSide.betweenStops = topTdSeg.betweenStops || sameSide.betweenStops;
-    sameSide.minSpd = Math.round(Number(topTdSeg.det.spd ?? sameSide.minSpd));
+  let leadSegment = null;
+  if (useUnified) {
+    const leadPick = selectWorstAheadStopSegment(opts.unifiedSegments, stops, fromIdx, {
+      exitStopIdx: hasExitClamp ? rawExitIdx : null,
+      maxLookaheadKm,
+      lookaheadStops: effLookahead
+    });
+    if (leadPick) {
+      leadSegment = segments.find(
+        s => !s.isApproaching && Number(s.fromIdx) === leadPick.fromIdx && Number(s.toIdx) === leadPick.toIdx
+      ) || null;
+    }
+  }
+
+  // Override worstDet on sameSide so detector, speed, status, and stop-span label ALWAYS come from the exact same segment.
+  if (useUnified && leadSegment && leadSegment.source === 'TD' && leadSegment.det && sameSide) {
+    const leadSpd = Math.abs(Math.round(Number(leadSegment.speedKmh ?? leadSegment.det.spd ?? sameSide.minSpd)));
+    sameSide.worstDet = leadSegment.det;
+    sameSide.representativeDet = leadSegment.det;
+    sameSide.aheadKm = leadSegment.distKm;
+    sameSide.betweenStops = leadSegment.betweenStops || sameSide.betweenStops;
+    sameSide.minSpd = leadSpd;
+    sameSide.avgSpd = leadSpd;
+    sameSide.status = leadSegment.status || sameSide.status;
+    sameSide.maxOcc = Math.abs(Math.round(Number(leadSegment.occ ?? leadSegment.det.occ ?? sameSide.maxOcc) || 0));
+    sameSide.estDelayMins = Number(leadSegment.estDelayMins ?? sameSide.estDelayMins) || 0;
+  } else if (!useUnified) {
+    // Non-unified path: use time-to-reach weighted bottleneck ranking so a minor jam 25 km away never outranks an active bottleneck 2 km ahead
+    const topTdSeg = rankedBottlenecks.find(s => !s.isApproaching && s.source === 'TD' && s.det);
+    if (sameSide && topTdSeg && topTdSeg.det) {
+      sameSide.worstDet = topTdSeg.det;
+      sameSide.aheadKm = topTdSeg.distKm;
+      sameSide.betweenStops = topTdSeg.betweenStops || sameSide.betweenStops;
+      sameSide.minSpd = Math.round(Number(topTdSeg.det.spd ?? sameSide.minSpd));
+    }
   }
 
   // Ensure any paired camera on the primary forward detector is also located along the forward polyline (never behind the stop)
@@ -4644,6 +4755,7 @@ function inferDirectionalRoadTrafficForStops(stops, startIdx = 0, detectors = []
     sameSide,
     oppSide,
     approaching,
+    leadSegment,
     segments,
     stopBreakdownSegments,
     rankedBottlenecks,
@@ -4674,21 +4786,25 @@ function getDirectionalRoadSummary(stops, startIdx, detectors, isZh = false, loo
   const opp = res.oppSide;
   const approaching = res.approaching;
   const oppDet = opp?.worstDet || opp?.representativeDet || null;
-  const topRanked = res.rankedBottlenecks?.[0] || null;
+  const firstRanked = res.rankedBottlenecks?.[0] || null;
   const todCtx = res.timeOfDayContext;
 
   // Determine whether upstream "Jam Before Stop" is the top-ranked concern (only when severe/active vs smooth/absent forward)
   const approachingLeads = Boolean(
     approaching &&
-    (!same || same.status === 'SMOOTH' || (topRanked && topRanked.isApproaching))
+    (!same || same.status === 'SMOOTH' || (firstRanked && firstRanked.isApproaching))
   );
 
-  // If forward road is governed by a unified Bus API segment (no forward TD detector, OR forward TD is smooth while a closer BUS_API stretch is slow/congested)
+  // Use unified worst-ahead leadSegment when available so stop-row pill and expanded banner ALWAYS match
+  const topRanked = approachingLeads ? firstRanked : (res.leadSegment || firstRanked);
+
+  // If forward road is governed by a unified Bus API segment (no forward TD detector, OR forward TD is smooth while a closer BUS_API stretch is slow/congested, OR leadSegment is BUS_API)
   const busApiLeads = Boolean(
     topRanked &&
     !topRanked.isApproaching &&
     topRanked.source === 'BUS_API' &&
     (
+      Boolean(res.leadSegment && !approachingLeads) ||
       (!same && !approachingLeads) ||
       (same && same.status === 'SMOOTH' && !approachingLeads && (topRanked.tier === 'CONGESTED' || topRanked.tier === 'MODERATE'))
     )
@@ -4697,12 +4813,12 @@ function getDirectionalRoadSummary(stops, startIdx, detectors, isZh = false, loo
     // Anchor banner on the exact unified segment tier so stop-row pill and expanded card NEVER contradict!
     const busTone = topRanked.tier === 'CONGESTED' ? 'jammed' : (topRanked.tier === 'MODERATE' ? 'slow' : 'smooth');
     const busHeadline = topRanked.tier === 'CONGESTED'
-      ? (isZh ? '巴士車流擠塞 · 緩慢行駛' : 'Heavy Bus Flow · Slow Stretch')
+      ? (isZh ? '巴士車流擠塞 · 緩慢行駛' : 'Jammed Bus Flow · Slow Stretch')
       : (topRanked.tier === 'MODERATE'
         ? (isZh ? '巴士車流偏慢' : 'Slow Bus Flow')
-        : (isZh ? '巴士車流暢順' : 'Bus Flow Smooth'));
+        : (isZh ? '巴士車流暢通' : 'Clear Bus Flow'));
     const betweenLabel = topRanked.betweenStops ? _formatBetweenStopsLabel(topRanked.betweenStops, isZh) : '';
-    const spdStr = Number.isFinite(Number(topRanked.speedKmh)) ? `~${Math.round(Number(topRanked.speedKmh))} km/h` : '';
+    const spdStr = Number.isFinite(Number(topRanked.speedKmh)) ? `${Math.abs(Math.round(Number(topRanked.speedKmh)))} km/h` : '';
     return {
       ...res,
       tone: busTone,
@@ -4712,8 +4828,7 @@ function getDirectionalRoadSummary(stops, startIdx, detectors, isZh = false, loo
         isZh ? '🚌 巴士實時到站推算' : '🚌 Bus API inferred',
         spdStr,
         betweenLabel,
-        topRanked.etaMins ? (isZh ? `約 ${topRanked.etaMins} 分鐘後` : `~${topRanked.etaMins}m ahead`) : '',
-        (opp && opp.status === 'JAMMED') ? (isZh ? `對面線擠塞 (${opp.minSpd} km/h)` : `Opp. bound jammed (${opp.minSpd} km/h)`) : ''
+        topRanked.etaMins ? (isZh ? `約 ${topRanked.etaMins} 分鐘後` : `${Math.abs(Math.round(Number(topRanked.etaMins)))}m ahead`) : ''
       ].filter(Boolean).join(' · '),
       actionTip: isZh ? '此路段未設運輸署感應器，以巴士實時站間時間推算' : 'No TD sensor on this stretch — inferred from live bus stop-to-stop ETAs',
       delayLabel: topRanked.tier === 'CONGESTED' ? '+6–10m' : (topRanked.tier === 'MODERATE' ? '+2–4m' : (isZh ? '無延誤' : 'No delay')),
@@ -4745,7 +4860,9 @@ function getDirectionalRoadSummary(stops, startIdx, detectors, isZh = false, loo
       }
     : same;
 
-  const decision = synthesizeTrafficDecision(syntheticApproachingSame, opp, isZh);
+  // Forward directional summary stays strictly scoped to the route's own travel direction:
+  // opposite-carriageway jams are NEVER injected into the banner (opp param intentionally null).
+  const decision = synthesizeTrafficDecision(syntheticApproachingSame, null, isZh);
   if (!decision) return null;
 
   const roadLabel = focusDet ? _sanitizeDirectionTyposHardcode(isZh ? (focusDet.roadTc || focusDet.roadEn) : (focusDet.roadEn || focusDet.roadTc)) : '';
@@ -4754,7 +4871,7 @@ function getDirectionalRoadSummary(stops, startIdx, detectors, isZh = false, loo
   const showBetween = Boolean(betweenStops && ((same?.status !== 'SMOOTH') || (betweenStops.hopKm || 0) >= 1.8));
   const betweenLabel = showBetween ? _formatBetweenStopsLabel(betweenStops, isZh) : '';
   const aheadStr = (!betweenLabel && aheadKm >= 0.4)
-    ? (isZh ? `前方約 ${aheadKm.toFixed(1)} km` : `~${aheadKm.toFixed(1)} km ahead`)
+    ? (isZh ? `前方約 ${aheadKm.toFixed(1)} km` : `${aheadKm.toFixed(1)} km ahead`)
     : '';
 
   let headline = isZh ? decision.verdictTc : decision.verdictEn;
@@ -4770,7 +4887,7 @@ function getDirectionalRoadSummary(stops, startIdx, detectors, isZh = false, loo
     detailParts.push(`${Math.abs(approaching.minSpd)} km/h`);
     detailParts.push(isZh ? `站前 ${Math.abs(approaching.distKm).toFixed(1)} km` : `${Math.abs(approaching.distKm).toFixed(1)} km before stop`);
   } else if (same) {
-    const spdDisp = same.status === 'SMOOTH' ? `~${Math.abs(same.avgSpd)}` : `${Math.abs(same.minSpd)}`;
+    const spdDisp = same.status === 'SMOOTH' ? `${Math.abs(Math.round(Number(same.avgSpd)))}` : `${Math.abs(Math.round(Number(same.minSpd)))}`;
     detailParts.push(`${spdDisp} km/h`);
     if (same.status !== 'SMOOTH' && Math.abs(Number(same.worstDet?.occ) || 0) > 0) {
       detailParts.push(isZh ? `佔用率 ${Math.abs(Math.round(Number(same.worstDet.occ)))}%` : `${Math.abs(Math.round(Number(same.worstDet.occ)))}% occ`);
@@ -4781,9 +4898,6 @@ function getDirectionalRoadSummary(stops, startIdx, detectors, isZh = false, loo
   else if (aheadStr && !approachingLeads) detailParts.push(aheadStr);
   if (topRanked && topRanked.isFarAhead && (topRanked.tier === 'CONGESTED' || topRanked.tier === 'MODERATE')) {
     detailParts.push(isZh ? topRanked.farAheadNoteTc : topRanked.farAheadNoteEn);
-  }
-  if (same && same.status === 'SMOOTH' && opp && opp.status === 'JAMMED') {
-    detailParts.push(isZh ? `僅對面線塞車 (${Math.abs(opp.minSpd)} km/h)` : `Opp. bound jammed (${Math.abs(opp.minSpd)} km/h)`);
   }
   if (todCtx && (todCtx.isPeak || todCtx.trend === 'BUILDING' || todCtx.isLateNight)) {
     detailParts.push(isZh ? todCtx.labelTc : todCtx.labelEn);
@@ -5288,6 +5402,7 @@ if (typeof window !== 'undefined') {
   window.getHongKongTimeOfDayContext = getHongKongTimeOfDayContext;
   window.computeTimeToReachDecayWeight = computeTimeToReachDecayWeight;
   window.computeBottleneckSeverityScore = computeBottleneckSeverityScore;
+  window.selectWorstAheadStopSegment = selectWorstAheadStopSegment;
   window.inferDirectionalRoadTrafficForStops = inferDirectionalRoadTrafficForStops;
   window.getDirectionalRoadSummary = getDirectionalRoadSummary;
   window.getBusSpeedLayerColorHex = getBusSpeedLayerColorHex;
@@ -5358,6 +5473,7 @@ if (typeof module !== 'undefined' && module.exports) {
     getHongKongTimeOfDayContext,
     computeTimeToReachDecayWeight,
     computeBottleneckSeverityScore,
+    selectWorstAheadStopSegment,
     inferDirectionalRoadTrafficForStops,
     getDirectionalRoadSummary,
     getBusSpeedLayerColorHex,

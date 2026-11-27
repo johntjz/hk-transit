@@ -989,7 +989,7 @@
       // Strictly reject unsnapped straight chords > 120 m lacking intermediate road shape points
       if (!seg.isRoadSnapped && seg.coords.length === 2) {
         const chordKm = _haversineKmLocal(seg.coords[0][0], seg.coords[0][1], seg.coords[1][0], seg.coords[1][1]);
-        if (chordKm > 0.12) {
+        if (chordKm > 0.25) {
           _recordDebugSkip(skipReasons, {
             scope: 'span',
             routeNo: seg.routeNo || '',
@@ -1004,7 +1004,7 @@
 
       const rawHopCapM = Number(opts.maxRawHopM) > 0
         ? Number(opts.maxRawHopM)
-        : ((!seg.isRoadSnapped || seg.coords.length >= 3) ? 120 : 0);
+        : ((!seg.isRoadSnapped || seg.coords.length >= 3) ? 250 : 0);
       const microSteps = subdividePolylineMicroSteps(
         seg.coords,
         targetStepM,
@@ -1306,8 +1306,58 @@
       flushChain();
     }
 
+    // Merge adjacent collinear corridor chains (same tier/color/mode, endpoint gap <= 35 m, bearing within 35°)
+    // so consecutive rural/arterial stop spans (e.g. South Lantau Road) render as one continuous polyline.
+    const mergedCorridors = [];
+    for (let i = 0; i < corridors.length; i++) {
+      const cur = corridors[i];
+      if (!cur || !Array.isArray(cur.coords) || cur.coords.length < 2) continue;
+      let attached = false;
+      const curStart = cur.coords[0];
+      const curNext = cur.coords[1];
+      const curStartBrg = _bearingDegLocal(curStart[0], curStart[1], curNext[0], curNext[1]);
+      for (let j = mergedCorridors.length - 1; j >= 0; j--) {
+        const prev = mergedCorridors[j];
+        if (
+          prev.tier !== cur.tier ||
+          prev.color !== cur.color ||
+          prev.isScheduledFallback !== cur.isScheduledFallback ||
+          prev.isCenteredTwoWay !== cur.isCenteredTwoWay
+        ) {
+          continue;
+        }
+        const pLen = prev.coords.length;
+        const prevEnd = prev.coords[pLen - 1];
+        const prevPrev = prev.coords[pLen - 2];
+        const gapKm = _haversineKmLocal(prevEnd[0], prevEnd[1], curStart[0], curStart[1]);
+        if (gapKm > 0.035) continue;
+        const prevEndBrg = _bearingDegLocal(prevPrev[0], prevPrev[1], prevEnd[0], prevEnd[1]);
+        if (_angDiffLocal(prevEndBrg, curStartBrg) > 35) continue;
+
+        const sliceStart = gapKm <= 0.005 ? 1 : 0;
+        for (let k = sliceStart; k < cur.coords.length; k++) {
+          prev.coords.push(cur.coords[k]);
+        }
+        prev.microStepCount += cur.microStepCount;
+        prev.speedSum += cur.speedSum;
+        prev.speedKmh = Math.abs(Math.round(prev.speedSum / Math.max(1, prev.microStepCount)));
+        cur._routeSet.forEach((rt) => prev._routeSet.add(rt));
+        prev.routes = Array.from(prev._routeSet);
+        prev.routeCount = Math.max(1, prev.routes.length);
+        if (cur.toSeq) prev.toSeq = cur.toSeq;
+        if (cur.toIdx !== null && cur.toIdx !== undefined) prev.toIdx = cur.toIdx;
+        if (cur.toNameEn) prev.toNameEn = cur.toNameEn;
+        if (cur.toNameTc) prev.toNameTc = cur.toNameTc;
+        attached = true;
+        break;
+      }
+      if (!attached) {
+        mergedCorridors.push(cur);
+      }
+    }
+
     // Strip internal helper properties
-    const cleanCorridors = corridors.map((c) => {
+    const cleanCorridors = mergedCorridors.map((c) => {
       const { _routeSet, speedSum, ...rest } = c;
       return rest;
     });
@@ -1635,18 +1685,34 @@
         }
         const tdTier = normalizeTrafficTier(activeSlowLinks.length ? focusLink.tier : 'SMOOTH', resolvedSpd);
         const tdStatus = tdTier === 'CONGESTED' ? 'JAMMED' : (tdTier === 'MODERATE' ? 'SLOW' : 'SMOOTH');
+        const _isLinkedCamSafe = (linked, camKey) => {
+          if (!linked) return true; // No catalog coords; parent detector/link already passed strict lateral + road-name filter
+          if (!isCompatibleTdFeature(linked.desc || '', linked.descTc || '', camKey || '')) return false;
+          const cLat = Number(linked.lat), cLon = Number(linked.lon);
+          if (!Number.isFinite(cLat) || !Number.isFinite(cLon)) return true;
+          let minKm = Infinity;
+          for (let s = 0; s < subSegs.length; s++) {
+            const ss = subSegs[s];
+            const dKm = _pointToSegKmLocal(cLat, cLon, ss.aLat, ss.aLon, ss.bLat, ss.bLon).distKm;
+            if (dKm < minKm) minKm = dKm;
+          }
+          return minKm <= maxCamDistKm;
+        };
+
         if (!bestCam && focusLink.camKey) {
           const linked = Array.isArray(tdCameras) ? tdCameras.find(c => c.key === focusLink.camKey) : null;
-          bestCam = {
-            key: focusLink.camKey,
-            camKey: focusLink.camKey,
-            desc: _sanitizeDirectionTypos(linked?.desc || focusLink.roadEn || focusLink.roadTc || focusLink.camKey),
-            meters: Math.abs(Math.round(focusLink.distKm * 1000)),
-            lat: Number(linked?.lat ?? subSegs[0].midLat),
-            lon: Number(linked?.lon ?? subSegs[0].midLon),
-            dir: _sanitizeDirectionTypos(linked?.dir || ''),
-            bearingDeg: linked?.bearingDeg ?? focusLink.rot
-          };
+          if (_isLinkedCamSafe(linked, focusLink.camKey)) {
+            bestCam = {
+              key: focusLink.camKey,
+              camKey: focusLink.camKey,
+              desc: _sanitizeDirectionTypos(linked?.desc || focusLink.roadEn || focusLink.roadTc || focusLink.camKey),
+              meters: Math.abs(Math.round(focusLink.distKm * 1000)),
+              lat: Number(linked?.lat ?? subSegs[0].midLat),
+              lon: Number(linked?.lon ?? subSegs[0].midLon),
+              dir: _sanitizeDirectionTypos(linked?.dir || ''),
+              bearingDeg: linked?.bearingDeg ?? focusLink.rot
+            };
+          }
         }
         return {
           hasTd: true,
@@ -1688,19 +1754,38 @@
     const tdTier = normalizeTrafficTier(activeSlow.length ? focus.det.tier : 'SMOOTH', resolvedSpd);
     const tdStatus = tdTier === 'CONGESTED' ? 'JAMMED' : (tdTier === 'MODERATE' ? 'SLOW' : 'SMOOTH');
 
-    // If detector itself links a camKey and we didn't find a closer directional camera, attach that camera metadata
+    // If detector itself links a camKey and we didn't find a closer directional camera, attach that camera metadata only if nearby & road-compatible
     if (!bestCam && focus.det?.camKey) {
       const linked = Array.isArray(tdCameras) ? tdCameras.find(c => c.key === focus.det.camKey) : null;
-      bestCam = {
-        key: focus.det.camKey,
-        camKey: focus.det.camKey,
-        desc: _sanitizeDirectionTypos(linked?.desc || focus.det.roadEn || focus.det.roadTc || focus.det.camKey),
-        meters: Math.abs(Math.round(focus.distKm * 1000)),
-        lat: Number(linked?.lat ?? focus.det.lat),
-        lon: Number(linked?.lon ?? focus.det.lon),
-        dir: _sanitizeDirectionTypos(linked?.dir || ''),
-        bearingDeg: linked?.bearingDeg ?? focus.det.rot
-      };
+      let camOk = true;
+      if (linked) {
+        if (!isCompatibleTdFeature(linked.desc || '', linked.descTc || '', focus.det.camKey || '')) {
+          camOk = false;
+        } else {
+          const cLat = Number(linked.lat), cLon = Number(linked.lon);
+          if (Number.isFinite(cLat) && Number.isFinite(cLon)) {
+            let minKm = Infinity;
+            for (let s = 0; s < subSegs.length; s++) {
+              const ss = subSegs[s];
+              const dKm = _pointToSegKmLocal(cLat, cLon, ss.aLat, ss.aLon, ss.bLat, ss.bLon).distKm;
+              if (dKm < minKm) minKm = dKm;
+            }
+            if (minKm > maxCamDistKm) camOk = false;
+          }
+        }
+      }
+      if (camOk) {
+        bestCam = {
+          key: focus.det.camKey,
+          camKey: focus.det.camKey,
+          desc: _sanitizeDirectionTypos(linked?.desc || focus.det.roadEn || focus.det.roadTc || focus.det.camKey),
+          meters: Math.abs(Math.round(focus.distKm * 1000)),
+          lat: Number(linked?.lat ?? focus.det.lat),
+          lon: Number(linked?.lon ?? focus.det.lon),
+          dir: _sanitizeDirectionTypos(linked?.dir || ''),
+          bearingDeg: linked?.bearingDeg ?? focus.det.rot
+        };
+      }
     }
 
     return {

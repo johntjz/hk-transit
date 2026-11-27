@@ -4416,7 +4416,7 @@ function formatLegSignalTagHtml(sigType, headwayMins = 0, isFreeFeeder = false, 
   } else if (sigType === 'SCHED') {
     parts.push(`<span class="planner-sig-sched">${isZh ? '預計班次' : 'Scheduled'}</span>`);
   } else if (sigType === 'HEADWAY_PROJ') {
-    const hwTxt = headwayMins > 0 ? (isZh ? `約${headwayMins}分一班` : `every ~${headwayMins}m`) : (isZh ? '預計' : 'Est');
+    const hwTxt = headwayMins > 0 ? (isZh ? `約${headwayMins}分一班` : `every ${headwayMins}m`) : (isZh ? '預計' : 'Est');
     parts.push(`<span class="planner-sig-est">${escapeHtml(hwTxt)}</span>`);
   }
   if (isFreeFeeder) {
@@ -4463,18 +4463,17 @@ function buildPlannerLegRoadTrafficTagHtml(group, boardStopObj, alightStopObj, i
   const res = inferDirectionalRoadTrafficForStops(segStops, 0, detectors, segStops.length, roadPoly);
   if (!res?.sameSide) return '';
   const same = res.sameSide;
-  const opp = res.oppSide;
+  const spdJam = Math.abs(Math.round(Number(same.minSpd) || 0));
+  const spdAvg = Math.abs(Math.round(Number(same.avgSpd) || 0));
 
+  // Strictly the route's own forward direction: opposite-carriageway jams are never mentioned.
   if (same.status === 'JAMMED') {
-    return `<span class="planner-sig-road-jammed">${isZh ? `🔴 前路擠塞 ~${same.minSpd} km/h` : `🔴 Traffic jam ~${same.minSpd} km/h`}</span>`;
+    return `<span class="planner-sig-road-jammed">${isZh ? `🔴 前路擠塞 ${spdJam} km/h` : `🔴 Traffic jam ${spdJam} km/h`}</span>`;
   }
   if (same.status === 'SLOW') {
-    return `<span class="planner-sig-road-slow">${isZh ? `🟠 前路緩慢 ~${same.minSpd} km/h` : `🟠 Slow traffic ~${same.minSpd} km/h`}</span>`;
+    return `<span class="planner-sig-road-slow">${isZh ? `🟠 前路緩慢 ${spdJam} km/h` : `🟠 Slow traffic ${spdJam} km/h`}</span>`;
   }
-  if (opp?.status === 'JAMMED') {
-    return `<span class="planner-sig-road-smooth">${isZh ? `🟢 本線暢順 ~${same.avgSpd} km/h · 對面塞車` : `🟢 Your side ~${same.avgSpd} km/h · Opp. jammed`}</span>`;
-  }
-  return `<span class="planner-sig-road-smooth">${isZh ? `🟢 路面暢順 ~${same.avgSpd} km/h` : `🟢 Road ~${same.avgSpd} km/h`}</span>`;
+  return `<span class="planner-sig-road-smooth">${isZh ? `🟢 路面暢順 ${spdAvg} km/h` : `🟢 Road ${spdAvg} km/h`}</span>`;
 }
 
 function getLegStopDisplayName(group, stopObj) {

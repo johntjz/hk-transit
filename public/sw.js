@@ -1,5 +1,5 @@
 /* Transit HK (通) Service Worker — Silent Auto-Update + SKIP_WAITING Lifecycle */
-const SW_BUILD_VERSION = '2026-11-27 11:06 HKT';
+const SW_BUILD_VERSION = '2026-11-27 18:10 HKT';
 const CACHE_PREFIX = 'transit-hk-shell-';
 const CACHE_NAME = `${CACHE_PREFIX}${SW_BUILD_VERSION.replace(/[^0-9A-Za-z_-]+/g, '-')}`;
 
@@ -8,6 +8,10 @@ const CORE_SHELL_URLS = [
   'index.html',
   'icon.png',
   'icon.svg',
+  'app.css',
+  'eta-engine.js',
+  'onboarding-pwa.js',
+  'app-ui.js',
 ];
 
 self.addEventListener('install', (event) => {

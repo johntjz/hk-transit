@@ -1511,8 +1511,8 @@ function drawWalkingLeg(targetMap, fromPt, toPt, options = {}) {
   const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
   if (cachedRoute) {
     const tip = isBike
-      ? (isZh ? `單車路線 ${cachedRoute.distM}m (~${cachedRoute.mins}分)` : `Bike ${cachedRoute.distM}m (~${cachedRoute.mins}m)`)
-      : (isZh ? `步行路線 ${cachedRoute.distM}m (~${cachedRoute.mins}分)` : `Walk ${cachedRoute.distM}m (~${cachedRoute.mins}m)`);
+      ? (isZh ? `單車路線 ${cachedRoute.distM}m (${cachedRoute.mins}分)` : `Bike ${cachedRoute.distM}m (${cachedRoute.mins}m)`)
+      : (isZh ? `步行路線 ${cachedRoute.distM}m (${cachedRoute.mins}分)` : `Walk ${cachedRoute.distM}m (${cachedRoute.mins}m)`);
     line.bindTooltip(tip, { sticky: true, className: 'kmb-map-stop-label' });
   } else if (options.label) {
     line.bindTooltip(options.label, { sticky: true, className: 'kmb-map-stop-label' });
@@ -1526,8 +1526,8 @@ function drawWalkingLeg(targetMap, fromPt, toPt, options = {}) {
       line.setLatLngs(res.latLngs);
       line.setStyle({ opacity: 0.94 });
       const upgradedTip = isBike
-        ? (isZh ? `單車路線 ${res.distM}m (~${res.mins}分)` : `Bike ${res.distM}m (~${res.mins}m)`)
-        : (isZh ? `步行路線 ${res.distM}m (~${res.mins}分)` : `Walk ${res.distM}m (~${res.mins}m)`);
+        ? (isZh ? `單車路線 ${res.distM}m (${res.mins}分)` : `Bike ${res.distM}m (${res.mins}m)`)
+        : (isZh ? `步行路線 ${res.distM}m (${res.mins}分)` : `Walk ${res.distM}m (${res.mins}m)`);
       if (line.getTooltip()) line.setTooltipContent(upgradedTip);
       else line.bindTooltip(upgradedTip, { sticky: true, className: 'kmb-map-stop-label' });
       fitTransferPlannerMapBounds();
@@ -1750,10 +1750,10 @@ function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) 
         const fromNm = sanitizeBottleneckLabel(rawFrom || `Stop ${seg.fromSeq || ((seg.fromIdx || 0) + 1)}`);
         const toNm = sanitizeBottleneckLabel(rawTo || `Stop ${seg.toSeq || ((seg.toIdx || 0) + 2)}`);
         const flowTxt = seg.tier === 'CONGESTED'
-          ? (isZh ? '擠塞' : 'Heavy')
+          ? (isZh ? '擠塞' : 'Jammed')
           : (seg.tier === 'MODERATE'
             ? (isZh ? '緩慢' : 'Slow')
-            : (isZh ? '暢順' : 'Flowing'));
+            : (isZh ? '暢通' : 'Clear'));
         busLine.bindTooltip(
           `🚌 ${isZh ? '巴士車速推算' : 'Bus Speed Est.'} · ${flowTxt} (${fromNm} → ${toNm})`,
           { sticky: true, className: 'kmb-map-stop-label' }
@@ -3732,10 +3732,10 @@ function _drawBusSpeedSegmentsIntoLayer(segments, layerGroup, routeLabel = '', d
         const fromNm = sanitizeBottleneckLabel(rawFrom || `Stop ${c.fromSeq || ((c.fromIdx || 0) + 1)}`);
         const toNm = sanitizeBottleneckLabel(rawTo || `Stop ${c.toSeq || ((c.toIdx || 0) + 2)}`);
         const flowTxt = c.tier === 'CONGESTED'
-          ? (isZh ? '擠塞' : 'Heavy')
+          ? (isZh ? '擠塞' : 'Jammed')
           : (c.tier === 'MODERATE'
             ? (isZh ? '緩慢' : 'Slow')
-            : (isZh ? '暢順' : 'Flowing'));
+            : (isZh ? '暢通' : 'Clear'));
         const tooltipText = c.isScheduledFallback
           ? `🚌 ${dedupTag ? `${dedupTag} • ` : ''}${isZh ? '預計班次推算' : 'Scheduled headway'} • ${flowTxt}`
           : `🚌 ${dedupTag ? `${dedupTag} • ` : ''}${flowTxt} (${fromNm} → ${toNm})`;
@@ -3805,10 +3805,10 @@ function _drawBusSpeedSegmentsIntoLayer(segments, layerGroup, routeLabel = '', d
       const fromNm = sanitizeBottleneckLabel(rawFrom || `Stop ${seg.fromSeq || ((seg.fromIdx || 0) + 1)}`);
       const toNm = sanitizeBottleneckLabel(rawTo || `Stop ${seg.toSeq || ((seg.toIdx || 0) + 2)}`);
       const flowTxt = seg.tier === 'CONGESTED'
-        ? (isZh ? '擠塞' : 'Heavy')
+        ? (isZh ? '擠塞' : 'Jammed')
         : (seg.tier === 'MODERATE'
           ? (isZh ? '緩慢' : 'Slow')
-          : (isZh ? '暢順' : 'Flowing'));
+          : (isZh ? '暢通' : 'Clear'));
       const tooltipText = seg.isScheduledFallback
         ? `🚌 ${dedupTag ? `${dedupTag} • ` : ''}${isZh ? '預計班次推算' : 'Scheduled headway'} • ${flowTxt}`
         : `🚌 ${dedupTag ? `${dedupTag} • ` : ''}${flowTxt} (${fromNm} → ${toNm})`;
@@ -5086,7 +5086,7 @@ function drawTransferCorridorOnMap(spec, selectedCard) {
 
   if (selectedCard?.type === 'WALK_BIKE') {
     const wb = selectedCard.item;
-    pushWalk(originPt, destPt, wb.isBike, `${wb.isBike ? (isZh ? '單車' : 'Bike') : (isZh ? '步行' : 'Walk')} ${wb.distM}m (~${wb.totalMins}m)`);
+    pushWalk(originPt, destPt, wb.isBike, `${wb.isBike ? (isZh ? '單車' : 'Bike') : (isZh ? '步行' : 'Walk')} ${wb.distM}m (${wb.totalMins}m)`);
   } else if (selectedCard?.type === 'DIRECT') {
     const dp = selectedCard.item;
     const pts = drawTransitLeg(dp.group, dp.boardStopObj, dp.alightStopObj, '#007AFF');

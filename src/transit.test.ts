@@ -4,6 +4,14 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import { createRequire } from 'node:module';
 
+// index.html now holds only markup + early boot loaders; inline CSS/JS lives in external files.
+// Assertions that previously scanned index.html for CSS rules / app functions read this concatenated bundle.
+function readAppBundle(): string {
+  return ['index.html', 'public/app.css', 'public/eta-engine.js', 'public/onboarding-pwa.js', 'public/app-ui.js']
+    .map((f) => fs.readFileSync(f, 'utf8'))
+    .join('\n');
+}
+
 function loadWorkerSandbox(extraCtx: Record<string, any> = {}) {
   const rawSrc = fs.readFileSync('functions/api/worker.js', 'utf8');
   const sandboxSrc = rawSrc.replace(/^export\s+/gm, '');
@@ -740,7 +748,7 @@ test('icon.png asset, index.html image/png MIME type, auto-stampable HKT footer 
   const pngBytes = fs.readFileSync('public/icon.png');
   assert.deepEqual(Array.from(pngBytes.subarray(0, 4)), [0x89, 0x50, 0x4e, 0x47], 'public/icon.png must be a valid PNG');
 
-  const html = fs.readFileSync('index.html', 'utf8');
+  const html = readAppBundle();
   assert.equal(html.includes('image/pngl'), false, 'Must not contain image/pngl MIME typo');
   assert.equal(html.includes('icon.svg'), false, 'index.html should reference icon.png instead of icon.svg');
   assert.ok(html.includes('href="icon.png"'), 'index.html must link icon.png');
@@ -1145,7 +1153,7 @@ test('planner.js: merges opposite-side stops within 220m by default (Yuen Long L
 });
 
 test('index.html: Planner autocomplete dropdown is 100% opaque in dark and light modes with isolated stacking and theme-aware banner/chip CSS', () => {
-  const html = fs.readFileSync('index.html', 'utf8');
+  const html = readAppBundle();
   assert.ok(html.includes('#plannerInlineDropdown'), 'index.html must explicitly style #plannerInlineDropdown');
   assert.ok(html.includes('background-color: #1C1C1E;'), 'Dark mode dropdown must use solid opaque #1C1C1E');
   assert.ok(html.includes('background-color: #FFFFFF;'), 'Light mode dropdown must use solid opaque #FFFFFF');
@@ -1157,7 +1165,7 @@ test('index.html: Planner autocomplete dropdown is 100% opaque in dark and light
 });
 
 test('Logging functions (BlackboxLogger, Log modal, Log buttons) are completely removed while SignalHealthMonitor remains intact', () => {
-  const html = fs.readFileSync('index.html', 'utf8');
+  const html = readAppBundle();
   const planner = fs.readFileSync('public/planner.js', 'utf8');
   const removedTokens = [
     'BlackboxLogger',
@@ -1188,7 +1196,7 @@ test('MTR_EXITS_SEED is populated in hardcode.js, merged in actions.yml, fallbac
   assert.ok(yml.includes('MTR_EXITS_SEED'), 'actions.yml must import MTR_EXITS_SEED from hardcode.js');
   assert.ok(yml.includes('mtrExits: mergedMtrExits'), 'actions.yml must write mergedMtrExits into outDb.mtrExits');
 
-  const html = fs.readFileSync('index.html', 'utf8');
+  const html = readAppBundle();
   assert.ok(html.includes('window.MTR_EXITS_SEED'), 'index.html must fall back to window.MTR_EXITS_SEED when cached db.mtrExits is empty');
 
   const idxDb = JSON.parse(fs.readFileSync('public/bus_index.min.json', 'utf8'));
@@ -1644,7 +1652,7 @@ test('planner.js, map.js, index.html & actions.yml: Share Trip summary, active l
   assert.ok(mapSrc.includes('xferMapLegPolylines.push'), 'map.js must track leg polylines for click-to-highlight sync');
 
   // 3. index.html includes TD GMB /eta/route-stop/ fallback and Share Trip CSS
-  const html = fs.readFileSync('index.html', 'utf8');
+  const html = readAppBundle();
   assert.ok(html.includes('https://data.etagmb.gov.hk/eta/route-stop/'), 'index.html must include /eta/route-stop/ GMB fallback');
   assert.ok(html.includes('.planner-share-btn') && html.includes('.planner-step-transit.active-leg'), 'index.html must style Share Trip button and active leg');
 
@@ -1914,7 +1922,7 @@ test('planner.js & index.html: deduplicates opposite-side stops in Settings Hub 
     'Deduplicated stops must be sorted closest-first'
   );
 
-  const html = fs.readFileSync('index.html', 'utf8');
+  const html = readAppBundle();
   assert.ok(html.includes('class="app-switcher-item app-switcher-plan" id="topXferBtn"'), 'Route Planner must be promoted to a labeled top-bar Plan tab');
   assert.ok(html.includes('data-i18n="planApp">Plan</span>') && html.includes("planApp: '規劃'"), 'Plan tab must have EN/ZH labels');
   assert.ok(html.includes('html.ios-standalone .app-switcher') && html.includes('calc(env(safe-area-inset-top) + 14px)'), 'iOS standalone PWA must clear the status-bar whiteout frost zone');
@@ -1934,7 +1942,7 @@ test('planner.js & index.html: deduplicates opposite-side stops in Settings Hub 
 });
 
 test('index.html: detects client device language on landing and renders MTR-style 7-slide HK-landmark visual tutorial', () => {
-  const html = fs.readFileSync('index.html', 'utf8');
+  const html = readAppBundle();
 
   const detectMatch = html.match(/function detectClientDeviceLang\(navObj\) \{[\s\S]*?\n\}/);
   const svgFnMatch = html.match(/function buildTutorialSlideSvg\(stepIdx, isZh\) \{[\s\S]*?\n\}/);
@@ -2215,7 +2223,7 @@ test('hardcode.js: NLB 1 & NLB 3M two-way sectional fare badge & driver notice o
 
 test('planner.js: Lo Uk Tsuen -> Airport MTR Station at 23:29 eliminates S1 -> AEL overshoot-and-backtrack loop', () => {
   const unpacked = loadUnpackedBusIndexForTest();
-  const html = fs.readFileSync('index.html', 'utf8');
+  const html = readAppBundle();
   const stepSecMatch = html.match(/function computeSegmentStepSeconds\([\s\S]*?\n\}/);
   assert.ok(stepSecMatch, 'computeSegmentStepSeconds must exist in index.html');
   const stepCtx: any = { getCorridorLiveStatusAt: () => ({ status: 'SMOOTH', speedKmh: 70 }) };
@@ -2305,7 +2313,7 @@ test('hardcode.js: Tuesday 08:04 AM South Lantau NLB 1 & NLB 4 to Mui Wo at Lo U
 });
 
 test("index.html: versioned onboarding 'Don't show again' persists for current guide version, re-pops on guide update, and removes duplicate About guide button", () => {
-  const html = fs.readFileSync('index.html', 'utf8');
+  const html = readAppBundle();
   assert.ok(html.includes('id="tutorialDontShowCheckbox"'), 'Tutorial modal must render Dont show again checkbox');
   assert.ok(!html.includes('id="aboutResetGuideBtn"'), 'Duplicate Visual Guide button in About modal must be removed');
 
@@ -2486,12 +2494,12 @@ test('hardcode.js & planner.js: directional road inference distinguishes smooth 
   assert.ok(sumEn, 'Expected directional road summary');
   assert.equal(sumEn.tone, 'smooth', 'Same-direction traffic is smooth despite opposite-side jam');
   assert.equal(sumEn.modeRec, 'TAKE_BUS');
-  assert.ok(sumEn.headline.includes('Take Bus · Your side clear (No delay)'), `Unexpected EN headline: ${sumEn.headline}`);
-  assert.ok(sumEn.detail.includes('Opp. bound jammed (22 km/h)'), `Unexpected EN detail: ${sumEn.detail}`);
+  assert.ok(sumEn.headline.includes('Take Bus · Corridor clear (No delay)'), `Unexpected EN headline: ${sumEn.headline}`);
+  assert.ok(!sumEn.detail.includes('Opp. bound jammed'), `Forward summary must NOT inject Opp. bound jammed: ${sumEn.detail}`);
 
   const sumZh = sb.getDirectionalRoadSummary(e36Stops, 0, detectors, true, 14);
-  assert.ok(sumZh.headline.includes('可乘巴士 · 你方向暢通 (無延誤)'), `Unexpected ZH headline: ${sumZh.headline}`);
-  assert.ok(sumZh.detail.includes('僅對面線塞車 (22 km/h)'), `Unexpected ZH detail: ${sumZh.detail}`);
+  assert.ok(sumZh.headline.includes('可乘巴士 · 前路暢通 (無延誤)'), `Unexpected ZH headline: ${sumZh.headline}`);
+  assert.ok(!sumZh.detail.includes('對面線塞車'), `Forward ZH summary must NOT inject opposite-bound jam: ${sumZh.detail}`);
 
   // Opposite scenario: bus's OWN direction ahead is jammed (19 km/h, 94% occ -> severe jam -> Switch to MTR)
   const jammedDetectors = [
@@ -2500,14 +2508,14 @@ test('hardcode.js & planner.js: directional road inference distinguishes smooth 
   const jammedSum = sb.getDirectionalRoadSummary(e36Stops, 0, jammedDetectors, false, 14);
   assert.equal(jammedSum.tone, 'jammed');
   assert.equal(jammedSum.modeRec, 'SWITCH_MTR');
-  assert.ok(jammedSum.headline.includes('Switch to MTR · Heavy jam on Tuen Mun Rd (+15m)'), `Unexpected jammed headline: ${jammedSum.headline}`);
+  assert.ok(jammedSum.headline.includes('Switch to MTR · Jammed on Tuen Mun Rd (+15m)'), `Unexpected jammed headline: ${jammedSum.headline}`);
   assert.ok(jammedSum.detail.includes('19 km/h'), `Unexpected jammed detail: ${jammedSum.detail}`);
 
   // Planner leg inline road badge when live detectors loaded
   sb.ctx.window.__LIVE_TRAFFIC_DETECTORS__ = detectors;
   const gE36 = { key: 'KMB_E36_O', mode: 'BUS', company: 'KMB', routeNo: 'E36', _stops: e36Stops };
   const legRoadHtml = sb.buildPlannerLegRoadTrafficTagHtml(gE36, e36Stops[0], e36Stops[2], false);
-  assert.ok(legRoadHtml.includes('~68 km/h') && legRoadHtml.includes('planner-sig-road-smooth'), `Expected smooth road badge in planner leg, got: ${legRoadHtml}`);
+  assert.ok(legRoadHtml.includes('68 km/h') && !legRoadHtml.includes('~68 km/h') && legRoadHtml.includes('planner-sig-road-smooth'), `Expected clean smooth road badge without tilde in planner leg, got: ${legRoadHtml}`);
 
   // False expressway rejection: NLB 3M starting at Tung Chung Station -> Fu Tung Plaza -> Tung Chung Rd
   // MUST NOT match nearby North Lantau Highway near Tung Chung (N)
@@ -2603,7 +2611,7 @@ test('hardcode.js & planner.js: GPS coordinate paste (DMS & decimal), BULLETPROO
   assert.equal(recovered.home?.stopKey, 'NLB_LOUK', 'Home stop must recover cleanly from cookie when localStorage is wiped');
 
   // 4. Fast PWA boot: no render-blocking unpkg Leaflet <link>/<script> in index.html, decision modal present
-  const html = fs.readFileSync('index.html', 'utf8');
+  const html = readAppBundle();
   assert.ok(!/<script[^>]+src=["']https:\/\/unpkg\.com\/leaflet/i.test(html), 'Must NOT have render-blocking unpkg.com Leaflet <script> in <head>');
   assert.ok(!/<link[^>]+href=["']https:\/\/unpkg\.com\/leaflet/i.test(html), 'Must NOT have render-blocking unpkg.com Leaflet <link> in <head>');
   assert.ok(html.includes('window.ensureLeafletLoaded'), 'Must define async multi-CDN ensureLeafletLoaded');
@@ -2738,14 +2746,15 @@ test('hardcode.js: detects curved Tuen Mun highway jams between two far-apart E3
   assert.equal(sumAtBbiZh.isApproaching, false);
   assert.equal(sumAtBbiZh.focusDet?.id, 'AID_TMCLK_SB');
 
-  // 3. Opposite-direction-only detector in Tuen Mun MUST NOT trigger a false same-direction jam
+  // 3. Opposite-direction-only detector in Tuen Mun MUST NOT trigger a false same-direction jam or inject an Opp. bound banner
   const oppOnlyDetectors = [
     { id: 'AID_TM_OPP_JAM', lat: 22.3925, lon: 113.9768, rot: 42, spd: 14, occ: 95, tier: 'JAMMED', roadEn: 'Tuen Mun Road Northbound', roadTc: '屯門公路北行', camKey: 'TM105F' }
   ];
   const oppOnlySum = sb.getDirectionalRoadSummary(stops, ylParkIdx, oppOnlyDetectors, false, 8);
-  assert.ok(oppOnlySum, 'Expected opposite-bound info summary');
-  assert.equal(oppOnlySum.tone, 'smooth', 'Opposite-bound Tuen Mun jam must NOT be flagged as same-direction jam');
-  assert.ok(oppOnlySum.headline.includes('Opposite bound jammed'), `Unexpected opp-only headline: ${oppOnlySum.headline}`);
+  assert.equal(oppOnlySum, null, 'Opposite-bound-only Tuen Mun jam must NOT produce a forward traffic banner');
+  const oppOnlyRaw = sb.inferDirectionalRoadTrafficForStops(stops, ylParkIdx, oppOnlyDetectors, 8);
+  assert.equal(oppOnlyRaw.sameSide, null, 'Opposite-bound-only detector must not populate sameSide');
+  assert.equal(oppOnlyRaw.oppSide?.status, 'JAMMED', 'Opposite-bound detector remains available in oppSide for camera switching');
 });
 
 test('map.js: slim clickable traffic arrows (20-22px inside 32x32 hit area), zoom-15 smooth hiding, left-hand lane separation, and N/S/E/W bound badges', () => {
@@ -3038,7 +3047,7 @@ test('planner.js: Leave Now retains 0-min walk-buffer earlier departures and Ear
 });
 
 test('index.html: Saved Bookmarks cleanly truncates long destinations with .route-dest-name ellipsis and compact B/T labels', () => {
-  const html = fs.readFileSync('index.html', 'utf8');
+  const html = readAppBundle();
   assert.ok(html.includes('.route-dest-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }'), 'Must define flex-safe ellipsis on .route-dest-name');
   assert.ok(html.includes('<span class="route-dest-name">${escapeHtml(compactDest)}</span>'), 'renderFavList must wrap destination name inside .route-dest-name');
   assert.ok(html.includes('#favList .route-eta-col'), 'Saved bookmarks list must tighten column widths for narrow mobile viewports');
@@ -3193,7 +3202,7 @@ test('Decision-first Transit: zero off-route clutter (<=2 bottlenecks on route m
     worstDet: { id: 'TDS90048', spd: 12, occ: 88, tier: 'JAMMED', roadEn: 'Tuen Mun Road near San Hui Market - Northbound', roadTc: '屯門公路近新墟街市 - 北行' }
   }, null, false);
   assert.equal(dSevere.modeRec, 'SWITCH_MTR');
-  assert.equal(dSevere.verdictEn, 'Switch to MTR · Heavy jam on Tuen Mun Road (+15m)');
+  assert.equal(dSevere.verdictEn, 'Switch to MTR · Jammed on Tuen Mun Road (+15m)');
   assert.ok(dSevere.verdictTc.includes('改乘港鐵') && dSevere.verdictTc.includes('屯門公路'));
 
   // --- AC 3: E36 (TM-CLK Tunnel BBI -> Fung Chi Tsuen) keeps BOTH Tuen Mun Road (TDS90048) & YLH (TDS90067),
@@ -3237,7 +3246,7 @@ test('Decision-first Transit: zero off-route clutter (<=2 bottlenecks on route m
   const sumB = sb.getDirectionalRoadSummary(e36Stops, 1, detCaseB, false, 8, e36RealPolyline);
   assert.equal(sumB.focusDet?.id, 'TDS90067', 'When YLH is jammed worse than TMR, TDS90067 must win');
   assert.equal(sumB.modeRec, 'SWITCH_MTR');
-  assert.ok(sumB.headline.includes('Switch to MTR · Heavy jam on Yuen Long Highway (+15m)'), `Unexpected YLH severe jam headline: ${sumB.headline}`);
+  assert.ok(sumB.headline.includes('Switch to MTR · Jammed on Yuen Long Highway (+15m)'), `Unexpected YLH severe jam headline: ${sumB.headline}`);
 
   // --- AC 1: Zoomed-out E36 map hides Sha Tin / Ma On Shan / Tsuen Wan off-route badges and caps route bottlenecks to <= 2 ---
   const mapCode = fs.readFileSync('public/map.js', 'utf8');
@@ -3305,7 +3314,7 @@ test('Decision-first Transit: zero off-route clutter (<=2 bottlenecks on route m
 });
 
 test('index.html & map.js: desktop Pointer Events drag resize on #mapSheetHandle (zero text selection) and direct Verdict & Cam click with stripped 250"/250° telemetry artifacts', () => {
-  const html = fs.readFileSync('index.html', 'utf8');
+  const html = readAppBundle();
   const mapCode = fs.readFileSync('public/map.js', 'utf8');
 
   // 1. Verify CSS grab/grabbing, touch-action: none, and user-select suppression in index.html
@@ -3472,7 +3481,7 @@ test('index.html & map.js: desktop Pointer Events drag resize on #mapSheetHandle
 });
 
 test('PWA update mechanism: public/sw.js SKIP_WAITING lifecycle, Settings Force Update App, automatic update toast, and zero header clutter', async () => {
-  const html = fs.readFileSync('index.html', 'utf8');
+  const html = readAppBundle();
   const swCode = fs.readFileSync('public/sw.js', 'utf8');
   const headersTxt = fs.readFileSync('public/_headers', 'utf8');
 
@@ -3632,7 +3641,7 @@ test('PWA update mechanism: public/sw.js SKIP_WAITING lifecycle, Settings Force 
 });
 
 test('SmartReturnManager & index.html: tight Quick Return confidence threshold (Home anchor or 3+ time-window trips), distance & 20m-vs-5m guardrails, and Settings toggle clean-plate OFF default', () => {
-  const html = fs.readFileSync('index.html', 'utf8');
+  const html = readAppBundle();
 
   // 1. Settings modal has Quick Return Suggestions toggle and main header stays untouched
   const settingsSlice = html.slice(html.indexOf('id="settingsModal"'), html.indexOf('id="aboutModal"'));
@@ -3818,7 +3827,7 @@ test('Architecture Update 1: Cross-Tunnel & 5km Lookahead Cap blocks Lantau -> T
 
 test('Architecture Update 1B: Floating Back to Stop pill appears when panning >300m away from active stop and pans back cleanly', () => {
   const mapCode = fs.readFileSync('public/map.js', 'utf8');
-  const html = fs.readFileSync('index.html', 'utf8');
+  const html = readAppBundle();
   assert.ok(html.includes('id="detailBackToStopPill"') && html.includes('returnToActiveDetailStop()'), 'index.html must include top-center #detailBackToStopPill button');
 
   const pillEl = { style: { display: 'none' }, innerText: '', setAttribute() {} };
@@ -4147,7 +4156,7 @@ test('Architecture Update 4: GPS Direction Toggle clusters paired same-name stop
   const sb = loadHardcodeAndPlannerSandbox();
   const collectDirectionClusterStops = sb.ctx.window.collectDirectionClusterStops;
   const db = JSON.parse(fs.readFileSync('public/bus_index.min.json', 'utf8'));
-  const html = fs.readFileSync('index.html', 'utf8');
+  const html = readAppBundle();
 
   // 1. Verify extractRouteBoundCode in index.html checks tdBound BEFORE routeIds / key
   const fnMatch = html.match(/function extractRouteBoundCode\(group\)\s*\{[\s\S]*?\n\}/);
@@ -4325,7 +4334,7 @@ test('Traffic Update 4: Camera modal wraps 2-line titles, shows explicit EB/WB/N
     extractCardinalDirectionMeta,
     findNearestMatchingDetectorForCamera,
   } = sb.ctx.window;
-  const html = fs.readFileSync('index.html', 'utf8');
+  const html = readAppBundle();
 
   // 1. Modal CSS & HTML must allow 2-line title wrap (no single-line nowrap truncation) and render .traffic-dir-badge
   assert.match(html, /\.traffic-modal-title\s*\{[\s\S]*-webkit-line-clamp:\s*2[\s\S]*white-space:\s*normal/, 'Modal title CSS must allow 2-line wrap');
@@ -4385,7 +4394,7 @@ test('Traffic Update 4: Camera modal wraps 2-line titles, shows explicit EB/WB/N
 });
 
 test('Commuter Update 1: iOS PWA controllerchange strictly requires sw-user-reload sessionStorage flag, suppresses duplicate toasts, and shows loading skeleton during isHydratingInitialData', async () => {
-  const html = fs.readFileSync('index.html', 'utf8');
+  const html = readAppBundle();
   const swCode = fs.readFileSync('public/sw.js', 'utf8');
 
   // 1. sw.js calls skipWaiting() immediately in install and also retains SKIP_WAITING message handling
@@ -4489,7 +4498,7 @@ test('Commuter Update 1: iOS PWA controllerchange strictly requires sw-user-relo
 test('Commuter Updates 2 & 3: Directional camera bearingDeg & FOV cones on Global/Route Maps, clickable 350m corridor cameras, Traffic & Cams toggle, and dashed slate-blue unmonitored roads', () => {
   const sb = loadHardcodeAndPlannerSandbox();
   const mapSrc = fs.readFileSync('public/map.js', 'utf8');
-  const html = fs.readFileSync('index.html', 'utf8');
+  const html = readAppBundle();
   const workerSrc = fs.readFileSync('functions/api/worker.js', 'utf8');
 
   // 1. Verify Route Map toggle button label updated to Traffic & Cams ON / Traffic & Cams
@@ -4620,7 +4629,7 @@ test('Commuter Updates 2 & 3: Directional camera bearingDeg & FOV cones on Globa
 });
 
 test('Commuter Update 4: Graceful Video Lost pixel detection (no OCR) & strict worker cam_img key allowlist', () => {
-  const html = fs.readFileSync('index.html', 'utf8');
+  const html = readAppBundle();
   const workerSrc = fs.readFileSync('functions/api/worker.js', 'utf8');
 
   // 1. Verify worker cam_img proxy strictly validates key format against SSRF
@@ -4869,7 +4878,7 @@ test('Camera FOV & Corridor Geometry Fix: Verified azimuth overrides, speed-link
 test('Global Camera Orientation, Full-Frame Camera Modal & 7-App HK Ecosystem Links in About Modal', () => {
   const workerSrc = fs.readFileSync('functions/api/worker.js', 'utf8');
   const mapSrc = fs.readFileSync('public/map.js', 'utf8');
-  const html = fs.readFileSync('index.html', 'utf8');
+  const html = readAppBundle();
   const sb = loadHardcodeAndPlannerSandbox();
 
   // 1. Verify worker.js exact-detector priority & same-road curved-highway matching (fixes TDS90070, TDS91054, AID01129, AID01134)
@@ -4961,23 +4970,24 @@ test('Global Camera Orientation, Full-Frame Camera Modal & 7-App HK Ecosystem Li
   assert.ok(mEb >= 18 && mEb <= 40, `map.js TDS90070 must align NNE along Yuen Long Hwy (~26-30°), got ${mEb}°`);
   assert.ok(mWb >= 185 && mWb <= 212, `map.js TDS91054 must align SSW along Yuen Long Hwy (~198-200°), got ${mWb}°`);
 
-  // 3. Verify About modal contains the curated 6 HK public ecosystem app links & preserves companion GPS hooks (excluding private/redirect apps)
+  // 3. Verify About modal contains the curated 4 HK public ecosystem companion app links & preserves companion GPS hooks (excluding self-referential Transit HK, HKFX, and private/redirect apps)
   const aboutStart = html.indexOf('id="aboutModal"');
   const aboutEnd = html.indexOf('id="tutorialModal"');
   assert.ok(aboutStart > 0 && aboutEnd > aboutStart, 'Must locate #aboutModal block in index.html');
   const aboutSlice = html.slice(aboutStart, aboutEnd);
   const expectedEcosystemUrls = [
-    'https://hkway.pages.dev',
     'https://hklayer.pages.dev',
     'https://hksundry.pages.dev',
     'https://hkproperty.pages.dev',
     'https://hkmpf.pages.dev',
-    'https://hkfx.pages.dev',
   ];
   for (const url of expectedEcosystemUrls) {
     assert.ok(aboutSlice.includes(`href="${url}"`), `#aboutModal must include curated ecosystem link ${url}`);
   }
   const excludedEcosystemStrings = [
+    'https://hkway.pages.dev',
+    'https://hkfx.pages.dev',
+    'HKFX (外匯)',
     'https://hkfleet.pages.dev',
     'https://modelsignal.pages.dev',
     'https://boat-eg5.pages.dev',
@@ -4990,12 +5000,11 @@ test('Global Camera Orientation, Full-Frame Camera Modal & 7-App HK Ecosystem Li
     'HK Past 1889',
   ];
   for (const forbidden of excludedEcosystemStrings) {
-    assert.ok(!aboutSlice.includes(forbidden), `#aboutModal must NOT include private/redirect/irrelevant app ${forbidden}`);
+    assert.ok(!aboutSlice.includes(forbidden), `#aboutModal must NOT include removed/private/redirect app ${forbidden}`);
   }
   assert.ok(aboutSlice.includes('HK Layer (著衫)'), '#aboutModal must display HK Layer (著衫)');
   assert.ok(aboutSlice.includes('HK Sundry (曬衫)'), '#aboutModal must display HK Sundry (曬衫)');
   assert.ok(aboutSlice.includes('HK MPF (強積金)'), '#aboutModal must display HK MPF (強積金)');
-  assert.ok(aboutSlice.includes('HKFX (外匯)'), '#aboutModal must display HKFX (外匯)');
   assert.ok(aboutSlice.includes("openCompanionAppAtCurrentStop('property')"), '#aboutModal must preserve HK Property GPS hook');
   assert.ok(aboutSlice.includes("openCompanionAppAtCurrentStop('sundry')"), '#aboutModal must preserve HK Sundry hook');
 
@@ -5011,7 +5020,7 @@ test('Global Camera Orientation, Full-Frame Camera Modal & 7-App HK Ecosystem Li
 test('Issues 1-4: Zoom-Gated Global Cameras, Upstream Jam & Time-Decay Corridor Ranking, Short-Gap Bridging, Forward-Only Exit Clamp & Road Ahead Chip, and Separate Bus Speed Layer', () => {
   const sb = loadHardcodeAndPlannerSandbox();
   const mapSrc = fs.readFileSync('public/map.js', 'utf8');
-  const html = fs.readFileSync('index.html', 'utf8');
+  const html = readAppBundle();
 
   // --- Issue 2: Upstream Jam Before Stop + Time-to-Reach Decay Ranking + HK Time-of-Day Context ---
   const getHongKongTimeOfDayContext = sb.ctx.window.getHongKongTimeOfDayContext;
@@ -5197,7 +5206,7 @@ test('Dedicated busspeed.js Calibration, Rural 1.45x Winding Factor, >=2 Consecu
   vm.runInContext(fs.readFileSync('public/busspeed.js', 'utf8'), bsSandbox);
   const busSpeedEngine: any = bsWindow.BusSpeedEngine;
   assert.ok(busSpeedEngine, 'public/busspeed.js must export window.BusSpeedEngine');
-  const html = fs.readFileSync('index.html', 'utf8');
+  const html = readAppBundle();
   const mapSrc = fs.readFileSync('public/map.js', 'utf8');
   const t0 = Date.UTC(2026, 10, 27, 1, 15, 0);
 
@@ -5477,8 +5486,8 @@ test('Dedicated busspeed.js Calibration, Rural 1.45x Winding Factor, >=2 Consecu
     'index.html must visually distinguish solid .source-td badges from translucent 1px dashed .source-bus-api badges');
   assert.ok(!html.includes('traffic-approaching-strip') && !html.includes('traffic-segment-list') && !html.includes('traffic-segment-row'),
     'index.html must not contain cluttered .traffic-approaching-strip, .traffic-segment-list, or .traffic-segment-row');
-  assert.ok(html.includes("'Flowing'") && html.includes("'Slow'") && html.includes("'Heavy'") && !html.includes('~${Math.round(seg.speedKmh)} km/h · ${srcTag}'),
-    'BUS_API stop-row pills must show coarse Flowing/Slow/Heavy labels instead of ~XX km/h');
+  assert.ok(html.includes("'Clear'") && html.includes("'Slow'") && html.includes("'Jammed'") && !html.includes('~${Math.round(seg.speedKmh)} km/h · ${srcTag}'),
+    'BUS_API stop-row pills must show coarse Clear/Slow/Jammed labels instead of ~XX km/h');
   assert.ok(mapSrc.includes('const flowWeight = 4.5;') && mapSrc.includes('opacity: feat?.properties?.isGapBridge ? 0.55 : 0.92,'),
     'Global TD ground-truth polylines must render solid at weight 4.5 and opacity 0.92');
   assert.ok(mapSrc.includes('if (window.globalTrafficLayerEnabled)') && mapSrc.includes('renderGlobalBusSpeedOverlay(window.browseMapInstance);'),
@@ -5818,7 +5827,7 @@ test('Side-Road <=45m Highway Leakage Blocking (Kam Ho Rd / Castle Peak Rd), Ter
     'getDirectionalRoadSummary must expose stopBreakdownSegments for inline Details > breakdown');
 
   // 4. Working "Details >" inline breakdown in index.html generateExpandedETAsHtml + toggleTrafficInlineBreakdown
-  const html = fs.readFileSync('index.html', 'utf8');
+  const html = readAppBundle();
   assert.ok(html.includes('unifiedSegments: unifiedSegs'), 'generateExpandedETAsHtml must pass unifiedSegments into getDirectionalRoadSummary');
   assert.ok(html.includes('toggleTrafficInlineBreakdown(') && html.includes('class="traffic-inline-breakdown"'),
     'generateExpandedETAsHtml must wire Details > to toggleTrafficInlineBreakdown and render .traffic-inline-breakdown');
@@ -6051,7 +6060,7 @@ test('Follow-up Fix 1: E36 rejects off-route TMR/Brilliant Garden/Fung Tei/Siu H
   const engine: any = bsWindow.BusSpeedEngine;
 
   const mapSrc = fs.readFileSync('public/map.js', 'utf8');
-  const html = fs.readFileSync('index.html', 'utf8');
+  const html = readAppBundle();
 
   // 1. E36 off-route leaks (TDS91037 TMR/Brilliant Garden-SB, Fung Tei, Siu Hong & TDS91040 YLH/Kong Sham Western Hwy-WB)
   const e36Stops = [
@@ -6150,7 +6159,7 @@ test('Follow-up Fix 2: Clean qualitative Flowing/Slow/Heavy pills (no raw car km
   vm.createContext(bsSandbox);
   vm.runInContext(fs.readFileSync('public/busspeed.js', 'utf8'), bsSandbox);
   const engine: any = bsWindow.BusSpeedEngine;
-  const html = fs.readFileSync('index.html', 'utf8');
+  const html = readAppBundle();
   const mapSrc = fs.readFileSync('public/map.js', 'utf8');
 
   // 1. >= 40 km/h on expressways/trunk roads is ALWAYS Flowing (SMOOTH / Green), fixing false amber 52 km/h!
@@ -6398,7 +6407,7 @@ test('Follow-up Fix 6: Deduplicated operator prefixes in Bus-API tooltips (NLB 1
   vm.runInContext(fs.readFileSync('public/busspeed.js', 'utf8'), bsSandbox);
   const engine: any = bsWindow.BusSpeedEngine;
   const mapSrc = fs.readFileSync('public/map.js', 'utf8');
-  const html = fs.readFileSync('index.html', 'utf8');
+  const html = readAppBundle();
 
   const boundTooltips: string[] = [];
   const drawCtx: any = {
@@ -6437,7 +6446,7 @@ test('Follow-up Fix 6: Deduplicated operator prefixes in Bus-API tooltips (NLB 1
   ], drawCtx.L.layerGroup(), '', new Map(), { laneOffsetM: 2.5 });
 
   assert.equal(boundTooltips.length, 1);
-  assert.equal(boundTooltips[0], '🚌 NLB 1, 2, A35 • Scheduled headway • Flowing',
+  assert.equal(boundTooltips[0], '🚌 NLB 1, 2, A35 • Scheduled headway • Clear',
     `Expected clean deduplicated qualitative tooltip, got: ${boundTooltips[0]}`);
   assert.ok(!/km\/h/i.test(boundTooltips[0]), 'Bus-API corridor tooltip must use clean qualitative status without raw km/h');
 
@@ -6449,6 +6458,101 @@ test('Follow-up Fix 6: Deduplicated operator prefixes in Bus-API tooltips (NLB 1
   assert.ok(tooltipRuleMatch[0].includes('white-space: normal') && tooltipRuleMatch[0].includes('overflow: visible'),
     '.kmb-map-stop-label must wrap naturally without clipping');
 });
+
+test('Tasks 1-3 Regression: Externalized app.css/eta-engine/onboarding-pwa/app-ui, 2026-11-27 18:10 HKT timestamp, South Lantau continuity, Wong Chu leakage block, and unified worst-ahead pill/banner', () => {
+  // 1. Task 1: External files exist, exact load order in index.html, no inline main style block, SW precaches them
+  const rawIndex = fs.readFileSync('index.html', 'utf8');
+  const swSrc = fs.readFileSync('public/sw.js', 'utf8');
+  for (const rel of ['public/app.css', 'public/eta-engine.js', 'public/onboarding-pwa.js', 'public/app-ui.js']) {
+    assert.ok(fs.existsSync(rel) && fs.statSync(rel).size > 1000, `Extracted asset ${rel} must exist and be non-empty`);
+  }
+  assert.ok(rawIndex.includes('<link rel="stylesheet" href="app.css">'), 'index.html must link external app.css');
+  assert.ok(!rawIndex.includes('<style id="transit-unified-fixed-css">'), 'index.html must not contain inline transit-unified-fixed-css block');
+  const loadOrder = ['hardcode.js', 'busspeed.js', 'map.js', 'planner.js', 'eta-engine.js', 'onboarding-pwa.js', 'app-ui.js'];
+  let prevPos = -1;
+  for (const s of loadOrder) {
+    const pos = rawIndex.indexOf(`<script src="${s}"></script>`);
+    assert.ok(pos > prevPos, `index.html must load ${s} in exact order`);
+    prevPos = pos;
+  }
+  for (const asset of ['app.css', 'eta-engine.js', 'onboarding-pwa.js', 'app-ui.js']) {
+    assert.ok(swSrc.includes(asset), `public/sw.js must precache ${asset}`);
+  }
+
+  // 2. Task 2: Build timestamp 2026-11-27 18:10 HKT & Settings About subtitle cleanup
+  const expectedTs = '2026-11-27 18:10 HKT';
+  assert.ok(rawIndex.includes(expectedTs), 'index.html must contain build timestamp 2026-11-27 18:10 HKT');
+  assert.ok(swSrc.includes(expectedTs), 'public/sw.js must contain build timestamp 2026-11-27 18:10 HKT');
+  assert.equal(JSON.parse(fs.readFileSync('version.json', 'utf8')).version, expectedTs);
+  assert.equal(JSON.parse(fs.readFileSync('public/version.json', 'utf8')).version, expectedTs);
+  assert.ok(rawIndex.includes('HK Layer, HK Sundry, HK Property &amp; HK MPF'), 'Settings About subtitle must list the 4 remaining companion apps');
+
+  // 3. Task 3a: Rural South Lantau corridor continuity (180-230m rural vertices stay continuous & adjacent collinear spans merge into 1 polyline)
+  const bsWindow: any = {};
+  const bsSandbox: any = { window: bsWindow, globalThis: bsWindow, Math, Date, Number, String, Array, Map, Set, Object, Uint8Array, parseFloat, isFinite };
+  vm.createContext(bsSandbox);
+  vm.runInContext(fs.readFileSync('public/hardcode.js', 'utf8'), bsSandbox);
+  vm.runInContext(fs.readFileSync('public/busspeed.js', 'utf8'), bsSandbox);
+  const engine: any = bsWindow.BusSpeedEngine;
+
+  // Two consecutive rural South Lantau Road spans with ~190m vertex spacing (should stay continuous & merge into 1 corridor!)
+  const ruralSpan1: [number, number][] = [
+    [22.2400, 113.9700],
+    [22.2400, 113.9718], // ~185m east
+    [22.2400, 113.9736], // ~185m east
+  ];
+  const ruralSpan2: [number, number][] = [
+    [22.2400, 113.9736],
+    [22.2400, 113.9755], // ~195m east
+    [22.2400, 113.9774], // ~195m east
+  ];
+  const ruralAgg = engine.aggregateBusMicroStepsToCorridors([
+    { company: 'NLB', routeNo: '11', fromSeq: 1, toSeq: 2, fromNameEn: 'Pui O', toNameEn: 'San Shek Wan', tier: 'SMOOTH', speedKmh: 36, color: '#16a34a', source: 'BUS_API', isRoadSnapped: true, coords: ruralSpan1 },
+    { company: 'NLB', routeNo: '11', fromSeq: 2, toSeq: 3, fromNameEn: 'San Shek Wan', toNameEn: 'Cheung Sha', tier: 'SMOOTH', speedKmh: 38, color: '#16a34a', source: 'BUS_API', isRoadSnapped: true, coords: ruralSpan2 },
+  ], [], null, { targetStepM: 50 });
+  assert.equal(ruralAgg.corridors.length, 1, `Consecutive rural South Lantau spans with 185-195m vertices must merge into ONE continuous polyline, got ${ruralAgg.corridors.length}`);
+  assert.ok(ruralAgg.corridors[0].coords.length >= 12, `Expected subdivided continuous polyline along rural road, got ${ruralAgg.corridors[0].coords.length} vertices`);
+
+  // 4. Task 3b: Distant Tuen Mun detector/camera (Wong Chu Rd near Hoi Wong Rd) NEVER attaches to Yuen Long span (Tai Tong Rd -> Hong Lok Rd)
+  const ylSpan = [[22.4442, 114.0272], [22.4443, 114.0258], [22.4444, 114.0244]];
+  const wongChuDet = {
+    id: 'TDSLFR20001', lat: 22.3836, lon: 113.9688, rot: 255, spd: 28, occ: 55, tier: 'SLOW',
+    roadEn: 'Wong Chu Road near Hoi Wong Road - Westbound', roadTc: '皇珠路近海皇路 - 西行', camKey: 'TM115F'
+  };
+  const wongChuCam = {
+    key: 'TM115F', lat: 22.3836, lon: 113.9688, desc: 'Wong Chu Road near Hoi Wong Road', bearingDeg: 255
+  };
+  const ylMatch = engine.matchTdGroundTruthForSpan(ylSpan, [wongChuDet], [wongChuCam], {
+    fromNameEn: 'Tai Tong Road', toNameEn: 'Hong Lok Road', routeNo: 'E36'
+  });
+  assert.equal(ylMatch.hasTd, false, 'Wong Chu Road detector must NEVER attach to Yuen Long Tai Tong Rd -> Hong Lok Rd span');
+  assert.equal(ylMatch.cam, null, 'Wong Chu Road camera must NEVER attach to Yuen Long span');
+
+  // 5. Task 3c: Unified worst-ahead selector ensures stop-row pill and expanded banner read the exact same segment (no Stop 1 mismatch, no ~, no Opp. bound jammed)
+  const sb = loadHardcodeAndPlannerSandbox();
+  const testStops = [
+    { stopKey: 'S0', stopName_e: 'Pat Heung Road', name_tc: '八鄉路', latitude: '22.4270', longitude: '114.0630' },
+    { stopKey: 'S1', stopName_e: 'Tai Lam Tunnel', name_tc: '大欖隧道', latitude: '22.4150', longitude: '114.0600' },
+    { stopKey: 'S2', stopName_e: 'Tsing Ma Bridge', name_tc: '青馬大橋', latitude: '22.3520', longitude: '114.0740' },
+  ];
+  const unifiedTestSegs = [
+    { fromIdx: 0, toIdx: 1, fromSeq: 1, toSeq: 2, fromNameEn: 'Pat Heung Road', toNameEn: 'Tai Lam Tunnel', source: 'TD', tier: 'SMOOTH', speedKmh: 72, roadEn: 'Tsing Long Highway', roadTc: '青朗公路', detId: 'D1', roadDistKm: 1.5, coords: [[22.4270, 114.0630], [22.4150, 114.0600]] },
+    { fromIdx: 1, toIdx: 2, fromSeq: 2, toSeq: 3, fromNameEn: 'Tai Lam Tunnel', toNameEn: 'Tsing Ma Bridge', source: 'TD', tier: 'MODERATE', speedKmh: 28, roadEn: 'Tsing Long Highway', roadTc: '青朗公路', detId: 'D2', roadDistKm: 4.0, coords: [[22.4150, 114.0600], [22.3520, 114.0740]] },
+  ];
+  const testDets = [
+    { id: 'D1', lat: 22.4210, lon: 114.0615, rot: 190, spd: 72, occ: 10, tier: 'SMOOTH', roadEn: 'Tsing Long Highway', roadTc: '青朗公路' },
+    { id: 'D2', lat: 22.3835, lon: 114.0670, rot: 170, spd: 28, occ: 55, tier: 'SLOW', roadEn: 'Tsing Long Highway', roadTc: '青朗公路' },
+  ];
+  const pillPick = sb.ctx.window.selectWorstAheadStopSegment(unifiedTestSegs, testStops, 0, {});
+  const bannerSum = sb.getDirectionalRoadSummary(testStops, 0, testDets, false, 40, null, 12000, [], { unifiedSegments: unifiedTestSegs });
+  assert.ok(pillPick && bannerSum, 'Both stop-row pill selector and expanded banner summary must resolve');
+  assert.equal(pillPick.tier, 'MODERATE', 'Stop 1 pill must reflect worst-ahead MODERATE segment');
+  assert.equal(bannerSum.tone, 'slow', 'Expanded banner must match pill tier (slow)');
+  assert.equal(bannerSum.leadSegment?.fromIdx, pillPick.fromIdx, 'Banner leadSegment and pill pick must reference the exact same stop span');
+  assert.ok(!bannerSum.detail.includes('~'), `Banner detail must not contain tilde prefixes: ${bannerSum.detail}`);
+  assert.ok(!bannerSum.detail.includes('Opp. bound jammed'), `Banner detail must not contain Opp. bound jammed: ${bannerSum.detail}`);
+});
+
 
 
 

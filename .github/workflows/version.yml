@@ -6,6 +6,11 @@ on:
     paths-ignore:
       - 'version.json'
       - 'public/version.json'
+      - 'AGENTS.md'
+      - 'README.md'
+      - '.gitignore'
+      - '.github/**'
+      - 'public/assets/aistudio/**'
 
 permissions:
   contents: write

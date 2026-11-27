@@ -6042,6 +6042,414 @@ test('Inspectable __BUS_SPEED_DEBUG__ Telemetry, Viewport TD vs Bus-API Counts, 
   });
 });
 
+test('Follow-up Fix 1: E36 rejects off-route TMR/Brilliant Garden/Fung Tei/Siu Hong & Kong Sham Western Hwy, enforces <=60m/<=45deg road-snapped matching, fixes Souththbound typo, and renders interactive Board->Terminus journey bar', () => {
+  const sb = loadHardcodeAndPlannerSandbox();
+  const bsWindow: any = {};
+  const bsSandbox: any = { window: bsWindow, globalThis: bsWindow, Math, Date, Number, String, Array, Map, Set, Object, Uint8Array, parseFloat, isFinite };
+  vm.createContext(bsSandbox);
+  vm.runInContext(fs.readFileSync('public/busspeed.js', 'utf8'), bsSandbox);
+  const engine: any = bsWindow.BusSpeedEngine;
+
+  const mapSrc = fs.readFileSync('public/map.js', 'utf8');
+  const html = fs.readFileSync('index.html', 'utf8');
+
+  // 1. E36 off-route leaks (TDS91037 TMR/Brilliant Garden-SB, Fung Tei, Siu Hong & TDS91040 YLH/Kong Sham Western Hwy-WB)
+  const e36Stops = [
+    { stopKey: 'E36_1', seq: 1, stopName_e: 'Pat Heung Road', name_tc: '八鄉路', latitude: '22.4206', longitude: '114.0625' },
+    { stopKey: 'E36_2', seq: 2, stopName_e: 'Kam Ho Road', name_tc: '錦河路', latitude: '22.4249', longitude: '114.0666' },
+    { stopKey: 'E36_3', seq: 3, stopName_e: 'Grand Mayfair', name_tc: '柏瓏', latitude: '22.4339', longitude: '114.0623' },
+    { stopKey: 'E36_15', seq: 15, stopName_e: 'Yuen Long Park', name_tc: '元朗公園', latitude: '22.4441', longitude: '114.0188' },
+    { stopKey: 'E36_16', seq: 16, stopName_e: 'Tuen Mun Chek Lap Kok Tunnel BBI', name_tc: '屯門赤鱲角隧道轉車站', latitude: '22.3686', longitude: '113.9486' },
+    { stopKey: 'E36_25', seq: 25, stopName_e: 'Airport', name_tc: '機場地面運輸中心', latitude: '22.3126', longitude: '113.9375' },
+  ];
+  const offRouteDets = [
+    { id: 'TDS91037', lat: 22.4063, lon: 113.9837, rot: 220, spd: 12, occ: 92, tier: 'JAMMED', roadEn: 'TMR/Brilliant Garden-SB (Souththbound)', roadTc: '屯門公路近寶怡花園-南行', camKey: 'TM110F' },
+    { id: 'TDS_FT', lat: 22.4110, lon: 113.9790, rot: 220, spd: 14, occ: 88, tier: 'JAMMED', roadEn: 'Tuen Mun Road near Fung Tei - Souththbound', roadTc: '屯門公路近鳳地-南行' },
+    { id: 'TDS_SH', lat: 22.4130, lon: 113.9780, rot: 220, spd: 15, occ: 85, tier: 'JAMMED', roadEn: 'Tuen Mun Road near Siu Hong - Southbound', roadTc: '屯門公路近兆康-南行' },
+    { id: 'TDS91040', lat: 22.4441, lon: 114.0185, rot: 265, spd: 11, occ: 94, tier: 'JAMMED', roadEn: 'YLH/Kong Sham Western Hwy-WB', roadTc: '元朗公路近港深西部公路-西行', camKey: 'YL102F' },
+  ];
+  const straightChord = [[22.4441, 114.0188], [22.3686, 113.9486]];
+  const chordMatch = engine.matchTdGroundTruthForSpan(straightChord, offRouteDets, [], {
+    fromStop: e36Stops[3], toStop: e36Stops[4], isRoadSnapped: false, routeNo: 'E36', stops: e36Stops,
+  });
+  assert.equal(chordMatch.hasTd, false, 'Bare distant straight chord between Yuen Long Park & TM-CLK BBI must NEVER attach highway detectors');
+
+  // Even on a road-snapped polyline passing directly past those coords, E36 MUST reject TDS91037/TMR/Fung Tei/Siu Hong & TDS91040/Kong Sham Western Hwy!
+  const fakeSnappedNearLeaks = [[22.4441, 114.0188], [22.4441, 114.0185], [22.4063, 113.9837], [22.3686, 113.9486]];
+  const leakMatch = engine.matchTdGroundTruthForSpan(fakeSnappedNearLeaks, offRouteDets, [], {
+    fromStop: e36Stops[3], toStop: e36Stops[4], isRoadSnapped: true, routeNo: 'E36', stops: e36Stops,
+  });
+  assert.equal(leakMatch.hasTd, false, 'E36 must NEVER attach TDS91037 (TMR/Brilliant Garden/Fung Tei/Siu Hong) or TDS91040 (Kong Sham Western Hwy)');
+
+  const roadSumE36 = sb.getDirectionalRoadSummary(e36Stops, 3, offRouteDets, false, 40, fakeSnappedNearLeaks, 12000, [], { routeNo: 'E36' });
+  assert.equal(roadSumE36, null, 'Off-route TMR & Kong Sham Western Hwy jams must NEVER trigger Switch to MTR alerts on E36');
+
+  // 2. <= 60 m highway lateral cap, <= 45 deg bearing alignment, & fork overshoot guard (t > 1.02)
+  const hwyPoly = [[22.3600, 114.0600], [22.3650, 114.0600], [22.3700, 114.0600]]; // due North (0°)
+  const det85mAway = [{ id: 'TLH_FAR', lat: 22.3650, lon: 114.06085, rot: 0, spd: 72, occ: 10, tier: 'SMOOTH', roadEn: 'Tsing Long Highway NB' }]; // ~87m east (>60m)
+  const det55degOff = [{ id: 'TLH_ANG', lat: 22.3650, lon: 114.0601, rot: 55, spd: 72, occ: 10, tier: 'SMOOTH', roadEn: 'Tsing Long Highway NB' }]; // >45°
+  const detPastFork = [{ id: 'TLH_FORK', lat: 22.3703, lon: 114.0600, rot: 0, spd: 18, occ: 85, tier: 'JAMMED', roadEn: 'Tsing Long Highway NB' }]; // past end (t > 1.02)
+  const detOnRoute = [{ id: 'TLH_OK', lat: 22.3650, lon: 114.0602, rot: 12, spd: 74, occ: 12, tier: 'SMOOTH', roadEn: 'Tsing Long Highway NB' }]; // ~20m, 12°
+  assert.equal(engine.matchTdGroundTruthForSpan(hwyPoly, det85mAway, [], { isHighwaySpan: true, isRoadSnapped: true }).hasTd, false, 'Detector >60m laterally off road-snapped highway polyline must be rejected');
+  assert.equal(engine.matchTdGroundTruthForSpan(hwyPoly, det55degOff, [], { isHighwaySpan: true, isRoadSnapped: true }).hasTd, false, 'Detector >45° bearing off corridor must be rejected');
+  assert.equal(engine.matchTdGroundTruthForSpan(hwyPoly, detPastFork, [], { isHighwaySpan: true, isRoadSnapped: true }).hasTd, false, 'Detector past highway fork/turn-off endpoint (t > 1.02) must be rejected');
+  assert.equal(engine.matchTdGroundTruthForSpan(hwyPoly, detOnRoute, [], { isHighwaySpan: true, isRoadSnapped: true }).hasTd, true, 'Verified on-route detector within <=60m and <=45° must match');
+
+  // 3. E36 Stop 2 Kam Ho Road -> Stop 3 Grand Mayfair (~1.35km) must NOT flip isHighwaySpan and pull Tsing Long Highway (113 km/h)
+  const kamHoGrandPoly = [[22.4249, 114.0666], [22.4295, 114.0645], [22.4339, 114.0623]];
+  const tlh113Det = [{ id: 'TLH_113', lat: 22.4295, lon: 114.0647, rot: 340, spd: 113, occ: 8, tier: 'SMOOTH', roadEn: 'Tsing Long Highway - Northbound' }];
+  const kamHoGrandMatch = engine.matchTdGroundTruthForSpan(kamHoGrandPoly, tlh113Det, [], {
+    fromStop: e36Stops[1], toStop: e36Stops[2], roadDistKm: 1.35, isRoadSnapped: true, routeNo: 'E36', stops: e36Stops,
+  });
+  assert.equal(kamHoGrandMatch.hasTd, false, 'Kam Ho Road -> Grand Mayfair must NOT leak Tsing Long Highway 113 km/h');
+
+  // 4. "Souththbound" -> "Southbound" typo fix across busspeed.js, hardcode.js, and map.js
+  assert.equal(engine.sanitizeDirectionTypos('Tuen Mun Road - Souththbound'), 'Tuen Mun Road - Southbound');
+  assert.equal(sb.ctx._sanitizeDirectionTyposHardcode('Castle Peak Rd - Souththbound'), 'Castle Peak Rd - Southbound');
+  const fitBoundsCalls: any[] = [];
+  const modalOpened: number[] = [];
+  const mapCtx: any = {
+    window: {
+      __DETAIL_STOP_SEGMENTS__: [{ fromIdx: 3, toIdx: 4, tier: 'SMOOTH', source: 'TD', coords: hwyPoly }],
+      openStopSegmentTrafficModal: (idx: number) => modalOpened.push(idx),
+    },
+    document: { getElementById: () => null },
+    L: {
+      polyline: (c: any, o: any) => ({ c, o }),
+      layerGroup: (items: any[]) => ({ items, addTo() { return this; } }),
+    },
+    console, Math, Number, String, Array, Map, Set, Object,
+  };
+  vm.createContext(mapCtx);
+  vm.runInContext(mapSrc, mapCtx);
+  mapCtx.window.mapInstance = {
+    fitBounds: (c: any, o: any) => fitBoundsCalls.push({ c, o }),
+    removeLayer: () => {},
+  };
+  assert.equal(mapCtx.sanitizeBottleneckLabel('Tuen Mun Rd - Souththbound'), 'Tuen Mun Rd - Southbound');
+  assert.equal(mapCtx.matchDetectorToRouteCorridor(offRouteDets[0], fakeSnappedNearLeaks, true, null, true, 'E36', 'LWB_E36_O').matched, false,
+    'map.js matchDetectorToRouteCorridor must reject TDS91037 on E36');
+  assert.equal(mapCtx.matchDetectorToRouteCorridor(offRouteDets[3], fakeSnappedNearLeaks, true, null, true, 'E36', 'LWB_E36_O').matched, false,
+    'map.js matchDetectorToRouteCorridor must reject TDS91040 on E36');
+
+  // 5. Horizontal Board -> Terminus journey bar in index.html & working focusJourneySegmentOnDetailMap
+  assert.ok(html.includes('class="traffic-journey-bar-wrap"') && html.includes('class="traffic-journey-bar"') && html.includes('class="traffic-journey-seg tone-'),
+    'Expanded stop card must render compact horizontal Board -> Terminus journey bar');
+  assert.ok(html.includes('focusJourneySegmentOnDetailMap('), 'Journey bar leg pills must wire to focusJourneySegmentOnDetailMap');
+  assert.ok(!html.includes('traffic-segment-list') && !html.includes('traffic-segment-row') && !html.includes('traffic-approaching-strip'),
+    'Must keep banned legacy classes absent');
+  mapCtx.window.focusJourneySegmentOnDetailMap(3);
+  assert.equal(fitBoundsCalls.length, 1, 'Tapping journey bar leg must pan/fit detail map to highlighted segment');
+  assert.deepEqual(modalOpened, [3], 'Tapping journey bar leg must inspect segment status/cam modal');
+});
+
+test('Follow-up Fix 2: Clean qualitative Flowing/Slow/Heavy pills (no raw car km/h in stop pills), >=40 km/h ALWAYS Flowing (no amber 52 km/h), Math.abs guard, and eta_rounding_artifact', () => {
+  const sb = loadHardcodeAndPlannerSandbox();
+  const bsWindow: any = {};
+  const bsSandbox: any = { window: bsWindow, globalThis: bsWindow, Math, Date, Number, String, Array, Map, Set, Object, Uint8Array, parseFloat, isFinite };
+  vm.createContext(bsSandbox);
+  vm.runInContext(fs.readFileSync('public/busspeed.js', 'utf8'), bsSandbox);
+  const engine: any = bsWindow.BusSpeedEngine;
+  const html = fs.readFileSync('index.html', 'utf8');
+  const mapSrc = fs.readFileSync('public/map.js', 'utf8');
+
+  // 1. >= 40 km/h on expressways/trunk roads is ALWAYS Flowing (SMOOTH / Green), fixing false amber 52 km/h!
+  assert.equal(engine.normalizeTrafficTier('SLOW', 52), 'SMOOTH', '52 km/h tagged SLOW by worker must normalize to SMOOTH');
+  assert.equal(engine.normalizeTrafficTier('MODERATE', 40), 'SMOOTH', '40 km/h must normalize to SMOOTH');
+  const sum52 = sb.ctx.summarizeDetectorBucket([{ det: { id: 'D52', spd: 52, occ: 42, tier: 'SLOW', roadEn: 'Yuen Long Hwy' }, aheadKm: 1.2 }]);
+  assert.equal(sum52.status, 'SMOOTH', '52 km/h detector with 42% occ must classify SMOOTH (Flowing), NEVER amber SLOW');
+  assert.equal(sum52.estDelayMins, 0, '52 km/h flowing expressway must report 0 delay');
+  assert.equal(sb.ctx._normalizeBottleneckTier('SLOW', 52), 'SMOOTH');
+
+  const mapCtx: any = { window: {}, document: { getElementById: () => null }, console, Math, Number, String, Array, Map, Set, Object };
+  vm.createContext(mapCtx);
+  vm.runInContext(mapSrc, mapCtx);
+  assert.equal(mapCtx.getGlobalTrafficSpeedColorHex(52), '#22c55e', '52 km/h must render green #22c55e');
+  assert.equal(mapCtx.getGlobalTrafficSpeedColorHex(40), '#22c55e', '40 km/h must render green #22c55e');
+
+  // 2. Stop-row pills in index.html use clean qualitative labels (Flowing / Slow / Heavy) for BOTH TD & Bus API (no raw km/h!)
+  assert.ok(!html.includes('${Math.round(seg.speedKmh)} km/h · ${srcTag}'), 'Stop-row TD pills must NOT render raw car km/h speeds (73 km/h, 105 km/h, 52 km/h)');
+  assert.ok(html.includes('labelTxt = `${dot} ${flowTxt} · ${srcTag}`;'), 'Both TD and Bus API stop pills must render qualitative Flowing/Slow/Heavy labels');
+  assert.ok(!html.includes('moving at ~${Math.round(opp.spd)} km/h'), 'Ambiguous ~XX km/h text (looks like -59 km/h) must be replaced');
+  assert.ok(html.includes('moving at about ${Math.round(oppSpdAbs)} km/h'), 'Opposite carriageway modal readout must use Math.abs with unambiguous phrasing');
+
+  // 3. Sub-minute ETA rounding artifact (Δt <= 65s over > 600 m) clamped Flowing + logged as eta_rounding_artifact
+  const t0 = Date.UTC(2026, 10, 27, 8, 0, 0);
+  const stops = [
+    { stopKey: 'S0', stopName_e: 'Stop A', latitude: '22.3500', longitude: '114.0000' },
+    { stopKey: 'S1', stopName_e: 'Stop B', latitude: '22.3575', longitude: '114.0000' }, // ~834m (> 600m)
+  ];
+  const poly = [[22.3500, 114.0000], [22.3525, 114.0000], [22.3550, 114.0000], [22.3575, 114.0000]];
+  const roundedEtas = {
+    0: [{ eta: new Date(t0 + 2 * 60000).toISOString() }],
+    1: [{ eta: new Date(t0 + 3 * 60000).toISOString() }], // Δt = 60s <= 65s over ~834m
+  };
+  const segs = engine.inferBusApiSegmentSpeeds(stops, roundedEtas, poly, { company: 'KMB', routeNo: '68M', nowMs: t0 });
+  assert.equal(segs.length, 1);
+  assert.equal(segs[0].tier, 'SMOOTH', 'Sub-minute ETA rounding delta (60s over >600m) must classify SMOOTH / Flowing');
+  assert.equal(segs[0].isEtaRoundingArtifact, true);
+  assert.ok(bsWindow.__BUS_SPEED_DEBUG__.skipReasons.some((r: any) => r.reason === 'eta_rounding_artifact'),
+    '__BUS_SPEED_DEBUG__.skipReasons must log eta_rounding_artifact');
+});
+
+test('Follow-up Fix 3: Congested standalone TD detector (TDSLFR10002 Wong Chu Rd EB 17 km/h) projects >=250m red road polyline, and unrendered detectors never cause Bus-API mutex blind spots', () => {
+  const bsWindow: any = {};
+  const bsSandbox: any = { window: bsWindow, globalThis: bsWindow, Math, Date, Number, String, Array, Map, Set, Object, Uint8Array, parseFloat, isFinite };
+  vm.createContext(bsSandbox);
+  vm.runInContext(fs.readFileSync('public/busspeed.js', 'utf8'), bsSandbox);
+  const engine: any = bsWindow.BusSpeedEngine;
+  const mapSrc = fs.readFileSync('public/map.js', 'utf8');
+  const mapCtx: any = { window: {}, document: { getElementById: () => null }, console, Math, Number, String, Array, Map, Set, Object };
+  vm.createContext(mapCtx);
+  vm.runInContext(mapSrc, mapCtx);
+
+  const wongChuDet = {
+    id: 'TDSLFR10002',
+    lat: 22.3872,
+    lon: 113.9715,
+    rot: 85,
+    spd: 17,
+    occ: 82,
+    tier: 'JAMMED',
+    roadEn: 'Wong Chu Road near Hoi Wong Road - Eastbound',
+    roadTc: '皇珠路近海皇路 - 東行',
+    camKey: 'TM115F',
+  };
+  const slowDet = {
+    id: 'TDS_WCR_SLOW',
+    lat: 22.3950,
+    lon: 113.9800,
+    rot: 90,
+    spd: 26,
+    occ: 52,
+    tier: 'SLOW',
+    roadEn: 'Castle Peak Road - Eastbound',
+    roadTc: '青山公路 - 東行',
+    camKey: 'TM120F',
+  };
+
+  // 1. Project congested detectors onto >= 250 m directional polylines when TD Speed Map GeoJSON has a gap
+  const projectedGeo = mapCtx.filterAndOffsetGlobalSpeedGeoJson(
+    { type: 'FeatureCollection', features: [] },
+    15,
+    [wongChuDet, slowDet]
+  );
+  const wongFeat = projectedGeo.features.find((f: any) => f.properties?.id === 'TDSLFR10002');
+  const slowFeat = projectedGeo.features.find((f: any) => f.properties?.id === 'TDS_WCR_SLOW');
+  assert.ok(wongFeat, 'Standalone congested TD detector TDSLFR10002 (17 km/h) must project onto road polyline');
+  assert.equal(wongFeat.properties.isProjectedDetector, true);
+  assert.equal(wongFeat.properties.color, '#ef4444', '17 km/h projected detector polyline must render Red (#ef4444)');
+  assert.ok(wongFeat.properties.lenM >= 250, `Projected polyline must be >= 250 m, got ${wongFeat.properties.lenM} m`);
+  assert.ok(slowFeat && slowFeat.properties.color === '#f59e0b', '26 km/h projected detector polyline must render Amber (#f59e0b)');
+
+  // 2. Unrendered detector point alone (NO rendered TD polyline in speedGeo) MUST NOT suppress Bus-API micro-steps!
+  const wongBusSeg = {
+    company: 'KMB', routeNo: '59X', tier: 'SMOOTH', speedKmh: 28, color: '#16a34a', source: 'BUS_API', isRoadSnapped: true,
+    coords: [[22.3871, 113.9700], [22.38715, 113.97075], [22.3872, 113.9715], [22.38725, 113.97225], [22.3873, 113.9730]],
+  };
+  const unrenderedAgg = engine.aggregateBusMicroStepsToCorridors([wongBusSeg], [wongChuDet], { type: 'FeatureCollection', features: [] }, { targetStepM: 50 });
+  assert.equal(unrenderedAgg.stats.suppressedByTdMicroSteps, 0, 'Unrendered TD detector point alone must NEVER suppress Bus-API micro-steps');
+  assert.ok(unrenderedAgg.corridors.length >= 1, 'Bus-API corridor must remain visible when no rendered TD polyline covers the road');
+
+  // 3. Once the congested detector IS projected into rendered TD GeoJSON, Bus-API micro-steps within 100 m ARE cleanly suppressed!
+  const renderedAgg = engine.aggregateBusMicroStepsToCorridors([wongBusSeg], [wongChuDet], projectedGeo, { targetStepM: 50 });
+  assert.ok(renderedAgg.stats.suppressedByTdMicroSteps >= 4, 'Rendered projected TD polyline must cleanly suppress overlapping Bus-API micro-steps');
+});
+
+test('Follow-up Fix 4: Airport Perimeter operational speeds (20-35 km/h = Flowing Green, Red only if <8 km/h across >=2 consecutive spans) and HZMB Link Road stale/null & viaduct bleed protection', () => {
+  const sb = loadHardcodeAndPlannerSandbox();
+  const bsWindow: any = {};
+  const bsSandbox: any = { window: bsWindow, globalThis: bsWindow, Math, Date, Number, String, Array, Map, Set, Object, Uint8Array, parseFloat, isFinite };
+  vm.createContext(bsSandbox);
+  vm.runInContext(fs.readFileSync('public/busspeed.js', 'utf8'), bsSandbox);
+  const engine: any = bsWindow.BusSpeedEngine;
+  const mapSrc = fs.readFileSync('public/map.js', 'utf8');
+  const mapCtx: any = { window: {}, document: { getElementById: () => null }, console, Math, Number, String, Array, Map, Set, Object };
+  vm.createContext(mapCtx);
+  vm.runInContext(mapSrc, mapCtx);
+
+  const t0 = Date.UTC(2026, 10, 27, 9, 0, 0);
+  const apStops = [
+    { stopKey: 'AP0', stopName_e: 'Chek Lap Kok South Road', name_tc: '赤鱲角南路', latitude: '22.2919', longitude: '113.9284' },
+    { stopKey: 'AP1', stopName_e: 'South Perimeter Road, Cathay Pacific Cargo Terminal', name_tc: '南環路國泰貨運站', latitude: '22.2950', longitude: '113.9200' },
+    { stopKey: 'AP2', stopName_e: 'Hactl, Chun Wan Road', name_tc: '香港空運貨站駿運路', latitude: '22.2980', longitude: '113.9280' },
+    { stopKey: 'AP3', stopName_e: 'Air Mail Centre, Cathay City', name_tc: '空郵中心國泰城', latitude: '22.3020', longitude: '113.9311' },
+  ];
+  const apProfile = engine.classifyBusRoadClass(0.95, apStops[0], apStops[1]);
+  assert.equal(apProfile.roadClass, 'AIRPORT_PERIMETER');
+  assert.equal(apProfile.smoothMinKmh, 20);
+  assert.equal(apProfile.moderateMinKmh, 8);
+
+  // 1. Operational 22-30 km/h on South Perimeter Road -> MUST be SMOOTH (Flowing Green), NOT Amber!
+  const apPoly = [
+    [22.2919, 113.9284], [22.2935, 113.9242], [22.2950, 113.9200],
+    [22.2965, 113.9240], [22.2980, 113.9280], [22.3000, 113.9295], [22.3020, 113.9311],
+  ];
+  const normalApEtas = {
+    0: [{ eta: new Date(t0 + 1 * 60000).toISOString() }],
+    1: [{ eta: new Date(t0 + 3.8 * 60000).toISOString() }], // ~930m in ~168s (~24 km/h moving) -> Flowing Green!
+    2: [{ eta: new Date(t0 + 6.5 * 60000).toISOString() }], // ~890m in ~162s (~24 km/h moving) -> Flowing Green!
+  };
+  const normalApSegs = engine.inferBusApiSegmentSpeeds(apStops, normalApEtas, apPoly, { company: 'LWB', routeNo: 'E36', nowMs: t0 });
+  assert.ok(normalApSegs.length >= 2);
+  normalApSegs.forEach((s: any) => {
+    assert.equal(s.tier, 'SMOOTH', `South Perimeter Road at ${s.speedKmh} km/h must be Flowing Green (SMOOTH), got ${s.tier}`);
+  });
+
+  // 2. Single slow 6 km/h span on Airport Perimeter must NOT render Red (requires >=2 consecutive <8 km/h non-terminus spans)
+  const singleSlowApEtas = {
+    0: [{ eta: new Date(t0 + 1 * 60000).toISOString() }],
+    1: [{ eta: new Date(t0 + 12 * 60000).toISOString() }], // ~5.5 km/h single span
+    2: [{ eta: new Date(t0 + 14.5 * 60000).toISOString() }], // smooth neighbor
+  };
+  const singleSlowApSegs = engine.inferBusApiSegmentSpeeds(apStops, singleSlowApEtas, apPoly, { company: 'LWB', routeNo: 'E36', nowMs: t0 });
+  assert.notEqual(singleSlowApSegs[0].tier, 'CONGESTED', 'Single slow span on Airport Perimeter must NEVER turn Red');
+
+  // 3. HZMB Hong Kong Link Road stale/null (spd: 0 / null) must NEVER render Red & viaduct must never bleed onto South Perimeter Road
+  assert.notEqual(sb.ctx.window.getTrafficSpeedColorHex(0), '#dc2626', 'getTrafficSpeedColorHex(0) must never default to Red');
+  assert.notEqual(mapCtx.getGlobalTrafficSpeedColorHex(0), '#ef4444', 'getGlobalTrafficSpeedColorHex(0) must never default to Red');
+  const staleHzmbGeo = {
+    type: 'FeatureCollection',
+    features: [
+      { type: 'Feature', geometry: { type: 'LineString', coordinates: [[113.9200, 22.2950], [113.9240, 22.2950], [113.9280, 22.2950]] }, properties: { id: 'HZMB_0', spd: 0, roadEn: 'HZMB Hong Kong Link Road' } },
+      { type: 'Feature', geometry: { type: 'LineString', coordinates: [[113.9200, 22.2960], [113.9240, 22.2960], [113.9280, 22.2960]] }, properties: { id: 'HZMB_NULL', spd: null, roadEn: 'HZMB Hong Kong Link Road' } },
+    ],
+  };
+  const filteredHzmb = mapCtx.filterAndOffsetGlobalSpeedGeoJson(staleHzmbGeo, 14, []);
+  assert.equal(filteredHzmb.features.length, 0, 'Null or 0 km/h HZMB Hong Kong Link Road features must be dropped, never rendered Red');
+
+  const liveHzmbViaduct = {
+    type: 'FeatureCollection',
+    features: [{
+      type: 'Feature',
+      geometry: { type: 'LineString', coordinates: [[113.9200, 22.2950], [113.9240, 22.2950], [113.9280, 22.2950]] },
+      properties: { id: 'HZMB_LIVE', spd: 82, rot: 90, roadEn: 'HZMB Hong Kong Link Road Viaduct', roadTc: '港珠澳大橋香港連接路高架' },
+    }],
+  };
+  const groundSouthPerimeterSeg = {
+    company: 'LWB', routeNo: 'S1', fromNameEn: 'South Perimeter Road', toNameEn: 'Cathay Pacific Cargo Terminal',
+    tier: 'SMOOTH', speedKmh: 28, color: '#16a34a', source: 'BUS_API', isRoadSnapped: true,
+    coords: [[22.2950, 113.9200], [22.2950, 113.9208], [22.2950, 113.9216], [22.2950, 113.9224]],
+  };
+  const viaductMutexAgg = engine.aggregateBusMicroStepsToCorridors([groundSouthPerimeterSeg], [], liveHzmbViaduct, { targetStepM: 50 });
+  assert.equal(viaductMutexAgg.stats.suppressedByTdMicroSteps, 0, 'HZMB elevated viaduct must NOT suppress parallel ground-level South Perimeter Road');
+});
+
+test('Follow-up Fix 5: Rejects >120m straight shortcuts in Mui Wo, excludes <=150m departure-terminal layover loops (origin_terminus_span), and merges narrow two-way local roads into one centered line', () => {
+  const bsWindow: any = {};
+  const bsSandbox: any = { window: bsWindow, globalThis: bsWindow, Math, Date, Number, String, Array, Map, Set, Object, Uint8Array, parseFloat, isFinite };
+  vm.createContext(bsSandbox);
+  vm.runInContext(fs.readFileSync('public/busspeed.js', 'utf8'), bsSandbox);
+  const engine: any = bsWindow.BusSpeedEngine;
+  const t0 = Date.UTC(2026, 10, 27, 10, 0, 0);
+
+  // 1. Reject/split vertex-to-vertex hop > 120 m lacking intermediate shape points (no diagonal chords across Mui Wo Ferry Pier / Silver River)
+  const shortcutPoly = [
+    [22.2646, 114.0005],
+    [22.2650, 114.0005], // 44m valid road hop
+    [22.2672, 114.0022], // ~300m diagonal shortcut across Silver River (>120m!) -> MUST be rejected!
+    [22.2676, 114.0022], // 44m valid road hop
+  ];
+  const steps = engine.subdividePolylineMicroSteps(shortcutPoly, 50, { maxRawHopM: 120 });
+  assert.equal(steps.length, 2, `Expected only the 2 valid <=120m hops (shortcut dropped), got ${steps.length}`);
+  const shortcutAgg = engine.aggregateBusMicroStepsToCorridors([{
+    company: 'NLB', routeNo: '1', fromNameEn: 'Mui Wo Ferry Pier', toNameEn: 'Mui Wo Market',
+    tier: 'SMOOTH', speedKmh: 26, color: '#16a34a', source: 'BUS_API', isRoadSnapped: true,
+    coords: shortcutPoly,
+  }], [], null, { targetStepM: 50 });
+  assert.equal(shortcutAgg.corridors.length, 2, 'Diagonal >120m hop across Silver River must split cleanly into two separate road segments without bridging');
+
+  // 2. Departure-terminal layover loop within 150 m of Mui Wo Ferry Pier excluded from sparse-ETA headway fallback (origin_terminus_span)
+  const mwStops = [
+    { stopKey: 'MW0', stopName_e: 'Mui Wo Ferry Pier', name_tc: '梅窩碼頭', latitude: '22.2646', longitude: '114.0012' },
+    { stopKey: 'MW1', stopName_e: 'Mui Wo Cooked Food Market', name_tc: '梅窩熟食市場', latitude: '22.2653', longitude: '114.0006' }, // ~98m from pier!
+    { stopKey: 'MW2', stopName_e: 'Mui Wo Market, Ngan Wan Road', name_tc: '梅窩街市銀灣路', latitude: '22.2674', longitude: '113.9985' },
+  ];
+  const mwPoly = [[22.2646, 114.0012], [22.2650, 114.0009], [22.2653, 114.0006], [22.2663, 113.9996], [22.2674, 113.9985]];
+  const layoverSchedEtas = {
+    0: [{ eta: new Date(t0 + 2 * 60000).toISOString(), isSched: true }],
+    1: [{ eta: new Date(t0 + 14 * 60000).toISOString(), isSched: true }], // slow layover headway within 150m of origin!
+    2: [{ eta: new Date(t0 + 16 * 60000).toISOString(), isSched: true }],
+  };
+  const mwSegs = engine.inferBusApiSegmentSpeeds(mwStops, layoverSchedEtas, mwPoly, {
+    company: 'NLB', routeNo: '1', allowNlbScheduledFallback: true, allowSparseBridge: true, nowMs: t0,
+  });
+  assert.equal(mwSegs.some((s: any) => s.fromIdx === 0 && s.toIdx === 1), false,
+    'Departure-terminal layover loop within 150 m of Mui Wo Ferry Pier must be excluded from sparse-ETA headway fallback');
+  assert.ok(bsWindow.__BUS_SPEED_DEBUG__.skipReasons.some((r: any) => r.reason === 'origin_terminus_span'),
+    '__BUS_SPEED_DEBUG__.skipReasons must log origin_terminus_span');
+
+  // 3. Narrow two-way local road (Ngan Wan Road / Mui Wo Rural Committee Road): merge opposite bearings (0° vs 180°) into ONE centered corridor!
+  const nganWanNB: [number, number][] = [[22.2655, 113.9985], [22.2662, 113.9985], [22.2669, 113.9985], [22.2676, 113.9985]];
+  const nganWanSB: [number, number][] = nganWanNB.slice().reverse();
+  const narrowAgg = engine.aggregateBusMicroStepsToCorridors([
+    { company: 'NLB', routeNo: '1', fromNameEn: 'Ngan Wan Road', toNameEn: 'Mui Wo Market', tier: 'SMOOTH', speedKmh: 28, color: '#16a34a', source: 'BUS_API', isRoadSnapped: true, coords: nganWanNB },
+    { company: 'NLB', routeNo: '2', fromNameEn: 'Mui Wo Market', toNameEn: 'Ngan Wan Road', tier: 'SMOOTH', speedKmh: 26, color: '#16a34a', source: 'BUS_API', isRoadSnapped: true, coords: nganWanSB },
+  ], [], null, { targetStepM: 50 });
+  assert.equal(narrowAgg.corridors.length, 1, `Narrow two-way Ngan Wan Road opposite bearings must merge into ONE single centered corridor, got ${narrowAgg.corridors.length}`);
+  assert.equal(narrowAgg.corridors[0].isCenteredTwoWay, true);
+  assert.equal(narrowAgg.corridors[0].routeCount, 2);
+});
+
+test('Follow-up Fix 6: Deduplicated operator prefixes in Bus-API tooltips (NLB 1, 2, A35 • Scheduled headway • Flowing) and non-truncating Leaflet .kmb-map-stop-label CSS', () => {
+  const bsWindow: any = {};
+  const bsSandbox: any = { window: bsWindow, globalThis: bsWindow, Math, Date, Number, String, Array, Map, Set, Object, Uint8Array, parseFloat, isFinite };
+  vm.createContext(bsSandbox);
+  vm.runInContext(fs.readFileSync('public/busspeed.js', 'utf8'), bsSandbox);
+  const engine: any = bsWindow.BusSpeedEngine;
+  const mapSrc = fs.readFileSync('public/map.js', 'utf8');
+  const html = fs.readFileSync('index.html', 'utf8');
+
+  const boundTooltips: string[] = [];
+  const drawCtx: any = {
+    window: {
+      __LIVE_TRAFFIC_DETECTORS__: [],
+      __LAST_GLOBAL_SPEED_GEOJSON__: null,
+      __LIVE_TRAFFIC_SPEED_GEOJSON__: null,
+      aggregateBusMicroStepsToCorridors: engine.aggregateBusMicroStepsToCorridors,
+      getBusSpeedLayerColorHex: engine.getBusSpeedColorHex,
+    },
+    document: { getElementById: () => null },
+    currentLang: 'en',
+    L: {
+      layerGroup: () => ({ addLayer() {}, clearLayers() {} }),
+      polyline: (c: any, o: any) => ({
+        c, o,
+        addTo() { return this; },
+        bindTooltip(txt: string) { boundTooltips.push(txt); return this; },
+      }),
+    },
+    console, Math, Number, String, Array, Map, Set, Object,
+  };
+  vm.createContext(drawCtx);
+  vm.runInContext(mapSrc, drawCtx);
+
+  // 1. Operator prefix deduplication & natural route sorting
+  assert.equal(drawCtx.window.formatDeduplicatedRoutesLabel(['NLB 1', 'NLB A35', 'NLB 2']), 'NLB 1, 2, A35');
+  assert.equal(drawCtx.window.formatDeduplicatedRoutesLabel(['KMB 52X', 'KMB 61M', 'LWB E36']), 'KMB 52X, 61M · LWB E36');
+
+  // 2. Scheduled headway tooltip renders clean deduplicated qualitative text with zero raw km/h
+  const mwRoad: [number, number][] = [[22.2660, 113.9985], [22.2668, 113.9985], [22.2676, 113.9985]];
+  drawCtx._drawBusSpeedSegmentsIntoLayer([
+    { company: 'NLB', routeNo: '1', fromNameEn: 'Mui Wo Market', toNameEn: 'Ngan Wan Road', tier: 'SMOOTH', speedKmh: 28, color: '#16a34a', source: 'BUS_API', isRoadSnapped: true, isScheduledOnly: true, isScheduledFallback: true, coords: mwRoad },
+    { company: 'NLB', routeNo: 'A35', fromNameEn: 'Mui Wo Market', toNameEn: 'Ngan Wan Road', tier: 'SMOOTH', speedKmh: 28, color: '#16a34a', source: 'BUS_API', isRoadSnapped: true, isScheduledOnly: true, isScheduledFallback: true, coords: mwRoad },
+    { company: 'NLB', routeNo: '2', fromNameEn: 'Mui Wo Market', toNameEn: 'Ngan Wan Road', tier: 'SMOOTH', speedKmh: 28, color: '#16a34a', source: 'BUS_API', isRoadSnapped: true, isScheduledOnly: true, isScheduledFallback: true, coords: mwRoad },
+  ], drawCtx.L.layerGroup(), '', new Map(), { laneOffsetM: 2.5 });
+
+  assert.equal(boundTooltips.length, 1);
+  assert.equal(boundTooltips[0], '🚌 NLB 1, 2, A35 • Scheduled headway • Flowing',
+    `Expected clean deduplicated qualitative tooltip, got: ${boundTooltips[0]}`);
+  assert.ok(!/km\/h/i.test(boundTooltips[0]), 'Bus-API corridor tooltip must use clean qualitative status without raw km/h');
+
+  // 3. .kmb-map-stop-label CSS removes narrow max-width: 220px & text-overflow: ellipsis clipping
+  const tooltipRuleMatch = html.match(/\.kmb-map-stop-label\s*\{[^}]+\}/);
+  assert.ok(tooltipRuleMatch, '.kmb-map-stop-label CSS rule must exist in index.html');
+  assert.ok(!tooltipRuleMatch[0].includes('max-width: 220px'), '.kmb-map-stop-label must remove narrow 220px cap');
+  assert.ok(!tooltipRuleMatch[0].includes('text-overflow: ellipsis'), '.kmb-map-stop-label must remove mid-word ellipsis truncation');
+  assert.ok(tooltipRuleMatch[0].includes('white-space: normal') && tooltipRuleMatch[0].includes('overflow: visible'),
+    '.kmb-map-stop-label must wrap naturally without clipping');
+});
+
 
 
 

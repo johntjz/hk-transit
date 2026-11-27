@@ -2835,26 +2835,69 @@ function findOppositeDirectionGroup(group, routesList = []) {
   return best;
 }
 
+function _sanitizeDirectionTyposHardcode(raw) {
+  return String(raw || '')
+    .replace(/\bSouththbound\b/gi, 'Southbound')
+    .replace(/\bNorththbound\b/gi, 'Northbound')
+    .replace(/\bEastthbound\b/gi, 'Eastbound')
+    .replace(/\bWestthbound\b/gi, 'Westbound');
+}
+
+function _isOffRouteHighwayLeakHardcode(roadEn = '', roadTc = '', id = '', routeCtx = null, seg = null) {
+  const idStr = String(id || '').toUpperCase();
+  const txt = `${roadEn || ''} ${roadTc || ''} ${idStr}`;
+  const routeNo = String(routeCtx?.routeNo || '').trim().toUpperCase();
+  const bs = seg?.betweenStops || null;
+  const spanText = `${bs?.fromNameEn || ''} ${bs?.toNameEn || ''} ${bs?.fromNameTc || ''} ${bs?.toNameTc || ''}`;
+  const stopsText = Array.isArray(routeCtx?.stops)
+    ? routeCtx.stops.map((s) => `${s?.stopName_e || ''} ${s?.name_tc || ''}`).join(' ')
+    : '';
+  const combinedCtx = `${spanText} ${stopsText}`;
+  const isE36Explicit = /^E36[A-Z]?$/.test(routeNo);
+  const isE36ByStops = Boolean(
+    /pat\s*heung|kam\s*ho|grand\s*mayfair|yuen\s*long\s*park|八鄉|錦河|柏瓏|元朗公園/i.test(combinedCtx) &&
+    /airport|tung\s*chung|tm[\s-]*clk|chek\s*lap\s*kok|機場|東涌|屯門赤鱲角/i.test(combinedCtx)
+  );
+  if (isE36Explicit || isE36ByStops) {
+    // E36 exits Yuen Long Hwy south onto Tsing Long Hwy (Route 3 / Tai Lam Tunnel) BEFORE Kong Sham Western Hwy,
+    // and NEVER runs on Tuen Mun Road (Brilliant Garden / Fung Tei / Siu Hong).
+    if (/TDS91037|TDS91040/i.test(idStr)) return true;
+    if (/kong\s*sham\s*western|shenzhen\s*bay|港深西部公路|深圳灣/i.test(txt)) return true;
+    if (/brilliant\s*garden|fung\s*tei|siu\s*hong|寶怡|鳳地|兆康/i.test(txt)) return true;
+    if (isE36Explicit && /\b(?:tuen\s*mun\s*r(?:oa)?d|tmr)\b|屯門公路/i.test(txt)) return true;
+  }
+  // Block HZMB Hong Kong Link Road / elevated viaducts from bleeding onto parallel ground roads (e.g. South Perimeter Rd)
+  const isViaductOrHzmb = /\b(?:hzmb|hong\s*kong\s*link\s*r(?:oa)?d|viaduct)\b|港珠澳大橋香港連接路|高架/i.test(txt);
+  if (isViaductOrHzmb && !/hzmb|hong\s*kong\s*link|bridge\s*port|port|港珠澳|大橋口岸/i.test(spanText)) {
+    return true;
+  }
+  return false;
+}
+
 function _estimateDetectorDelayMins(det) {
   if (!det) return 0;
-  const spd = Number(det.spd);
-  const occ = Number(det.occ) || 0;
-  const tier = det.tier || 'SMOOTH';
-  if (tier === 'JAMMED' || (Number.isFinite(spd) && spd < 15)) {
-    if (Number.isFinite(spd) && spd < 10) return 18;
-    if ((Number.isFinite(spd) && spd < 15) || occ >= 75) return 15;
+  const rawSpd = Number(det.spd);
+  const hasSpd = det.spd !== null && det.spd !== undefined && Number.isFinite(rawSpd) && rawSpd > 0;
+  const spd = hasSpd ? Math.abs(rawSpd) : NaN;
+  const occ = Math.abs(Number(det.occ) || 0);
+  const tier = String(det.tier || 'SMOOTH').toUpperCase();
+  // >= 40 km/h on expressways/trunk roads is ALWAYS Flowing (0 delay), never Slow
+  if (hasSpd && spd >= 40) return 0;
+  if (tier === 'JAMMED' || (hasSpd && spd < 15)) {
+    if (hasSpd && spd < 10) return 18;
+    if ((hasSpd && spd < 15) || occ >= 75) return 15;
     return 10;
   }
-  if (tier === 'SLOW' || (Number.isFinite(spd) && spd < 46)) {
-    if ((Number.isFinite(spd) && spd <= 24) || occ >= 65) return 9;
-    if ((Number.isFinite(spd) && spd <= 28) || occ >= 55) return 8;
+  if (tier === 'SLOW' || (hasSpd && spd < 40)) {
+    if ((hasSpd && spd <= 24) || occ >= 65) return 9;
+    if ((hasSpd && spd <= 28) || occ >= 55) return 8;
     return 4;
   }
   return 0;
 }
 
 function _shortRoadNameForVerdict(det, isZh = false) {
-  const raw = isZh ? (det?.roadTc || det?.roadEn || '') : (det?.roadEn || det?.roadTc || '');
+  const raw = _sanitizeDirectionTyposHardcode(isZh ? (det?.roadTc || det?.roadEn || '') : (det?.roadEn || det?.roadTc || ''));
   if (!raw) return isZh ? '主要幹道' : 'corridor';
   if (isZh) {
     return String(raw)
@@ -2871,35 +2914,41 @@ function _shortRoadNameForVerdict(det, isZh = false) {
     .replace(/\s*\(\d+\)\s*$/, '')
     .trim();
   if (!cleaned) cleaned = raw;
-  return cleaned;
+  return _sanitizeDirectionTyposHardcode(cleaned);
 }
 
 function summarizeDetectorBucket(hits) {
   if (!hits || !hits.length) return null;
+  const validHits = hits.filter((h) => {
+    const raw = Number(h?.det?.spd);
+    return h?.det && (h.det.spd === null || h.det.spd === undefined || (Number.isFinite(raw) && raw > 0));
+  });
+  if (!validHits.length) return null;
   let spdSum = 0;
   let minSpd = Infinity;
   let worstSpd = Infinity;
   let maxOcc = 0;
   let maxDelay = -1;
-  let worstDet = hits[0].det;
-  let worstHit = hits[0];
+  let worstDet = validHits[0].det;
+  let worstHit = validHits[0];
   let jamCount = 0;
   let slowCount = 0;
 
   // Rank all valid corridor detectors across the full inter-stop leg by highest delay -> lowest speed -> highest occupancy
-  for (const h of hits) {
+  for (const h of validHits) {
     const d = h.det;
-    const spd = Number(d.spd);
-    const occ = Number(d.occ) || 0;
+    const rawSpd = Number(d.spd);
+    const hasSpd = d.spd !== null && d.spd !== undefined && Number.isFinite(rawSpd) && rawSpd > 0;
+    const effSpd = hasSpd ? Math.abs(rawSpd) : 50;
+    const occ = Math.abs(Number(d.occ) || 0);
     const delay = _estimateDetectorDelayMins(d);
-    const effSpd = Number.isFinite(spd) ? spd : 50;
     spdSum += effSpd;
     if (effSpd < minSpd) minSpd = effSpd;
 
     const worseThanBest =
       (delay > maxDelay) ||
       (delay === maxDelay && effSpd < worstSpd) ||
-      (delay === maxDelay && effSpd === worstSpd && occ > (Number(worstDet?.occ) || 0));
+      (delay === maxDelay && effSpd === worstSpd && occ > Math.abs(Number(worstDet?.occ) || 0));
 
     if (worseThanBest) {
       maxDelay = delay;
@@ -2908,30 +2957,37 @@ function summarizeDetectorBucket(hits) {
       worstHit = h;
     }
     if (occ > maxOcc) maxOcc = occ;
-    if (d.tier === 'JAMMED' || effSpd < 15) jamCount++;
-    else if (d.tier === 'SLOW' || effSpd < 46) slowCount++;
+    if (effSpd >= 40) {
+      // Expressways / trunk roads at >= 40 km/h are ALWAYS Flowing (SMOOTH), never Slow
+    } else if (d.tier === 'JAMMED' || effSpd < 15) {
+      jamCount++;
+    } else if (d.tier === 'SLOW' || effSpd < 40) {
+      slowCount++;
+    }
   }
 
-  const avgSpd = Math.round(spdSum / hits.length);
-  const effMinSpd = Number.isFinite(worstDet?.spd) ? Math.round(Number(worstDet.spd)) : (Number.isFinite(minSpd) ? Math.round(minSpd) : avgSpd);
+  const avgSpd = Math.abs(Math.round(spdSum / validHits.length));
+  const effMinSpd = Math.abs(Number.isFinite(Number(worstDet?.spd)) && Number(worstDet.spd) > 0
+    ? Math.round(Number(worstDet.spd))
+    : (Number.isFinite(minSpd) ? Math.round(minSpd) : avgSpd));
   let status = 'SMOOTH';
-  if (jamCount > 0 && (worstDet.tier === 'JAMMED' || effMinSpd < 24 || avgSpd < 30)) {
+  if (jamCount > 0 && effMinSpd < 40 && (worstDet.tier === 'JAMMED' || effMinSpd < 24 || avgSpd < 30)) {
     status = 'JAMMED';
-  } else if (slowCount > 0 || avgSpd < 46) {
+  } else if (slowCount > 0 || avgSpd < 40) {
     status = 'SLOW';
   }
 
-  const repHit = status === 'SMOOTH' ? hits[0] : worstHit;
+  const repHit = status === 'SMOOTH' ? validHits[0] : worstHit;
   return {
-    count: hits.length,
+    count: validHits.length,
     avgSpd,
     minSpd: effMinSpd,
-    maxOcc: Math.round(maxOcc),
-    estDelayMins: Math.max(0, maxDelay),
+    maxOcc: Math.abs(Math.round(maxOcc)),
+    estDelayMins: Math.max(0, Math.abs(maxDelay)),
     status,
     worstDet,
     representativeDet: repHit.det,
-    aheadKm: Number((repHit.aheadKm || 0).toFixed(1)),
+    aheadKm: Math.abs(Number((repHit.aheadKm || 0).toFixed(1))),
     betweenStops: repHit.betweenStops || null
   };
 }
@@ -3205,7 +3261,23 @@ function _isSegmentRoadCompatibleWithFeature(seg, roadEn = '', roadTc = '', feat
   });
 }
 
-function _matchDetectorsAlongSegments(segments, detectors) {
+function _isLocalRoadSpanNonHighwayHardcode(seg) {
+  const bs = seg?.betweenStops;
+  if (!bs) return false;
+  const spanEn = `${bs.fromNameEn || ''} ${bs.toNameEn || ''}`;
+  const spanTc = `${bs.fromNameTc || ''} ${bs.toNameTc || ''}`;
+  if (seg.isBbiSeg || isExpresswayOrTunnelDetector({ roadEn: spanEn, roadTc: spanTc })) return false;
+  if (/south\s*perimeter\s*r(?:oa)?d|chek\s*lap\s*kok\s*south|chun\s*wan\s*r(?:oa)?d|cathay\s*(?:pacific\s*cargo|city)|hactl|air\s*mail\s*centre|南環路|赤鱲角南路|駿運|國泰城/i.test(`${spanEn} ${spanTc}`)) {
+    return true;
+  }
+  const fromStems = _extractExplicitRoadStemsHardcode(bs.fromNameEn || '', bs.fromNameTc || '');
+  const toStems = _extractExplicitRoadStemsHardcode(bs.toNameEn || '', bs.toNameTc || '');
+  const hasExplicitLocalRoad = (fromStems.en.length > 0 || toStems.en.length > 0 || fromStems.tc.length > 0 || toStems.tc.length > 0);
+  const spanKm = Number(seg.parentHopKm || seg.hopKm || 0);
+  return Boolean(hasExplicitLocalRoad && spanKm < 2.2);
+}
+
+function _matchDetectorsAlongSegments(segments, detectors, routeCtx = null) {
   if (!segments.length || !Array.isArray(detectors) || !detectors.length) {
     return { sameHits: [], oppHits: [] };
   }
@@ -3223,16 +3295,21 @@ function _matchDetectorsAlongSegments(segments, detectors) {
     if (effHop > maxSegHopKm) maxSegHopKm = effHop;
   }
 
-  const hasHighwaySpan = segments.some(s => (Number(s.parentHopKm || s.hopKm || 0) >= 1.25) || s.isBbiSeg);
+  const hasHighwaySpan = segments.some(s => {
+    const spanKm = Number(s.parentHopKm || s.hopKm || 0);
+    return Boolean(s.isBbiSeg || (spanKm >= 1.25 && !_isLocalRoadSpanNonHighwayHardcode(s)));
+  });
   // Strict corridor lock when road-snapped polyline geometry is available.
-  const latPad = isRoadSnapped ? 0.0022 : (maxSegHopKm >= 2.0 ? 0.018 : 0.0035);
-  const lonPad = isRoadSnapped ? 0.0025 : (maxSegHopKm >= 2.0 ? 0.020 : 0.0040);
+  const latPad = isRoadSnapped ? 0.0020 : (maxSegHopKm >= 2.0 ? 0.018 : 0.0035);
+  const lonPad = isRoadSnapped ? 0.0022 : (maxSegHopKm >= 2.0 ? 0.020 : 0.0040);
   const sameHits = [];
   const oppHits = [];
 
   for (let i = 0; i < detectors.length; i++) {
     const det = detectors[i];
     if (!det || !Number.isFinite(det.lat) || !Number.isFinite(det.lon)) continue;
+    const rawSpd = Number(det.spd);
+    if (det.spd !== null && det.spd !== undefined && (!Number.isFinite(rawSpd) || rawSpd <= 0)) continue;
     if (det.lat < minLat - latPad || det.lat > maxLat + latPad || det.lon < minLon - lonPad || det.lon > maxLon + lonPad) {
       continue;
     }
@@ -3246,8 +3323,9 @@ function _matchDetectorsAlongSegments(segments, detectors) {
     let bestAheadKm = 0;
     for (let j = 0; j < segments.length; j++) {
       const seg = segments[j];
+      if (_isOffRouteHighwayLeakHardcode(det.roadEn || '', det.roadTc || '', det.id || '', routeCtx, seg)) continue;
       const spanKm = Number(seg.parentHopKm || seg.hopKm || 0);
-      const isHighwaySeg = (spanKm >= 1.25) || Boolean(seg.isBbiSeg);
+      const isHighwaySeg = Boolean(seg.isBbiSeg || (spanKm >= 1.25 && !_isLocalRoadSpanNonHighwayHardcode(seg)));
       // Expressway/tunnel detectors may ONLY match highway spans or BBI/tunnel stops — never local side streets (e.g. Kam Ho Rd / S1 / NLB 3M)
       if (isExpDet && !isHighwaySeg) continue;
       // Road-corridor consistency: never snap parallel local/LRT arterial detectors onto a highway/BBI span
@@ -3256,9 +3334,9 @@ function _matchDetectorsAlongSegments(segments, detectors) {
       if (!_isSegmentRoadCompatibleWithFeature(seg, det.roadEn || '', det.roadTc || '', det.id || '')) continue;
 
       const proj = pointToSegmentDistanceKm(det.lat, det.lon, seg.la1, seg.lo1, seg.la2, seg.lo2);
-      // Strictly reject any detector behind the selected boarding stop (segIdx === 0 && t < -0.02)
-      const minT = seg.segIdx === 0 ? -0.02 : (seg.isRoadSnapped ? -0.15 : -0.08);
-      const maxT = seg.isRoadSnapped ? 1.15 : (seg.hopKm >= 2.0 ? 1.04 : 1.10);
+      // Strictly reject detectors behind boarding stop or past a highway fork/turn-off endpoint
+      const minT = (j === 0 || seg.segIdx === 0) ? -0.02 : (seg.isRoadSnapped ? -0.10 : -0.08);
+      const maxT = (j === segments.length - 1) ? 1.02 : (seg.isRoadSnapped ? 1.10 : (seg.hopKm >= 2.0 ? 1.04 : 1.10));
       if (proj.t < minT || proj.t > maxT) continue;
 
       let maxCorridorRadius;
@@ -3266,13 +3344,13 @@ function _matchDetectorsAlongSegments(segments, detectors) {
         // Non-highway side streets: strict <= 45 m lateral cap to block adjacent expressway leakage
         maxCorridorRadius = 0.045;
       } else if (seg.isRoadSnapped) {
-        // Highway road-snapped polyline corridor: <= 150 m perpendicular distance
-        maxCorridorRadius = 0.15;
+        // Highway road-snapped polyline corridor: strict <= 60 m perpendicular distance
+        maxCorridorRadius = 0.060;
       } else if (seg.hopKm >= 2.0) {
-        // Fallback before async road polyline loads
+        // Fallback before async road polyline loads (still subject to off-route leak & road-name checks)
         maxCorridorRadius = Math.min(1.6, Math.max(0.35, seg.hopKm * 0.18));
       } else {
-        maxCorridorRadius = 0.15;
+        maxCorridorRadius = 0.060;
       }
 
       if (proj.distKm <= maxCorridorRadius && proj.distKm < bestDistKm) {
@@ -3286,7 +3364,7 @@ function _matchDetectorsAlongSegments(segments, detectors) {
     const ang = angularDiffDeg(bestSeg.brg, det.rot);
     const sameMaxAng = bestSeg.isRoadSnapped
       ? 42
-      : (bestSeg.hopKm >= 3.0 ? 60 : 45);
+      : (bestSeg.hopKm >= 3.0 ? 55 : 45);
     const oppMinAng = 180 - sameMaxAng;
     const hitObj = {
       det,
@@ -3308,7 +3386,7 @@ function _matchDetectorsAlongSegments(segments, detectors) {
   return { sameHits, oppHits };
 }
 
-function _matchCamerasAlongForwardSegments(segments, cameras) {
+function _matchCamerasAlongForwardSegments(segments, cameras, routeCtx = null) {
   if (!segments.length || !Array.isArray(cameras) || !cameras.length) return [];
   const isRoadSnapped = segments.some(s => Boolean(s.isRoadSnapped));
   let minLat = 90, maxLat = -90, minLon = 180, maxLon = -180;
@@ -3335,21 +3413,23 @@ function _matchCamerasAlongForwardSegments(segments, cameras) {
     let bestSeg = null;
     for (let j = 0; j < segments.length; j++) {
       const seg = segments[j];
+      if (_isOffRouteHighwayLeakHardcode(cam.desc || '', cam.descTc || '', cam.key || '', routeCtx, seg)) continue;
       const spanKm = Number(seg.parentHopKm || seg.hopKm || 0);
-      const isHighwaySeg = (spanKm >= 1.25) || Boolean(seg.isBbiSeg);
+      const isHighwaySeg = Boolean(seg.isBbiSeg || (spanKm >= 1.25 && !_isLocalRoadSpanNonHighwayHardcode(seg)));
       if (!_isSegmentRoadCompatibleWithFeature(seg, cam.desc || '', cam.descTc || '', cam.key || '')) continue;
 
       const proj = pointToSegmentDistanceKm(cLat, cLon, seg.la1, seg.lo1, seg.la2, seg.lo2);
-      const minT = seg.segIdx === 0 ? -0.02 : -0.15;
-      if (proj.t < minT || proj.t > 1.15) continue;
-      // Non-highway side streets: strict <= 45 m lateral cap; highways: <= 120 m when road-snapped
+      const minT = (j === 0 || seg.segIdx === 0) ? -0.02 : -0.10;
+      const maxT = (j === segments.length - 1) ? 1.02 : 1.10;
+      if (proj.t < minT || proj.t > maxT) continue;
+      // Non-highway side streets: strict <= 45 m; highways: <= 60 m when road-snapped
       const maxCamRadius = !isHighwaySeg
         ? 0.045
         : (seg.isRoadSnapped
-          ? 0.12
-          : (seg.hopKm >= 2.0 ? Math.min(1.6, Math.max(0.35, seg.hopKm * 0.18)) : 0.12));
+          ? 0.060
+          : (seg.hopKm >= 2.0 ? Math.min(1.6, Math.max(0.35, seg.hopKm * 0.18)) : 0.060));
       if (proj.distKm > maxCamRadius) continue;
-      if (hasCamBrg && angularDiffDeg(rawCamBrg, seg.brg) > 55) continue;
+      if (hasCamBrg && angularDiffDeg(rawCamBrg, seg.brg) > 45) continue;
       const segDir = extractCardinalDirectionMeta({ rot: seg.brg }, false).code;
       if (camDir && segDir && _isOppositeCardinalHardcode(camDir, segDir)) continue;
       if (proj.distKm < bestDistKm) {
@@ -3360,7 +3440,7 @@ function _matchCamerasAlongForwardSegments(segments, cameras) {
     }
     if (bestSeg) {
       matched.push({
-        cam,
+        cam: { ...cam, desc: _sanitizeDirectionTyposHardcode(cam.desc || cam.key || '') },
         distKm: bestDistKm,
         aheadKm: bestAheadKm,
         segBrg: bestSeg.brg,
@@ -3791,13 +3871,16 @@ function computeTimeToReachDecayWeight(etaMins, distKm = 0) {
 }
 
 function _normalizeBottleneckTier(tier, speedKmh) {
+  const rawSpd = Number(speedKmh);
+  const hasSpd = speedKmh !== null && speedKmh !== undefined && Number.isFinite(rawSpd) && rawSpd > 0;
+  const spd = hasSpd ? Math.abs(rawSpd) : NaN;
+  if (hasSpd && spd >= 40) return 'SMOOTH';
   const t = String(tier || '').toUpperCase();
   if (t === 'CONGESTED' || t === 'JAMMED') return 'CONGESTED';
   if (t === 'MODERATE' || t === 'SLOW') return 'MODERATE';
   if (t === 'SMOOTH') return 'SMOOTH';
-  const spd = Number(speedKmh);
-  if (Number.isFinite(spd) && spd < 20) return 'CONGESTED';
-  if (Number.isFinite(spd) && spd <= 40) return 'MODERATE';
+  if (hasSpd && spd < 20) return 'CONGESTED';
+  if (hasSpd && spd < 40) return 'MODERATE';
   return 'SMOOTH';
 }
 
@@ -4046,13 +4129,15 @@ function inferDirectionalRoadTrafficForStops(stops, startIdx = 0, detectors = []
     ? cameras
     : (typeof window !== 'undefined' && Array.isArray(window.__LIVE_TRAFFIC_CAMERAS__) ? window.__LIVE_TRAFFIC_CAMERAS__ : []);
 
+  const routeCtx = { routeNo: String(opts?.routeNo || '').trim(), stops };
+
   // 1. Evaluate Upstream "Jam Before Stop" (0–2.5 km leading into stops[fromIdx] along route polyline)
   let approaching = null;
   if (fromIdx > 0 && detList.length) {
     const upSegs = _buildUpstreamSegments(stops, fromIdx, roadPolylinePoints, 2.5);
     if (upSegs.length) {
       const upTotalKm = upSegs.reduce((acc, s) => acc + (s.hopKm || 0), 0);
-      const { sameHits: upSameHits } = _matchDetectorsAlongSegments(upSegs, detList);
+      const { sameHits: upSameHits } = _matchDetectorsAlongSegments(upSegs, detList, routeCtx);
       const activeUpHits = upSameHits
         .map(h => {
           const distBeforeKm = Math.max(0, Number((upTotalKm - (Number(h.aheadKm) || 0)).toFixed(2)));
@@ -4064,7 +4149,7 @@ function inferDirectionalRoadTrafficForStops(stops, startIdx = 0, detectors = []
       if (upBucket && (upBucket.status === 'JAMMED' || upBucket.status === 'SLOW')) {
         const upDet = upBucket.worstDet || upBucket.representativeDet;
         const worstHit = activeUpHits.find(h => h.det === upDet) || activeUpHits[0];
-        const distKm = Number((worstHit?.distBeforeKm ?? 0.8).toFixed(1));
+        const distKm = Math.abs(Number((worstHit?.distBeforeKm ?? 0.8).toFixed(1)));
         const tier = _normalizeBottleneckTier(upDet?.tier || upBucket.status, upBucket.minSpd);
         const sevScore = computeBottleneckSeverityScore({ spd: upBucket.minSpd, occ: upBucket.maxOcc, tier }, todCtx);
         const etaMins = Math.max(1, _estimateRouteArrivalMins(distKm, upBucket.minSpd, distKm >= 1.2));
@@ -4074,13 +4159,13 @@ function inferDirectionalRoadTrafficForStops(stops, startIdx = 0, detectors = []
         approaching = {
           status: upBucket.status,
           tier,
-          speedKmh: upBucket.minSpd,
-          minSpd: upBucket.minSpd,
-          avgSpd: upBucket.avgSpd,
-          maxOcc: upBucket.maxOcc,
-          estDelayMins: upBucket.estDelayMins,
+          speedKmh: Math.abs(upBucket.minSpd),
+          minSpd: Math.abs(upBucket.minSpd),
+          avgSpd: Math.abs(upBucket.avgSpd),
+          maxOcc: Math.abs(upBucket.maxOcc),
+          estDelayMins: Math.abs(upBucket.estDelayMins),
           distKm,
-          distMeters: Math.round(distKm * 1000),
+          distMeters: Math.abs(Math.round(distKm * 1000)),
           etaMins,
           severityScore: sevScore,
           timeDecayWeight: 1.0,
@@ -4094,9 +4179,9 @@ function inferDirectionalRoadTrafficForStops(stops, startIdx = 0, detectors = []
           roadTc,
           cam: upCam,
           camKey: upCam?.camKey || upCam?.key || upDet?.camKey || '',
-          camDesc: upCam?.desc || '',
-          labelEn: `Jam before stop (${distKm.toFixed(1)} km upstream · ${upBucket.minSpd} km/h)`,
-          labelTc: `到站前塞車（前 ${distKm.toFixed(1)} km · ${upBucket.minSpd} km/h）`
+          camDesc: _sanitizeDirectionTyposHardcode(upCam?.desc || ''),
+          labelEn: `Jam before stop (${distKm.toFixed(1)} km upstream · ${Math.abs(upBucket.minSpd)} km/h)`,
+          labelTc: `到站前塞車（前 ${distKm.toFixed(1)} km · ${Math.abs(upBucket.minSpd)} km/h）`
         };
       }
     }
@@ -4135,23 +4220,23 @@ function inferDirectionalRoadTrafficForStops(stops, startIdx = 0, detectors = []
     ? snappedAhead
     : _buildStopPairSegments(stops, fromIdx, endIdx, maxLookaheadKm, maxLookaheadKm);
 
-  const forwardCameras = camList.length ? _matchCamerasAlongForwardSegments(aheadSegs, camList) : [];
+  const forwardCameras = camList.length ? _matchCamerasAlongForwardSegments(aheadSegs, camList, routeCtx) : [];
   const nearestFwdCam = forwardCameras.length ? forwardCameras[0] : null;
   const aheadCam = nearestFwdCam
     ? {
         key: nearestFwdCam.cam.key,
         camKey: nearestFwdCam.cam.key,
-        desc: nearestFwdCam.cam.desc || nearestFwdCam.cam.key,
-        aheadMeters: Math.max(10, Math.round((Number(nearestFwdCam.aheadKm) || 0) * 1000)),
+        desc: _sanitizeDirectionTyposHardcode(nearestFwdCam.cam.desc || nearestFwdCam.cam.key),
+        aheadMeters: Math.max(10, Math.abs(Math.round((Number(nearestFwdCam.aheadKm) || 0) * 1000))),
         lat: Number(nearestFwdCam.cam.lat),
         lon: Number(nearestFwdCam.cam.lon),
-        dir: nearestFwdCam.cam.dir || '',
+        dir: _sanitizeDirectionTyposHardcode(nearestFwdCam.cam.dir || ''),
         bearingDeg: nearestFwdCam.cam.bearingDeg
       }
     : null;
 
   const { sameHits: rawSameHits, oppHits: rawOppHits } = detList.length
-    ? _matchDetectorsAlongSegments(aheadSegs, detList)
+    ? _matchDetectorsAlongSegments(aheadSegs, detList, routeCtx)
     : { sameHits: [], oppHits: [] };
   const sameHits = rawSameHits.filter(h => (Number(h.aheadKm) || 0) <= maxLookaheadKm + 0.05);
   const oppHits = rawOppHits.filter(h => (Number(h.aheadKm) || 0) <= maxLookaheadKm + 0.05);
@@ -4663,8 +4748,8 @@ function getDirectionalRoadSummary(stops, startIdx, detectors, isZh = false, loo
   const decision = synthesizeTrafficDecision(syntheticApproachingSame, opp, isZh);
   if (!decision) return null;
 
-  const roadLabel = focusDet ? (isZh ? (focusDet.roadTc || focusDet.roadEn) : (focusDet.roadEn || focusDet.roadTc)) : '';
-  const aheadKm = Number((topRanked && !topRanked.isApproaching ? topRanked.distKm : primary?.aheadKm) || 0);
+  const roadLabel = focusDet ? _sanitizeDirectionTyposHardcode(isZh ? (focusDet.roadTc || focusDet.roadEn) : (focusDet.roadEn || focusDet.roadTc)) : '';
+  const aheadKm = Math.abs(Number((topRanked && !topRanked.isApproaching ? topRanked.distKm : primary?.aheadKm) || 0));
   const betweenStops = (topRanked && !topRanked.isApproaching ? topRanked.betweenStops : primary?.betweenStops) || null;
   const showBetween = Boolean(betweenStops && ((same?.status !== 'SMOOTH') || (betweenStops.hopKm || 0) >= 1.8));
   const betweenLabel = showBetween ? _formatBetweenStopsLabel(betweenStops, isZh) : '';
@@ -4674,21 +4759,21 @@ function getDirectionalRoadSummary(stops, startIdx, detectors, isZh = false, loo
 
   let headline = isZh ? decision.verdictTc : decision.verdictEn;
   if (approachingLeads && (!same || same.status === 'SMOOTH')) {
-    const rShort = isZh ? approaching.roadTc : approaching.roadEn;
+    const rShort = _sanitizeDirectionTyposHardcode(isZh ? approaching.roadTc : approaching.roadEn);
     headline = isZh
-      ? `到站前塞車 · ${rShort} (${approaching.minSpd} km/h)`
-      : `Jam before stop · ${rShort} (${approaching.minSpd} km/h)`;
+      ? `到站前塞車 · ${rShort} (${Math.abs(approaching.minSpd)} km/h)`
+      : `Jam before stop · ${rShort} (${Math.abs(approaching.minSpd)} km/h)`;
   }
 
   const detailParts = [];
   if (approachingLeads) {
-    detailParts.push(`${approaching.minSpd} km/h`);
-    detailParts.push(isZh ? `站前 ${approaching.distKm.toFixed(1)} km` : `${approaching.distKm.toFixed(1)} km before stop`);
+    detailParts.push(`${Math.abs(approaching.minSpd)} km/h`);
+    detailParts.push(isZh ? `站前 ${Math.abs(approaching.distKm).toFixed(1)} km` : `${Math.abs(approaching.distKm).toFixed(1)} km before stop`);
   } else if (same) {
-    const spdDisp = same.status === 'SMOOTH' ? `~${same.avgSpd}` : `${same.minSpd}`;
+    const spdDisp = same.status === 'SMOOTH' ? `~${Math.abs(same.avgSpd)}` : `${Math.abs(same.minSpd)}`;
     detailParts.push(`${spdDisp} km/h`);
-    if (same.status !== 'SMOOTH' && same.worstDet?.occ > 0) {
-      detailParts.push(isZh ? `佔用率 ${same.worstDet.occ}%` : `${same.worstDet.occ}% occ`);
+    if (same.status !== 'SMOOTH' && Math.abs(Number(same.worstDet?.occ) || 0) > 0) {
+      detailParts.push(isZh ? `佔用率 ${Math.abs(Math.round(Number(same.worstDet.occ)))}%` : `${Math.abs(Math.round(Number(same.worstDet.occ)))}% occ`);
     }
   }
   if (roadLabel) detailParts.push(roadLabel);
@@ -4698,7 +4783,7 @@ function getDirectionalRoadSummary(stops, startIdx, detectors, isZh = false, loo
     detailParts.push(isZh ? topRanked.farAheadNoteTc : topRanked.farAheadNoteEn);
   }
   if (same && same.status === 'SMOOTH' && opp && opp.status === 'JAMMED') {
-    detailParts.push(isZh ? `僅對面線塞車 (${opp.minSpd} km/h)` : `Opp. bound jammed (${opp.minSpd} km/h)`);
+    detailParts.push(isZh ? `僅對面線塞車 (${Math.abs(opp.minSpd)} km/h)` : `Opp. bound jammed (${Math.abs(opp.minSpd)} km/h)`);
   }
   if (todCtx && (todCtx.isPeak || todCtx.trend === 'BUILDING' || todCtx.isLateNight)) {
     detailParts.push(isZh ? todCtx.labelTc : todCtx.labelEn);
@@ -4874,7 +4959,7 @@ function inferBusApiSegmentSpeeds(stops, etaByStopIdx, roadPolylinePoints = null
 function getTrafficSpeedColorHex(speedKmh, noDataColor = '#3b82f6') {
   if (speedKmh === null || speedKmh === undefined) return noDataColor;
   const s = Number(speedKmh);
-  if (!Number.isFinite(s)) return noDataColor;
+  if (!Number.isFinite(s) || s <= 0) return noDataColor;
   if (s < 20) return '#dc2626';
   if (s <= 40) return '#f59e0b';
   return '#16a34a';
@@ -4890,12 +4975,13 @@ function buildRouteSpeedGeoJson(coords, detectors = [], opts = {}) {
   const noDataColor = optObj.noDataColor || '#3b82f6';
   const isRoadSnapped = optObj.isRoadSnapped !== false;
   const hasHighwaySpan = Boolean(optObj.hasHighwaySpan);
-  const maxMatchKm = Number(optObj.maxMatchKm) || (isRoadSnapped ? 0.15 : 0.16);
+  const maxMatchKm = Number(optObj.maxMatchKm) || (isRoadSnapped ? 0.060 : 0.12);
   const sideStreetMaxMatchKm = Math.min(maxMatchKm, 0.045);
-  const maxAngleDeg = Number(optObj.maxAngleDeg) || (isRoadSnapped ? 42 : 52);
+  const maxAngleDeg = Number(optObj.maxAngleDeg) || (isRoadSnapped ? 42 : 45);
   const influenceRadiusKm = Number(optObj.influenceRadiusKm) || 0.70;
   const maxMicroStepKm = Number(optObj.maxMicroStepKm) || 0.15;
   const stops = Array.isArray(optObj.stops) ? optObj.stops : [];
+  const routeCtx = { routeNo: String(optObj.routeNo || '').trim(), stops };
 
   // 1. Densify long segments so speed color transitions localize cleanly around each TD detector
   const densePts = [];
@@ -4955,8 +5041,9 @@ function buildRouteSpeedGeoJson(coords, detectors = [], opts = {}) {
         parentHopKm: hopKm,
         hopKm,
         isBbiSeg,
-        isHighwaySpan: (hopKm >= 1.25) || isBbiSeg
+        isHighwaySpan: false
       };
+      spanMeta.isHighwaySpan = Boolean(isBbiSeg || (hopKm >= 1.25 && !_isLocalRoadSpanNonHighwayHardcode(spanMeta)));
       const startP = Math.max(0, cur.polyIdx);
       const endP = Math.min(densePts.length - 2, Math.max(startP, nxt.polyIdx - 1));
       for (let p = startP; p <= endP; p++) {
@@ -4997,12 +5084,12 @@ function buildRouteSpeedGeoJson(coords, detectors = [], opts = {}) {
 
   // 2. Project same-direction live TD detectors strictly onto the route polyline
   const matchedDets = [];
-  const padDeg = 0.003;
+  const padDeg = 0.0025;
   if (Array.isArray(detectors) && detectors.length) {
     for (let dIdx = 0; dIdx < detectors.length; dIdx++) {
       const det = detectors[dIdx];
       if (!det || !Number.isFinite(Number(det.lat)) || !Number.isFinite(Number(det.lon))) continue;
-      if (det.spd === null || det.spd === undefined || !Number.isFinite(Number(det.spd))) continue;
+      if (det.spd === null || det.spd === undefined || !Number.isFinite(Number(det.spd)) || Number(det.spd) <= 0) continue;
       const dLat = Number(det.lat), dLon = Number(det.lon);
       if (dLat < minLat - padDeg || dLat > maxLat + padDeg || dLon < minLon - padDeg || dLon > maxLon + padDeg) continue;
       if (hasHighwaySpan && isOffCorridorLocalArterialDetector(det)) continue;
@@ -5014,9 +5101,11 @@ function buildRouteSpeedGeoJson(coords, detectors = [], opts = {}) {
 
       for (let sIdx = 0; sIdx < microSegs.length; sIdx++) {
         const seg = microSegs[sIdx];
+        if (_isOffRouteHighwayLeakHardcode(det.roadEn || '', det.roadTc || '', det.id || '', routeCtx, seg)) continue;
         const segMaxMatchKm = seg.isSideStreetSpan ? sideStreetMaxMatchKm : maxMatchKm;
         const proj = pointToSegmentDistanceKm(dLat, dLon, seg.a[0], seg.a[1], seg.b[0], seg.b[1]);
         if (proj.distKm > segMaxMatchKm) continue;
+        if ((sIdx === 0 && proj.t < -0.02) || (sIdx === microSegs.length - 1 && proj.t > 1.02)) continue;
         if (hasRot && angularDiffDeg(seg.brg, detRot) > maxAngleDeg) continue;
         if (seg.betweenStops && !_isSegmentRoadCompatibleWithFeature(seg, det.roadEn || '', det.roadTc || '', det.id || '')) continue;
         if (proj.distKm < bestDistKm) {
@@ -5056,13 +5145,13 @@ function buildRouteSpeedGeoJson(coords, detectors = [], opts = {}) {
       }
     }
 
-    const speedKmh = chosen ? Number(chosen.spd) : null;
-    const hasSpeedData = Boolean(speedKmh !== null && Number.isFinite(speedKmh));
+    const speedKmh = chosen ? Math.abs(Number(chosen.spd)) : null;
+    const hasSpeedData = Boolean(speedKmh !== null && Number.isFinite(speedKmh) && speedKmh > 0);
     const color = getTrafficSpeedColorHex(speedKmh, noDataColor);
     const detId = chosen ? String(chosen.id || '') : '';
-    const roadEn = chosen ? String(chosen.roadEn || '') : '';
-    const roadTc = chosen ? String(chosen.roadTc || chosen.roadEn || '') : '';
-    const tier = chosen ? String(chosen.tier || '') : 'NO_DATA';
+    const roadEn = chosen ? _sanitizeDirectionTyposHardcode(String(chosen.roadEn || '')) : '';
+    const roadTc = chosen ? _sanitizeDirectionTyposHardcode(String(chosen.roadTc || chosen.roadEn || '')) : '';
+    const tier = chosen ? _normalizeBottleneckTier(chosen.tier, speedKmh) : 'NO_DATA';
 
     const ptA = [Number(seg.a[1].toFixed(6)), Number(seg.a[0].toFixed(6))];
     const ptB = [Number(seg.b[1].toFixed(6)), Number(seg.b[0].toFixed(6))];

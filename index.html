@@ -1903,7 +1903,16 @@
     .onboard-primary-btn.finish-dark { background: #1C1C1E; color: #FFFFFF; }
     html:not(.light-mode) .onboard-primary-btn.finish-dark { background: #FFFFFF; color: #1C1C1E; }
 
-    .kmb-map-stop-label { background: rgba(255,255,255,0.96) !important; color: #1C1C1E !important; border: 1px solid rgba(0,0,0,0.12) !important; border-radius: 8px !important; padding: 3px 8px !important; font-weight: 600 !important; font-size: 0.73rem !important; box-shadow: 0 3px 10px rgba(0,0,0,0.15) !important; max-width: 220px !important; white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important; }
+    .kmb-map-stop-label { background: rgba(255,255,255,0.96) !important; color: #1C1C1E !important; border: 1px solid rgba(0,0,0,0.12) !important; border-radius: 8px !important; padding: 4px 9px !important; font-weight: 600 !important; font-size: 0.73rem !important; box-shadow: 0 3px 10px rgba(0,0,0,0.15) !important; max-width: min(360px, 85vw) !important; white-space: normal !important; overflow: visible !important; text-overflow: clip !important; line-height: 1.3 !important; }
+    .traffic-journey-bar-wrap { margin-top: 6px; padding: 6px 8px; border-radius: 10px; background: rgba(15, 23, 42, 0.04); border: 1px solid var(--border-color); }
+    .traffic-journey-bar-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 0.67rem; font-weight: 700; color: var(--text-sub); margin-bottom: 5px; }
+    .traffic-journey-bar { display: flex; align-items: stretch; gap: 3px; width: 100%; }
+    .traffic-journey-seg { border: none; border-radius: 999px; height: 9px; min-width: 8px; padding: 0; cursor: pointer; transition: transform 0.14s ease, opacity 0.14s ease; }
+    .traffic-journey-seg:hover, .traffic-journey-seg:focus-visible { transform: scaleY(1.35); outline: none; }
+    .traffic-journey-seg.tone-smooth { background: #16a34a; }
+    .traffic-journey-seg.tone-moderate { background: #f59e0b; }
+    .traffic-journey-seg.tone-congested { background: #dc2626; }
+    .traffic-journey-seg.tone-none { background: #94a3b8; opacity: 0.65; }
     .gps-user-dot-wrap { position: relative; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; pointer-events: none; }
     .gps-user-beam { position: absolute; inset: 0; width: 44px; height: 44px; transform-origin: 22px 22px; transition: transform 0.15s linear; }
     .gps-user-core { width: 15px; height: 15px; border-radius: 50%; background: #007AFF !important; border: 3px solid #FFFFFF; box-shadow: 0 2px 8px rgba(0, 122, 255, 0.55); z-index: 2; }
@@ -4424,7 +4433,7 @@ function generateExpandedETAsHtml(arrs, group, stopKey, stopIdx) {
     const exitStopIdx = (exitIdxRaw > stopIdx) ? exitIdxRaw : null;
 
     // Single Source of Truth: build/reuse the exact same unified stop-by-stop segment array
-    // (after TD ground-truth suppression) that drives stop-row pills so pills & expanded cards NEVER contradict.
+    // (after TD ground-truth suppression) that drives stop-row pills & horizontal journey bar so they NEVER contradict.
     let unifiedSegs = null;
     if (typeof window.buildStopByStopSegmentTraffic === 'function' && Array.isArray(stops) && stops.length >= 2) {
       unifiedSegs = window.buildStopByStopSegmentTraffic(
@@ -4433,7 +4442,10 @@ function generateExpandedETAsHtml(arrs, group, stopKey, stopIdx) {
         window.__LIVE_TRAFFIC_DETECTORS__ || [],
         window.__LIVE_TRAFFIC_CAMERAS__ || [],
         activeBusSegs,
-        { tdSpeedGeoJson: window.__LIVE_TRAFFIC_SPEED_GEOJSON__ || null }
+        {
+          tdSpeedGeoJson: window.__LIVE_TRAFFIC_SPEED_GEOJSON__ || null,
+          routeNo: group?.routeNo || ''
+        }
       );
       if (typeof detailRouteGroup !== 'undefined' && detailRouteGroup?.key === group?.key) {
         window.__DETAIL_STOP_SEGMENTS__ = unifiedSegs;
@@ -4452,12 +4464,56 @@ function generateExpandedETAsHtml(arrs, group, stopKey, stopIdx) {
       12000,
       window.__LIVE_TRAFFIC_CAMERAS__,
       {
+        routeNo: group?.routeNo || '',
         exitStopIdx,
         busSpeedSegments: activeBusSegs,
         unifiedSegments: unifiedSegs,
         tdSpeedGeoJson: window.__LIVE_TRAFFIC_SPEED_GEOJSON__ || null
       }
     );
+
+    const _cleanLbl = (s) => {
+      const base = (typeof sanitizeBottleneckLabel === 'function')
+        ? sanitizeBottleneckLabel(s)
+        : String(s || '').replace(/\s*[·•]?\s*\b\d{1,3}\s*(?:°|deg|["″”]|'')\s*$/gi, '').trim();
+      return base
+        .replace(/\bSouththbound\b/gi, 'Southbound')
+        .replace(/\bNorththbound\b/gi, 'Northbound')
+        .replace(/\bEastthbound\b/gi, 'Eastbound')
+        .replace(/\bWestthbound\b/gi, 'Westbound');
+    };
+
+    // Compact horizontal Board -> Terminus multi-segment journey bar (qualitative Flowing/Slow/Heavy/Unmonitored)
+    let journeyBarHtml = '';
+    const journeyEndIdx = (exitStopIdx !== null && exitStopIdx > stopIdx) ? exitStopIdx : (stops.length - 1);
+    const journeySegs = Array.isArray(unifiedSegs)
+      ? unifiedSegs.filter((u) => u && Number(u.fromIdx) >= stopIdx && Number(u.toIdx) <= journeyEndIdx)
+      : [];
+    if (journeySegs.length > 0) {
+      const endStopName = stops[journeyEndIdx] ? _cleanLbl(getStopName(stops[journeyEndIdx])) : (isZh ? '總站' : 'Terminus');
+      const segButtonsHtml = journeySegs.map((seg) => {
+        const isMonitored = seg.source === 'TD' || seg.source === 'BUS_API';
+        const legTone = !isMonitored
+          ? 'none'
+          : (seg.tier === 'CONGESTED' ? 'congested' : (seg.tier === 'MODERATE' ? 'moderate' : 'smooth'));
+        const qualLbl = !isMonitored
+          ? (isZh ? '未監測' : 'Unmonitored')
+          : (seg.tier === 'CONGESTED'
+            ? (isZh ? '擠塞' : 'Heavy')
+            : (seg.tier === 'MODERATE' ? (isZh ? '緩慢' : 'Slow') : (isZh ? '暢順' : 'Flowing')));
+        const rawFrom = isZh ? (seg.fromNameTc || seg.fromNameEn) : (seg.fromNameEn || seg.fromNameTc);
+        const rawTo = isZh ? (seg.toNameTc || seg.toNameEn) : (seg.toNameEn || seg.toNameTc);
+        const legTip = `#${seg.fromSeq} ${_cleanLbl(rawFrom)} → #${seg.toSeq} ${_cleanLbl(rawTo)} · ${qualLbl}`;
+        const flexWeight = Math.max(1, Math.min(40, Math.round(Math.abs(Number(seg.roadDistKm) || 0.35) * 10)));
+        return `<button type="button" class="traffic-journey-seg tone-${legTone}" data-from-idx="${seg.fromIdx}" data-seg-tier="${escapeHtml(seg.tier || 'NONE')}" style="flex:${flexWeight} 1 0;" title="${escapeHtml(legTip)}" aria-label="${escapeHtml(legTip)}" onclick="event.stopPropagation(); if(typeof focusJourneySegmentOnDetailMap==='function'){focusJourneySegmentOnDetailMap(${seg.fromIdx});}else if(typeof openStopSegmentTrafficModal==='function'){openStopSegmentTrafficModal(${seg.fromIdx});}"></button>`;
+      }).join('');
+      const headLeft = isZh
+        ? `全程路況 · 第${stopIdx + 1}站 → 第${journeyEndIdx + 1}站 (${endStopName})`
+        : `Board #${stopIdx + 1} → #${journeyEndIdx + 1} ${endStopName}`;
+      const headRight = isZh ? '點按分段查看' : 'Tap leg';
+      journeyBarHtml = `<div class="traffic-journey-bar-wrap" data-board-idx="${stopIdx}" data-end-idx="${journeyEndIdx}" onclick="event.stopPropagation();"><div class="traffic-journey-bar-head"><span>${escapeHtml(headLeft)}</span><span style="opacity:0.75;">${escapeHtml(headRight)}</span></div><div class="traffic-journey-bar" role="group" aria-label="${escapeHtml(headLeft)}">${segButtonsHtml}</div></div>`;
+    }
+
     if (roadSum && roadSum.headline) {
       const fDet = roadSum.focusDet;
       const oppDet = roadSum.oppDet;
@@ -4480,14 +4536,13 @@ function generateExpandedETAsHtml(arrs, group, stopKey, stopIdx) {
         ? (isZh ? '📷 詳情/實拍 ›' : '📷 Verdict & Cam ›')
         : ((!barUsesInlineToggle && roadSum.aheadCam?.key) ? (isZh ? '📷 鏡頭 ›' : '📷 Cam ›') : (isZh ? '詳情 ›' : 'Details ›'));
       const toneDot = roadSum.tone === 'jammed' ? '🔴' : (roadSum.tone === 'slow' ? '🟠' : '🟢');
-      const _cleanLbl = (s) => (typeof sanitizeBottleneckLabel === 'function') ? sanitizeBottleneckLabel(s) : String(s || '').replace(/\s*[·•]?\s*\b\d{1,3}\s*(?:°|deg|["″”]|'')\s*$/gi, '').trim();
       const cleanHeadline = _cleanLbl(roadSum.headline);
       const cleanDetail = roadSum.detail ? _cleanLbl(roadSum.detail) : '';
 
-      // Keep ONLY 1 clean top corridor status bar + optional compact "Road Ahead · X.Xkm" camera chip + toggleable Details breakdown
+      // Keep ONLY 1 clean top corridor status bar + compact Board->Terminus journey bar + optional camera chip + toggleable Details breakdown
       const chipParts = [];
       if (roadSum.aheadCam?.key) {
-        const mVal = Number(roadSum.aheadCam.aheadMeters);
+        const mVal = Math.abs(Number(roadSum.aheadCam.aheadMeters));
         const distTag = Number.isFinite(mVal)
           ? (mVal < 1000 ? `${Math.max(50, Math.round(mVal / 50) * 50)}m` : `${(mVal / 1000).toFixed(1)}km`)
           : '';
@@ -4495,7 +4550,7 @@ function generateExpandedETAsHtml(arrs, group, stopKey, stopIdx) {
           ? `📷 前方路況${distTag ? ` · ${distTag}` : ''}`
           : `📷 Road Ahead${distTag ? ` · ${distTag}` : ''}`;
         chipParts.push(
-          `<button type="button" class="traffic-ahead-cam-chip" data-cam-key="${escapeHtml(roadSum.aheadCam.key)}" onclick="event.stopPropagation(); openTrafficCameraByKey('${escapeJsAttr(roadSum.aheadCam.key)}', '${escapeJsAttr(roadSum.aheadCam.desc || '')}');">${escapeHtml(chipLbl)}</button>`
+          `<button type="button" class="traffic-ahead-cam-chip" data-cam-key="${escapeHtml(roadSum.aheadCam.key)}" onclick="event.stopPropagation(); openTrafficCameraByKey('${escapeJsAttr(roadSum.aheadCam.key)}', '${escapeJsAttr(_cleanLbl(roadSum.aheadCam.desc || ''))}');">${escapeHtml(chipLbl)}</button>`
         );
       }
       if (!barUsesInlineToggle && hasInlineBreakdown) {
@@ -4522,8 +4577,9 @@ function generateExpandedETAsHtml(arrs, group, stopKey, stopIdx) {
           const pairLbl = (rawFrom && rawTo)
             ? `${seg.fromSeq ? `#${seg.fromSeq} ` : ''}${_cleanLbl(rawFrom)} → ${seg.toSeq ? `#${seg.toSeq} ` : ''}${_cleanLbl(rawTo)}`
             : (_cleanLbl(isZh ? (seg.roadTc || seg.roadEn) : (seg.roadEn || seg.roadTc)) || (isZh ? '前方路段' : 'Forward stretch'));
+          const absSpd = Math.abs(Math.round(Number(seg.speedKmh)));
           const spdVal = Number.isFinite(Number(seg.speedKmh))
-            ? (seg.source === 'TD' ? `${Math.round(Number(seg.speedKmh))} km/h` : `~${Math.round(Number(seg.speedKmh))} km/h`)
+            ? (seg.source === 'TD' ? `${absSpd} km/h` : `${absSpd} km/h`)
             : '-- km/h';
           const srcLabel = seg.source === 'TD'
             ? (isZh ? '運輸署測速 (TD Detector)' : 'TD Detector')
@@ -4546,7 +4602,9 @@ function generateExpandedETAsHtml(arrs, group, stopKey, stopIdx) {
             ${cleanDetail ? `<span class="traffic-road-sub">${escapeHtml(cleanDetail)}</span>` : ''}
           </span>
           <span class="traffic-road-cta">${camIcon}</span>
-        </button>${extrasHtml}${inlineBreakdownHtml}`;
+        </button>${journeyBarHtml}${extrasHtml}${inlineBreakdownHtml}`;
+    } else if (journeyBarHtml) {
+      roadTrafficBannerHtml = journeyBarHtml;
     }
   }
 
@@ -6078,38 +6136,53 @@ window.openTrafficDecisionModal = function(detId, oppDetId = '', segmentNote = '
   const opp = oppDetId ? list.find(d => d.id === oppDetId) : null;
   if (!det) return;
 
-  const _cleanRoadText = (s) => (typeof sanitizeBottleneckLabel === 'function') ? sanitizeBottleneckLabel(s) : String(s || '').replace(/\s*[·•]?\s*\b\d{1,3}\s*(?:°|deg|["″”]|'')\s*$/gi, '').trim();
+  const _cleanRoadText = (s) => {
+    const base = (typeof sanitizeBottleneckLabel === 'function')
+      ? sanitizeBottleneckLabel(s)
+      : String(s || '').replace(/\s*[·•]?\s*\b\d{1,3}\s*(?:°|deg|["″”]|'')\s*$/gi, '').trim();
+    return base
+      .replace(/\bSouththbound\b/gi, 'Southbound')
+      .replace(/\bNorththbound\b/gi, 'Northbound')
+      .replace(/\bEastthbound\b/gi, 'Eastbound')
+      .replace(/\bWestthbound\b/gi, 'Westbound');
+  };
   const baseRoadName = _cleanRoadText(isZh ? (det.roadTc || det.roadEn || '主要幹道') : (det.roadEn || det.roadTc || 'Major Road')) || (isZh ? '主要幹道' : 'Major Road');
   const roadName = (camOverride && camOverride.desc) ? (_cleanRoadText(camOverride.desc) || baseRoadName) : baseRoadName;
   segmentNote = _cleanRoadText(segmentNote);
+  const detSpdAbs = Math.abs(Number(det.spd) || 0);
+  const detOccAbs = Math.abs(Number(det.occ) || 0);
+  const detEffStatus = detSpdAbs >= 40 ? 'SMOOTH' : (det.tier || 'SMOOTH');
+  const oppSpdAbs = opp ? Math.abs(Number(opp.spd) || 0) : 0;
+  const oppOccAbs = opp ? Math.abs(Number(opp.occ) || 0) : 0;
+  const oppEffStatus = opp ? (oppSpdAbs >= 40 ? 'SMOOTH' : (opp.tier || 'SMOOTH')) : 'SMOOTH';
   const sameGrp = {
-    status: det.tier || 'SMOOTH',
-    avgSpd: Number(det.spd) || 0,
-    minSpd: Number(det.spd) || 0,
-    maxOcc: Number(det.occ) || 0,
+    status: detEffStatus,
+    avgSpd: detSpdAbs,
+    minSpd: detSpdAbs,
+    maxOcc: detOccAbs,
     worstDet: det
   };
   const oppGrp = opp ? {
-    status: opp.tier || 'SMOOTH',
-    avgSpd: Number(opp.spd) || 0,
-    minSpd: Number(opp.spd) || 0,
-    maxOcc: Number(opp.occ) || 0,
+    status: oppEffStatus,
+    avgSpd: oppSpdAbs,
+    minSpd: oppSpdAbs,
+    maxOcc: oppOccAbs,
     worstDet: opp
   } : null;
   const rawDec = typeof synthesizeTrafficDecision === 'function'
     ? synthesizeTrafficDecision(sameGrp, oppGrp, isZh)
     : null;
   const dec = rawDec ? {
-    tone: rawDec.tone || (det.tier === 'JAMMED' ? 'jammed' : (det.tier === 'SLOW' ? 'slow' : 'smooth')),
+    tone: rawDec.tone || (detEffStatus === 'JAMMED' ? 'jammed' : (detEffStatus === 'SLOW' ? 'slow' : 'smooth')),
     verdict: isZh ? (rawDec.verdictTc || rawDec.verdictEn) : (rawDec.verdictEn || rawDec.verdictTc),
     actionTip: isZh ? (rawDec.actionTc || rawDec.actionEn || '') : (rawDec.actionEn || rawDec.actionTc || ''),
     delayLabel: isZh ? (rawDec.delayLabelTc || rawDec.delayLabelEn || '0m') : (rawDec.delayLabelEn || rawDec.delayLabelTc || '0m'),
     densityLabel: isZh ? (rawDec.densityTc || rawDec.densityEn || '車流密度') : (rawDec.densityEn || rawDec.densityTc || 'Lane Load')
   } : {
-    tone: det.tier === 'JAMMED' ? 'jammed' : (det.tier === 'SLOW' ? 'slow' : 'smooth'),
-    verdict: det.tier === 'JAMMED' ? (isZh ? '前路擠塞 · 預計慢 10–18 分鐘' : 'Traffic jam · Expect +10–18m') : (isZh ? '前路暢順 · 預計無延誤' : 'Clear ahead · No delay'),
-    delayLabel: det.tier === 'JAMMED' ? '+10–18m' : (det.tier === 'SLOW' ? '+4–8m' : '0m'),
-    densityLabel: isZh ? `佔用率 ${Math.round(det.occ || 0)}%` : `${Math.round(det.occ || 0)}% load`,
+    tone: detEffStatus === 'JAMMED' ? 'jammed' : (detEffStatus === 'SLOW' ? 'slow' : 'smooth'),
+    verdict: detEffStatus === 'JAMMED' ? (isZh ? '前路擠塞 · 預計慢 10–18 分鐘' : 'Traffic jam · Expect +10–18m') : (isZh ? '前路暢順 · 預計無延誤' : 'Clear ahead · No delay'),
+    delayLabel: detEffStatus === 'JAMMED' ? '+10–18m' : (detEffStatus === 'SLOW' ? '+4–8m' : '0m'),
+    densityLabel: isZh ? `佔用率 ${Math.round(detOccAbs)}%` : `${Math.round(detOccAbs)}% load`,
     actionTip: ''
   };
 
@@ -6117,16 +6190,16 @@ window.openTrafficDecisionModal = function(detId, oppDetId = '', segmentNote = '
   const subEl = document.getElementById('trafficModalSub');
   const closeEl = document.getElementById('trafficModalCloseBtn');
   if (titleEl) titleEl.innerText = roadName;
-  const dirSource = camOverride ? { desc: camOverride.desc, dir: camOverride.dir || det.dir, roadEn: det.roadEn, roadTc: det.roadTc, rot: det.rot } : det;
+  const dirSource = camOverride ? { desc: _cleanRoadText(camOverride.desc), dir: _cleanRoadText(camOverride.dir || det.dir), roadEn: _cleanRoadText(det.roadEn), roadTc: _cleanRoadText(det.roadTc), rot: det.rot } : { ...det, roadEn: _cleanRoadText(det.roadEn), roadTc: _cleanRoadText(det.roadTc), dir: _cleanRoadText(det.dir) };
   if (subEl) subEl.innerHTML = _buildTrafficModalSubHtml(dirSource, isZh, segmentNote, camOverride?.key || det.camKey || '');
   if (closeEl) closeEl.innerText = isZh ? '✕ 關閉' : '✕ Close';
 
   const toneDot = dec.tone === 'jammed' ? '🔴' : (dec.tone === 'slow' ? '🟠' : '🟢');
   const oppHtml = opp
     ? `<button type="button" class="traffic-opp-switch-btn" onclick="switchToOppositeTrafficCamera('${escapeJsAttr(opp.id)}', '${escapeJsAttr(det.id)}')">
-         <span>${opp.tier === 'JAMMED'
-           ? (isZh ? `ℹ️ 對面線擠塞 (${Math.round(opp.spd)} km/h)，不影響你搭乘方向。` : `ℹ️ Opposite bound is jammed (${Math.round(opp.spd)} km/h) — does not affect your direction.`)
-           : (isZh ? `ℹ️ 對面線車速約 ${Math.round(opp.spd)} km/h。` : `ℹ️ Opposite carriageway moving at ~${Math.round(opp.spd)} km/h.`)}</span>
+         <span>${oppEffStatus === 'JAMMED'
+           ? (isZh ? `ℹ️ 對面線擠塞 (${Math.round(oppSpdAbs)} km/h)，不影響你搭乘方向。` : `ℹ️ Opposite bound is jammed (${Math.round(oppSpdAbs)} km/h) — does not affect your direction.`)
+           : (isZh ? `ℹ️ 對面線車速約 ${Math.round(oppSpdAbs)} km/h。` : `ℹ️ Opposite carriageway moving at about ${Math.round(oppSpdAbs)} km/h.`)}</span>
          <span class="traffic-opp-switch-cta">${isZh ? '切換鏡頭 ⇄' : 'Switch cam ⇄'}</span>
        </button>`
     : '';
@@ -6159,7 +6232,7 @@ window.openTrafficDecisionModal = function(detId, oppDetId = '', segmentNote = '
     </div>
     <div class="traffic-metrics-grid">
       <div class="traffic-metric-box">
-        <div class="traffic-metric-val">${Math.round(det.spd || 0)} km/h</div>
+        <div class="traffic-metric-val">${Math.round(detSpdAbs)} km/h</div>
         <div class="traffic-metric-lbl">${isZh ? '實時車速' : 'Live Speed'}</div>
       </div>
       <div class="traffic-metric-box">
@@ -6167,7 +6240,7 @@ window.openTrafficDecisionModal = function(detId, oppDetId = '', segmentNote = '
         <div class="traffic-metric-lbl">${isZh ? '預計延誤' : 'Est. Delay'}</div>
       </div>
       <div class="traffic-metric-box">
-        <div class="traffic-metric-val">${Math.round(det.occ || 0)}%</div>
+        <div class="traffic-metric-val">${Math.round(detOccAbs)}%</div>
         <div class="traffic-metric-lbl">${escapeHtml(dec.densityLabel || (isZh ? '車流密度' : 'Lane Load'))}</div>
       </div>
     </div>
@@ -8153,7 +8226,8 @@ window.refreshStopByStopTrafficUI = function() {
     const busSegs = Array.isArray(window.__DETAIL_BUS_SPEED_SEGMENTS__) ? window.__DETAIL_BUS_SPEED_SEGMENTS__ : [];
 
     const segs = window.buildStopByStopSegmentTraffic(stops, roadPoly, tdDetectors, tdCameras, busSegs, {
-      tdSpeedGeoJson: window.__LIVE_TRAFFIC_SPEED_GEOJSON__ || null
+      tdSpeedGeoJson: window.__LIVE_TRAFFIC_SPEED_GEOJSON__ || null,
+      routeNo: detailRouteGroup?.routeNo || ''
     });
     window.__DETAIL_STOP_SEGMENTS__ = segs;
     const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
@@ -8184,16 +8258,17 @@ window.refreshStopByStopTrafficUI = function() {
         ? '📷'
         : (seg.tier === 'CONGESTED' ? '🔴' : (seg.tier === 'MODERATE' ? '🟠' : '🟢'));
 
+      const flowTxt = seg.tier === 'CONGESTED'
+        ? (isZh ? '擠塞' : 'Heavy')
+        : (seg.tier === 'MODERATE'
+          ? (isZh ? '緩慢' : 'Slow')
+          : (isZh ? '暢順' : 'Flowing'));
+
       let labelTxt = '';
       if (seg.source === 'TD') {
         const srcTag = seg.camKey ? '📷' : 'TD';
-        labelTxt = `${dot} ${Math.round(seg.speedKmh)} km/h · ${srcTag}`;
+        labelTxt = `${dot} ${flowTxt} · ${srcTag}`;
       } else if (seg.source === 'BUS_API') {
-        const flowTxt = seg.tier === 'CONGESTED'
-          ? (isZh ? '擠塞' : 'Heavy')
-          : (seg.tier === 'MODERATE'
-            ? (isZh ? '緩慢' : 'Slow')
-            : (isZh ? '暢順' : 'Flowing'));
         const srcTag = seg.camKey ? '🚌 📷' : '🚌';
         labelTxt = `${dot} ${flowTxt} · ${srcTag}`;
       } else {
@@ -8252,7 +8327,7 @@ window.openStopSegmentTrafficModal = function(fromIdx) {
     return;
   }
 
-  // Tier 2 (Lowest layer): Calibrated Bus Speed Inference breakdown (plus TD camera if one exists nearby)
+  // Tier 2 (or Unmonitored leg tapped from horizontal journey bar): Breakdown modal
   const modal = document.getElementById('trafficDecisionModal');
   const bodyEl = document.getElementById('trafficModalBody');
   if (!modal || !bodyEl) return;
@@ -8260,22 +8335,36 @@ window.openStopSegmentTrafficModal = function(fromIdx) {
   const titleEl = document.getElementById('trafficModalTitle');
   const subEl = document.getElementById('trafficModalSub');
   const closeEl = document.getElementById('trafficModalCloseBtn');
-  if (titleEl) titleEl.innerText = isZh ? `🚌 巴士實測路況 (${seg.fromSeq}→${seg.toSeq}站)` : `🚌 Bus Speed Segment (#${seg.fromSeq}→#${seg.toSeq})`;
+  const isUnmonitored = seg.source === 'NONE' || seg.speedKmh === null || seg.speedKmh === undefined;
+  if (titleEl) {
+    titleEl.innerText = isUnmonitored
+      ? (isZh ? `路段路況 (${seg.fromSeq}→${seg.toSeq}站)` : `Route Stretch (#${seg.fromSeq}→#${seg.toSeq})`)
+      : (isZh ? `🚌 巴士實測路況 (${seg.fromSeq}→${seg.toSeq}站)` : `🚌 Bus Speed Segment (#${seg.fromSeq}→#${seg.toSeq})`);
+  }
   if (subEl) subEl.innerHTML = `<span>${escapeHtml(spanLabel)}</span>`;
   if (closeEl) closeEl.innerText = isZh ? '✕ 關閉' : '✕ Close';
 
-  const tone = seg.tier === 'CONGESTED' ? 'jammed' : (seg.tier === 'MODERATE' ? 'slow' : 'smooth');
-  const toneDot = seg.tier === 'CONGESTED' ? '🔴' : (seg.tier === 'MODERATE' ? '🟠' : '🟢');
-  const verdict = seg.tier === 'CONGESTED'
-    ? (isZh ? '此路段巴士行車緩慢' : 'Slow bus flow on this stretch')
-    : (seg.tier === 'MODERATE'
-      ? (isZh ? '此路段車流稍慢' : 'Moderate bus speed on this stretch')
-      : (isZh ? '此路段巴士行車暢順' : 'Smooth bus flow on this stretch'));
-  const distTxt = seg.roadDistKm < 1 ? `${Math.round(seg.roadDistKm * 1000)}m` : `${Number(seg.roadDistKm).toFixed(2)} km`;
-  const etaDeltaTxt = Number.isFinite(Number(seg.deltaSec))
-    ? (seg.deltaSec >= 60 ? `${(seg.deltaSec / 60).toFixed(1)}m` : `${Math.round(seg.deltaSec)}s`)
+  const tone = isUnmonitored ? 'smooth' : (seg.tier === 'CONGESTED' ? 'jammed' : (seg.tier === 'MODERATE' ? 'slow' : 'smooth'));
+  const toneDot = isUnmonitored ? '⚪' : (seg.tier === 'CONGESTED' ? '🔴' : (seg.tier === 'MODERATE' ? '🟠' : '🟢'));
+  const verdict = isUnmonitored
+    ? (isZh ? '此路段暫無實時測速監測' : 'Unmonitored stretch (no live TD sensor or bus ETA pair)')
+    : (seg.tier === 'CONGESTED'
+      ? (isZh ? '此路段巴士行車緩慢' : 'Heavy bus flow on this stretch')
+      : (seg.tier === 'MODERATE'
+        ? (isZh ? '此路段車流稍慢' : 'Slow bus flow on this stretch')
+        : (isZh ? '此路段巴士行車暢順' : 'Flowing bus traffic on this stretch')));
+  const absDistKm = Math.abs(Number(seg.roadDistKm) || 0);
+  const distTxt = absDistKm < 1 ? `${Math.round(absDistKm * 1000)}m` : `${absDistKm.toFixed(2)} km`;
+  const absDeltaSec = Math.abs(Number(seg.deltaSec));
+  const etaDeltaTxt = (seg.deltaSec !== null && seg.deltaSec !== undefined && Number.isFinite(absDeltaSec))
+    ? (absDeltaSec >= 60 ? `${(absDeltaSec / 60).toFixed(1)}m` : `${Math.round(absDeltaSec)}s`)
     : '—';
-  const expectedTxt = Number.isFinite(Number(seg.expectedKmh)) ? `${Math.round(seg.expectedKmh)} km/h` : '—';
+  const expectedTxt = (seg.expectedKmh !== null && seg.expectedKmh !== undefined && Number.isFinite(Number(seg.expectedKmh)))
+    ? `${Math.abs(Math.round(Number(seg.expectedKmh)))} km/h`
+    : '—';
+  const speedDisplayTxt = isUnmonitored
+    ? '—'
+    : `${Math.abs(Math.round(Number(seg.speedKmh) || 0))} km/h`;
 
   const camUrl = seg.camKey ? buildTrafficCamProxyUrl(seg.camKey, Math.floor(Date.now() / 60000)) : '';
   const camHtml = camUrl
@@ -8296,11 +8385,11 @@ window.openStopSegmentTrafficModal = function(fromIdx) {
   bodyEl.innerHTML = `
     <div class="traffic-verdict-banner tone-${tone}">
       <div class="traffic-verdict-title">${toneDot} ${escapeHtml(verdict)}</div>
-      <div class="traffic-verdict-tip">${isZh ? '數據來源：實時巴士 API 站間速度推算（未有運輸署感應器路段）' : 'Source: Calibrated Bus API stop-to-stop inference (non-TD road)'}</div>
+      <div class="traffic-verdict-tip">${isUnmonitored ? (isZh ? '未有實時感應器或站間到站數據' : 'No live sensor or paired stop ETA available yet') : (isZh ? '數據來源：實時巴士 API 站間速度推算（未有運輸署感應器路段）' : 'Source: Calibrated Bus API stop-to-stop inference (non-TD road)')}</div>
     </div>
     <div class="traffic-metrics-grid">
       <div class="traffic-metric-box">
-        <div class="traffic-metric-val">~${Math.round(seg.speedKmh || 0)} km/h</div>
+        <div class="traffic-metric-val">${escapeHtml(speedDisplayTxt)}</div>
         <div class="traffic-metric-lbl">${isZh ? '推算車速' : 'Est. Speed'}</div>
       </div>
       <div class="traffic-metric-box">

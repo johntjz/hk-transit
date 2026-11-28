@@ -9,6 +9,13 @@ if (typeof MTR_STATION_DIRECTORY === 'undefined' && typeof require === 'function
   } catch (e) {}
 }
 
+if (typeof getSeasonalCorridorMultiplier === 'undefined' && typeof require === 'function') {
+  try {
+    const _ma = require('./monthly_activity.js');
+    if (_ma && typeof globalThis !== 'undefined') Object.assign(globalThis, _ma);
+  } catch (e) {}
+}
+
 if (typeof estimateGlobalBusLoadRisk === 'undefined' && typeof require === 'function') {
   try {
     const _bs = require('./bussurge.js');
@@ -834,14 +841,25 @@ const LoadFactorEngine = {
       return baseResult;
     }
 
-    const etaEntry = opts.etaEntry || (
-      Number.isFinite(Number(opts.etaSpacing)) || Number.isFinite(Number(opts.etaSpacingSec))
-        ? {
-            etaSpacing: opts.etaSpacing ?? opts.etaSpacingSec,
-            isHoliday: opts.isHoliday
-          }
-        : (typeof opts.isHoliday === 'boolean' ? { isHoliday: opts.isHoliday } : null)
-    );
+    const baseEtaEntry = opts.etaEntry && typeof opts.etaEntry === 'object'
+      ? { ...opts.etaEntry }
+      : {};
+    if (baseEtaEntry.etaSpacing === undefined && (Number.isFinite(Number(opts.etaSpacing)) || Number.isFinite(Number(opts.etaSpacingSec)))) {
+      baseEtaEntry.etaSpacing = opts.etaSpacing ?? opts.etaSpacingSec;
+    }
+    if (baseEtaEntry.isHoliday === undefined && typeof opts.isHoliday === 'boolean') {
+      baseEtaEntry.isHoliday = opts.isHoliday;
+    }
+    if (baseEtaEntry.isSchoolHoliday === undefined && typeof opts.isSchoolHoliday === 'boolean') {
+      baseEtaEntry.isSchoolHoliday = opts.isSchoolHoliday;
+    }
+    if (!baseEtaEntry.stopName && opts.stopObj?.stopName_e) {
+      baseEtaEntry.stopName = opts.stopObj.stopName_e;
+    }
+    if (!baseEtaEntry.name_tc && opts.stopObj?.name_tc) {
+      baseEtaEntry.name_tc = opts.stopObj.name_tc;
+    }
+    const etaEntry = Object.keys(baseEtaEntry).length > 0 ? baseEtaEntry : null;
     const nowMs = Number.isFinite(Number(opts.nowMs))
       ? Number(opts.nowMs)
       : (opts.dateObj instanceof Date && !Number.isNaN(opts.dateObj.getTime())
@@ -853,6 +871,7 @@ const LoadFactorEngine = {
       weather: wx,
       nowMs,
       stopKey: opts.stopKey || opts.stopObj?.stopKey || '',
+      stopObj: opts.stopObj,
       storage: opts.storage
     });
   },
@@ -1393,8 +1412,18 @@ function estimateBusSeatStatus(routeGroup, stopIdx, etaEntry = null, opts = {}) 
       ? window.estimateGlobalBusLoadRisk
       : null);
 
+  const enrichedEtaEntry = (etaEntry && typeof etaEntry === 'object')
+    ? {
+        ...etaEntry,
+        stopName: etaEntry.stopName || opts.stopObj?.stopName_e || '',
+        name_tc: etaEntry.name_tc || opts.stopObj?.name_tc || ''
+      }
+    : (opts.stopObj?.stopName_e || opts.stopObj?.name_tc
+      ? { stopName: opts.stopObj?.stopName_e || '', name_tc: opts.stopObj?.name_tc || '' }
+      : etaEntry);
+
   const surgeRisk = riskFn
-    ? riskFn(routeGroup, stopIdx, etaEntry, hkoWeather, nowMs)
+    ? riskFn(routeGroup, stopIdx, enrichedEtaEntry, hkoWeather, nowMs)
     : null;
 
   // 1. Active 25-minute rider override takes highest precedence

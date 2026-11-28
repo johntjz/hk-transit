@@ -1915,12 +1915,100 @@ async function handleCameraImageProxy(urlObj) {
   });
 }
 
+// ============================================================================
+// HK PUBLIC HOLIDAYS (1823.gov.hk) & OPTIONAL AWE EVENT DATES PROXY
+// ============================================================================
+const FALLBACK_HK_HOLIDAYS = [
+  // 2025 HKSAR General Holidays
+  '2025-01-01', '2025-01-29', '2025-01-30', '2025-01-31',
+  '2025-04-04', '2025-04-18', '2025-04-19', '2025-04-21',
+  '2025-05-01', '2025-05-05', '2025-05-31', '2025-07-01',
+  '2025-10-01', '2025-10-07', '2025-10-29', '2025-12-25', '2025-12-26',
+  // 2026 HKSAR General Holidays
+  '2026-01-01', '2026-02-17', '2026-02-18', '2026-02-19',
+  '2026-04-03', '2026-04-04', '2026-04-06', '2026-04-07',
+  '2026-05-01', '2026-05-25', '2026-06-19', '2026-07-01',
+  '2026-09-26', '2026-10-01', '2026-10-19', '2026-12-25', '2026-12-26',
+  // 2027 HKSAR General Holidays
+  '2027-01-01', '2027-02-06', '2027-02-08', '2027-02-09',
+  '2027-03-26', '2027-03-27', '2027-03-29', '2027-04-05',
+  '2027-05-01', '2027-05-13', '2027-06-09', '2027-07-01',
+  '2027-09-16', '2027-10-01', '2027-10-08', '2027-12-25', '2027-12-27'
+];
+
+const DEFAULT_AWE_EVENT_DATES = [
+  '2026-11-28',
+  '2026-11-29'
+];
+
+let _hkHolidaysCache = { ts: 0, payload: null };
+const HK_HOLIDAYS_CACHE_TTL_MS = 12 * 3600 * 1000;
+
+function parse1823HolidayJson(rawJson) {
+  const out = new Set();
+  if (!rawJson || typeof rawJson !== 'object') return [];
+  const calendars = Array.isArray(rawJson.vcalendar) ? rawJson.vcalendar : [];
+  for (const cal of calendars) {
+    const events = Array.isArray(cal?.vevent) ? cal.vevent : [];
+    for (const ev of events) {
+      const rawStart = Array.isArray(ev?.dtstart) ? ev.dtstart[0] : ev?.dtstart;
+      const digits = String(rawStart || '').replace(/\D/g, '');
+      if (digits.length >= 8) {
+        const ymd = `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}`;
+        out.add(ymd);
+      }
+    }
+  }
+  return Array.from(out).sort();
+}
+
+async function handleHkHolidaysRequest() {
+  const now = Date.now();
+  if (_hkHolidaysCache.payload && (now - _hkHolidaysCache.ts) < HK_HOLIDAYS_CACHE_TTL_MS) {
+    return new Response(JSON.stringify(_hkHolidaysCache.payload), {
+      headers: { ...CORS_HEADERS, 'Cache-Control': 'public, max-age=21600' }
+    });
+  }
+
+  let liveDates = [];
+  try {
+    const res = await fetchWithTimeout(
+      'https://www.1823.gov.hk/common/ical/en.json',
+      4200,
+      { Accept: 'application/json' },
+      43200
+    );
+    if (res && res.ok) {
+      const rawJson = await res.json().catch(() => null);
+      liveDates = parse1823HolidayJson(rawJson);
+    }
+  } catch (e) {}
+
+  const merged = Array.from(new Set([...FALLBACK_HK_HOLIDAYS, ...liveDates])).sort();
+  const payload = {
+    ok: true,
+    source: liveDates.length > 0 ? '1823_LIVE' : 'FALLBACK',
+    holidays: merged,
+    aweEventDates: DEFAULT_AWE_EVENT_DATES.slice(),
+    cachedAt: new Date(now).toISOString()
+  };
+
+  _hkHolidaysCache = { ts: now, payload };
+  return new Response(JSON.stringify(payload), {
+    headers: { ...CORS_HEADERS, 'Cache-Control': 'public, max-age=21600' }
+  });
+}
+
 export async function onRequest(context) {
   const { request } = context;
   if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS_HEADERS });
 
   const url = new URL(request.url);
   const action = (url.searchParams.get('action') || '').toLowerCase();
+
+  if (action === 'hk_holidays' || action === 'holidays' || url.pathname.endsWith('/hk-holidays')) {
+    return handleHkHolidaysRequest();
+  }
 
   if (action === 'ferry_live') return handleFerryLiveRequest(url);
 

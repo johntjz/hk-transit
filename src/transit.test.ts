@@ -6519,6 +6519,7 @@ test('Tasks 1-3 Regression: Modularized domain scripts in exact 12-script order,
     'public/app.css',
     'public/transit-data.js',
     'public/weathercoorelation.js',
+    'public/monthly_activity.js',
     'public/bussurge.js',
     'public/fare-load-engine.js',
     'public/hardcode.js',
@@ -6540,6 +6541,7 @@ test('Tasks 1-3 Regression: Modularized domain scripts in exact 12-script order,
   const loadOrder = [
     'transit-data.js',
     'weathercoorelation.js',
+    'monthly_activity.js',
     'bussurge.js',
     'fare-load-engine.js',
     'hardcode.js',
@@ -8208,6 +8210,7 @@ test('Weather-correlated bus load engine (weathercoorelation.js + bussurge.js), 
   vm.createContext(ctx);
   vm.runInContext(fs.readFileSync('public/transit-data.js', 'utf8'), ctx);
   vm.runInContext(fs.readFileSync('public/weathercoorelation.js', 'utf8'), ctx);
+  vm.runInContext(fs.readFileSync('public/monthly_activity.js', 'utf8'), ctx);
   vm.runInContext(fs.readFileSync('public/bussurge.js', 'utf8'), ctx);
   vm.runInContext(fs.readFileSync('public/fare-load-engine.js', 'utf8'), ctx);
   vm.runInContext(fs.readFileSync('public/hardcode.js', 'utf8'), ctx);
@@ -8343,6 +8346,234 @@ test('Weather-correlated bus load engine (weathercoorelation.js + bussurge.js), 
   assert.ok(uiSrc.includes('undoLastBookmarkRemoval'), 'app-ui.js must implement undoLastBookmarkRemoval');
   assert.ok(uiSrc.includes('showUndoToast') && uiSrc.includes('5000'), 'app-ui.js must trigger 5-second Undo snackbar on bookmark removal');
 });
+
+test('Expanded 7-Day Seasonal, Public Holiday, Eve-of-Holiday, Sunday Urban, School Dismissal, AWE Event Surge & /api/hk-holidays Proxy', async () => {
+  // 1. Load full browser script stack in clean VM matching index.html order
+  const win: any = {
+    __HKO_WEATHER__: null,
+    __HK_PUBLIC_HOLIDAYS__: new Set(),
+  };
+  const memStore: Record<string, string> = {};
+  const mockStorage = {
+    getItem: (k: string) => (Object.prototype.hasOwnProperty.call(memStore, k) ? memStore[k] : null),
+    setItem: (k: string, v: string) => { memStore[k] = String(v); },
+    removeItem: (k: string) => { delete memStore[k]; },
+  };
+  win.SafeStorage = mockStorage;
+  const ctx: any = {
+    window: win,
+    globalThis: win,
+    localStorage: mockStorage,
+    SafeStorage: mockStorage,
+    Date, Math, Number, String, Array, Object, Set, Map, JSON, parseFloat, parseInt, isFinite, Promise,
+  };
+  vm.createContext(ctx);
+  vm.runInContext(fs.readFileSync('public/transit-data.js', 'utf8'), ctx);
+  vm.runInContext(fs.readFileSync('public/weathercoorelation.js', 'utf8'), ctx);
+  vm.runInContext(fs.readFileSync('public/monthly_activity.js', 'utf8'), ctx);
+  vm.runInContext(fs.readFileSync('public/bussurge.js', 'utf8'), ctx);
+  vm.runInContext(fs.readFileSync('public/fare-load-engine.js', 'utf8'), ctx);
+  vm.runInContext(fs.readFileSync('public/hardcode.js', 'utf8'), ctx);
+
+  // 2. MONTHLY_ACTIVITY_PROFILES covers all 12 months (0..11)
+  assert.ok(win.MONTHLY_ACTIVITY_PROFILES, 'MONTHLY_ACTIVITY_PROFILES must be exported');
+  for (let m = 0; m < 12; m++) {
+    assert.ok(win.MONTHLY_ACTIVITY_PROFILES[m], `Missing MONTHLY_ACTIVITY_PROFILES entry for month ${m}`);
+    assert.equal(win.MONTHLY_ACTIVITY_PROFILES[m].month, m);
+    assert.ok(Number.isFinite(win.MONTHLY_ACTIVITY_PROFILES[m].trailWeight));
+    assert.ok(Number.isFinite(win.MONTHLY_ACTIVITY_PROFILES[m].beachWeight));
+  }
+
+  // 3. Seasonal corridor multiplier rules
+  // 3a. Cool/dry hiking boost (Nov Saturday Pak Kung Au / Mui Wo)
+  const coolTrailMult = win.getSeasonalCorridorMultiplier({
+    month: 10, dayType: 'saturday', hourFloat: 15.5, corridorText: '3M Tung Chung Pak Kung Au Mui Wo'
+  });
+  assert.ok(coolTrailMult >= 1.5, `Expected cool-season weekend trail boost >= 1.5, got ${coolTrailMult}`);
+
+  // 3b. Hot summer afternoon ridge dampening vs summer dawn slot vs summer beach shift (July Saturday)
+  const summerRidgePm = win.getSeasonalCorridorMultiplier({
+    month: 6, dayType: 'saturday', hourFloat: 14.0, corridorText: '51 Tai Mo Shan'
+  });
+  assert.ok(summerRidgePm < 1.0, `Hot summer afternoon exposed ridge must dampen < 1.0, got ${summerRidgePm}`);
+
+  const summerRidgeDawn = win.getSeasonalCorridorMultiplier({
+    month: 6, dayType: 'saturday', hourFloat: 6.5, corridorText: '51 Tai Mo Shan'
+  });
+  assert.ok(summerRidgeDawn > 1.1, `Hot summer early-morning slot (06:30) must boost > 1.1, got ${summerRidgeDawn}`);
+
+  const summerBeachPm = win.getSeasonalCorridorMultiplier({
+    month: 6, dayType: 'saturday', hourFloat: 14.0, corridorText: '9 Shau Kei Wan Shek O Beach'
+  });
+  assert.ok(summerBeachPm >= 1.5, `Hot summer weekend beach corridor must boost >= 1.5, got ${summerBeachPm}`);
+
+  // 3c. Sunday urban gathering modifier (Central / Admiralty / Causeway Bay / Mong Kok, 08:00-18:00)
+  const sunUrban = win.getSeasonalCorridorMultiplier({
+    month: 10, dayType: 'sunday', hourFloat: 13.5, corridorText: '104 Central Causeway Bay'
+  });
+  assert.ok(sunUrban >= 1.35, `Sunday urban gathering corridor must boost >= 1.35, got ${sunUrban}`);
+  const satUrban = win.getSeasonalCorridorMultiplier({
+    month: 10, dayType: 'saturday', hourFloat: 13.5, corridorText: '104 Central Causeway Bay'
+  });
+  assert.equal(satUrban, 1.0, 'Saturday urban non-leisure corridor must not trigger Sunday gathering modifier');
+
+  // 3d. Eve-of-holiday exodus (17:00-21:00 airport/Lantau/border/A/E/B routes)
+  const eveAirport = win.getSeasonalCorridorMultiplier({
+    month: 8, dayType: 'weekday', hourFloat: 18.5, corridorText: 'Yuen Long Airport', routeNo: 'E36', isEveOfHoliday: true
+  });
+  assert.ok(eveAirport >= 1.8, `Eve-of-holiday airport/E-route exodus must boost >= 1.8, got ${eveAirport}`);
+  const eveBorderB = win.getSeasonalCorridorMultiplier({
+    month: 8, dayType: 'weekday', hourFloat: 19.0, corridorText: 'Lok Ma Chau', routeNo: 'B1', isEveOfHoliday: true
+  });
+  assert.ok(eveBorderB >= 1.8, `Eve-of-holiday B-route border exodus must boost >= 1.8, got ${eveBorderB}`);
+
+  // 3e. Weekday school dismissal micro-rush (14:30-16:00, excluding Jul-Aug & school holidays)
+  const schoolTermWed = win.getSeasonalCorridorMultiplier({
+    month: 10, dayType: 'weekday', hourFloat: 15.25, corridorText: '103 Kowloon Tong Waterloo Road Pok Fu Lam', routeNo: '103'
+  });
+  assert.ok(schoolTermWed >= 1.5, `Weekday term-time school dismissal corridor must boost >= 1.5, got ${schoolTermWed}`);
+  const schoolSummerJul = win.getSeasonalCorridorMultiplier({
+    month: 6, dayType: 'weekday', hourFloat: 15.25, corridorText: '103 Kowloon Tong Waterloo Road Pok Fu Lam', routeNo: '103'
+  });
+  assert.equal(schoolSummerJul, 1.0, 'July summer break must suppress school dismissal micro-rush');
+  const schoolHolidayFlag = win.getSeasonalCorridorMultiplier({
+    month: 10, dayType: 'weekday', hourFloat: 15.25, corridorText: '103 Kowloon Tong Waterloo Road', routeNo: '103', isSchoolHoliday: true
+  });
+  assert.equal(schoolHolidayFlag, 1.0, 'Explicit isSchoolHoliday must suppress school dismissal micro-rush');
+
+  // 4. HK Public Holiday & Eve-of-Holiday helpers
+  const nationalDayMs = Date.parse('2026-10-01T07:00:00Z'); // Thu 2026-10-01 15:00 HKT
+  const nationalDayEveMs = Date.parse('2026-09-30T10:30:00Z'); // Wed 2026-09-30 18:30 HKT
+  const normalWedMs = Date.parse('2026-11-25T07:15:00Z'); // Wed 2026-11-25 15:15 HKT
+  assert.equal(win.isHongKongPublicHoliday(nationalDayMs), true, '2026-10-01 National Day must be recognized as HK public holiday');
+  assert.equal(win.isHongKongPublicHoliday(normalWedMs), false, '2026-11-25 must not be a public holiday');
+  assert.equal(win.isEveOfPublicHoliday(nationalDayEveMs), true, '2026-09-30 must be recognized as eve of HK public holiday');
+  assert.equal(win.isEveOfPublicHoliday(normalWedMs), false, '2026-11-25 must not be eve of public holiday');
+
+  // 5. Integrated estimateGlobalBusLoadRisk across all 7 days, holidays, eve, Sunday, school, bad weather & AWE
+  const clearMildWx = { temp: 22, condition: 'Clear', humidity: 58, warnings: [] };
+  const nlb3m = { key: 'NLB_3M_O', company: 'NLB', routeNo: '3M', orig_en: 'Tung Chung Station', dest_en: 'Mui Wo Ferry Pier' };
+
+  // 5a. Weekday public holiday (Thu Oct 1 15:00 HKT) triggers HIGH_LOAD with skip-stop
+  const holRisk = win.estimateGlobalBusLoadRisk(nlb3m, 8, { etaSpacing: 40, stopName: 'Pak Kung Au' }, clearMildWx, nationalDayMs);
+  assert.equal(holRisk.isHoliday, true);
+  assert.equal(holRisk.dayType, 'holiday');
+  assert.equal(holRisk.level, 'HIGH_LOAD');
+
+  // 5b. Normal weekday suppression (Wed Nov 25 15:15 HKT) stays below HIGH_LOAD
+  const wkRisk = win.estimateGlobalBusLoadRisk(nlb3m, 8, { etaSpacing: 40, stopName: 'Pak Kung Au' }, clearMildWx, normalWedMs);
+  assert.equal(wkRisk.dayType, 'weekday');
+  assert.notEqual(wkRisk.level, 'HIGH_LOAD');
+
+  // 5c. Bad weather (RAIN / TC8) dampens holiday peak cleanly
+  const holRain = win.estimateGlobalBusLoadRisk(nlb3m, 8, { etaSpacing: 40 }, { warnings: ['TC8'], temp: 23 }, nationalDayMs);
+  assert.equal(holRain.level, 'NORMAL', 'Typhoon TC8 must dampen holiday leisure load to NORMAL');
+
+  // 5d. Eve-of-holiday airport exodus (Wed Sep 30 18:30 HKT on E36 + skip-stop) -> HIGH_LOAD
+  const lwbE36 = { key: 'LWB_E36_O', company: 'LWB', routeNo: 'E36', orig_en: 'Pat Heung', dest_en: 'Airport (GTC)' };
+  const eveRisk = win.estimateGlobalBusLoadRisk(lwbE36, 12, { etaSpacing: 42 }, clearMildWx, nationalDayEveMs);
+  assert.equal(eveRisk.isEveOfHoliday, true);
+  assert.equal(eveRisk.level, 'HIGH_LOAD', 'Eve-of-holiday 18:30 E36 with skip-stop must trigger HIGH_LOAD');
+
+  // 5e. Sunday urban gathering (Sun Nov 29 13:30 HKT on Central/Causeway Bay + skip-stop) -> HIGH_LOAD; Saturday -> NORMAL
+  const sunMs = Date.parse('2026-11-29T05:30:00Z'); // Sun 13:30 HKT
+  const satMs = Date.parse('2026-11-28T05:30:00Z'); // Sat 13:30 HKT
+  const xht104 = { key: 'KMB_104_O', company: 'KMB', routeNo: '104', orig_en: 'Pak Tin', dest_en: 'Causeway Bay Central' };
+  const sunUrbanRisk = win.estimateGlobalBusLoadRisk(xht104, 10, { etaSpacing: 45 }, clearMildWx, sunMs);
+  assert.equal(sunUrbanRisk.dayType, 'sunday');
+  assert.equal(sunUrbanRisk.level, 'HIGH_LOAD');
+  const satUrbanRisk = win.estimateGlobalBusLoadRisk(xht104, 10, { etaSpacing: 45 }, clearMildWx, satMs);
+  assert.equal(satUrbanRisk.level, 'NORMAL');
+
+  // 5f. Weekday school dismissal (Wed Nov 25 15:15 HKT on 103 Waterloo Rd / Kowloon Tong + skip-stop) -> HIGH_LOAD; July -> NORMAL
+  const kmb103 = { key: 'KMB_103_O', company: 'KMB', routeNo: '103', orig_en: 'Chuk Yuen', dest_en: 'Pok Fu Lam' };
+  const schoolRisk = win.estimateGlobalBusLoadRisk(kmb103, 6, { etaSpacing: 40, stopName: 'Waterloo Road, Kowloon Tong' }, clearMildWx, normalWedMs);
+  assert.equal(schoolRisk.level, 'HIGH_LOAD', 'Term-time weekday school dismissal with skip-stop must trigger HIGH_LOAD');
+  const julWedMs = Date.parse('2026-07-15T07:15:00Z'); // Wed Jul 15 15:15 HKT
+  const julSchoolRisk = win.estimateGlobalBusLoadRisk(kmb103, 6, { etaSpacing: 40, stopName: 'Waterloo Road, Kowloon Tong' }, clearMildWx, julWedMs);
+  assert.equal(julSchoolRisk.level, 'NORMAL', 'July summer break must not trigger school dismissal surge');
+
+  // 5g. Optional AWE event date pre-show (17:30) and post-show (22:45) surges on A/E routes
+  const awePreShowMs = Date.parse('2026-11-28T09:30:00Z');  // Sat 2026-11-28 17:30 HKT
+  const awePostShowMs = Date.parse('2026-11-28T14:45:00Z'); // Sat 2026-11-28 22:45 HKT
+  const nonEventNightMs = Date.parse('2026-11-24T14:45:00Z'); // Tue 2026-11-24 22:45 HKT
+  const lwbA33 = { key: 'LWB_A33_O', company: 'LWB', routeNo: 'A33', orig_en: 'Tuen Mun Road', dest_en: 'Airport (GTC)' };
+  assert.equal(win.isAweEventDate(awePostShowMs), true);
+  assert.equal(win.isAweEventDate(nonEventNightMs), false);
+
+  const awePreRisk = win.estimateGlobalBusLoadRisk(lwbA33, 5, { etaSpacing: 45 }, clearMildWx, awePreShowMs);
+  assert.equal(awePreRisk.aweMultiplier, 1.65);
+  assert.equal(awePreRisk.level, 'HIGH_LOAD');
+
+  const awePostRisk = win.estimateGlobalBusLoadRisk(lwbE36, 5, { etaSpacing: 45 }, null, awePostShowMs);
+  assert.equal(awePostRisk.aweMultiplier, 1.85);
+  assert.equal(awePostRisk.level, 'HIGH_LOAD', 'AWE post-show 22:45 E36 with skip-stop must trigger HIGH_LOAD');
+
+  const nonAwePostRisk = win.estimateGlobalBusLoadRisk(lwbE36, 5, { etaSpacing: 45 }, null, nonEventNightMs);
+  assert.equal(nonAwePostRisk.aweMultiplier, 1.0);
+  assert.notEqual(nonAwePostRisk.level, 'HIGH_LOAD', 'Non-event night 22:45 E36 must not falsely trigger AWE HIGH_LOAD');
+
+  // 6. syncHkHolidaysFromWorker hydrates both __HK_PUBLIC_HOLIDAYS__ and AWE_EVENT_DATES
+  const syncRes = await win.syncHkHolidaysFromWorker('/api/hk-holidays', {
+    force: true,
+    storage: mockStorage,
+    fetchImpl: async () => ({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        source: '1823_LIVE',
+        holidays: ['2026-10-01', '2028-01-01'],
+        aweEventDates: ['2026-12-12'],
+      }),
+    }),
+  });
+  assert.equal(syncRes.ok, true);
+  assert.equal(win.__HK_PUBLIC_HOLIDAYS__.has('2028-01-01'), true, 'Worker sync must populate window.__HK_PUBLIC_HOLIDAYS__');
+  assert.equal(win.isHongKongPublicHoliday(Date.parse('2028-01-01T04:00:00Z')), true);
+  assert.equal(win.isAweEventDate(Date.parse('2026-12-12T14:45:00Z')), true);
+
+  // 7. Worker /api/hk-holidays route & 1823.gov.hk iCal JSON parser (while worker.js keeps sole export)
+  const workerSrc = fs.readFileSync('functions/api/worker.js', 'utf8');
+  const workerExports = workerSrc.split('\n').filter((l) => /^export\s+/.test(l.trim()));
+  assert.deepEqual(workerExports, ['export async function onRequest(context) {'], 'worker.js must keep strictly one export (onRequest)');
+  assert.ok(fs.existsSync('functions/api/hk-holidays.js'), 'functions/api/hk-holidays.js Pages Function must exist');
+
+  const wSandbox: any = {
+    Math, Number, String, Array, Map, Set, Object, URL, URLSearchParams, Response, Request, Date, console,
+    fetch: async () => ({
+      ok: true,
+      json: async () => ({
+        vcalendar: [{
+          vevent: [
+            { dtstart: ['20261001', { value: 'DATE' }], summary: 'National Day' },
+            { dtstart: ['20261225', { value: 'DATE' }], summary: 'Christmas Day' },
+          ],
+        }],
+      }),
+    }),
+  };
+  vm.createContext(wSandbox);
+  vm.runInContext(workerSrc.replace(/export async function onRequest/g, 'async function onRequest'), wSandbox);
+  const parsed1823 = wSandbox.parse1823HolidayJson({
+    vcalendar: [{ vevent: [{ dtstart: ['20261001'] }, { dtstart: '20261225' }] }],
+  });
+  assert.deepEqual(parsed1823, ['2026-10-01', '2026-12-25']);
+
+  const workerResp = await wSandbox.onRequest({ request: new Request('https://hkway.pages.dev/api/hk-holidays') });
+  const workerJson = await workerResp.json();
+  assert.equal(workerJson.ok, true);
+  assert.ok(Array.isArray(workerJson.holidays) && workerJson.holidays.includes('2026-10-01'));
+  assert.ok(Array.isArray(workerJson.aweEventDates) && workerJson.aweEventDates.length >= 1);
+
+  // 8. Map road-speed telemetry purity: busspeed.js and map.js must NEVER import or couple to seasonal/crowding load engines
+  const busSpeedSrc = fs.readFileSync('public/busspeed.js', 'utf8');
+  const mapSrc = fs.readFileSync('public/map.js', 'utf8');
+  assert.ok(!/monthly_activity|getSeasonalCorridorMultiplier|estimateGlobalBusLoadRisk|bussurge/i.test(busSpeedSrc),
+    'public/busspeed.js must remain strictly data-driven road speed telemetry');
+  assert.ok(!/monthly_activity|getSeasonalCorridorMultiplier|estimateGlobalBusLoadRisk|bussurge/i.test(mapSrc),
+    'public/map.js must remain strictly data-driven road speed telemetry');
+});
+
 
 
 

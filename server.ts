@@ -11,8 +11,8 @@ async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT || 3000);
 
-  // Unified Edge Worker API (/api/worker) — delegates directly to functions/api/worker.js
-  app.all('/api/worker', async (req, res) => {
+  // Unified Edge Worker API (/api/worker & /api/hk-holidays) — delegates directly to functions/api/worker.js
+  app.all(['/api/worker', '/api/hk-holidays'], async (req, res) => {
     try {
       const origin = `${req.protocol}://${req.get('host') || `localhost:${PORT}`}`;
       const fullUrl = new URL(req.originalUrl, origin).toString();

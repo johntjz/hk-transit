@@ -3648,6 +3648,9 @@ window.openCompanionAppAtCurrentStop = function(target) {
 
   setTimeout(() => {
     syncEdgeTrafficCorridors();
+    if (typeof window.syncHkHolidaysFromWorker === 'function') {
+      window.syncHkHolidaysFromWorker('/api/hk-holidays').catch(() => {});
+    }
     triggerIosStandaloneTopBarReflow();
   }, 350);
 

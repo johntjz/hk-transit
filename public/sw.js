@@ -11,6 +11,7 @@ const CORE_SHELL_URLS = [
   'app.css',
   'transit-data.js',
   'weathercoorelation.js',
+  'monthly_activity.js',
   'bussurge.js',
   'fare-load-engine.js',
   'hardcode.js',

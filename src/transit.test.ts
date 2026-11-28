@@ -6194,7 +6194,7 @@ test('Follow-up Fix 1: E36 rejects off-route TMR/Brilliant Garden/Fung Tei/Siu H
     'map.js matchDetectorToRouteCorridor must reject TDS91040 on E36');
 
   // 5. Horizontal Board -> Terminus journey bar in index.html & working focusJourneySegmentOnDetailMap
-  assert.ok(html.includes('class="traffic-journey-bar-wrap"') && html.includes('class="traffic-journey-bar"') && html.includes('class="traffic-journey-seg tone-'),
+  assert.ok(html.includes('class="traffic-journey-bar-wrap') && html.includes('class="traffic-journey-bar"') && html.includes('class="traffic-journey-seg tone-'),
     'Expanded stop card must render compact horizontal Board -> Terminus journey bar');
   assert.ok(html.includes('focusJourneySegmentOnDetailMap('), 'Journey bar leg pills must wire to focusJourneySegmentOnDetailMap');
   assert.ok(!html.includes('traffic-segment-list') && !html.includes('traffic-segment-row') && !html.includes('traffic-approaching-strip'),
@@ -6228,9 +6228,9 @@ test('Follow-up Fix 2: Clean qualitative Flowing/Slow/Heavy pills (no raw car km
   assert.equal(mapCtx.getGlobalTrafficSpeedColorHex(52), '#22c55e', '52 km/h must render green #22c55e');
   assert.equal(mapCtx.getGlobalTrafficSpeedColorHex(40), '#22c55e', '40 km/h must render green #22c55e');
 
-  // 2. Stop-row pills in index.html use clean qualitative labels (Flowing / Slow / Heavy) for BOTH TD & Bus API (no raw km/h!)
+  // 2. Stop-row pills in index.html use clean qualitative labels (Clear / Slow / Jammed) without raw km/h or source jargon
   assert.ok(!html.includes('${Math.round(seg.speedKmh)} km/h · ${srcTag}'), 'Stop-row TD pills must NOT render raw car km/h speeds (73 km/h, 105 km/h, 52 km/h)');
-  assert.ok(html.includes('labelTxt = `${dot} ${flowTxt} · ${srcTag}`;'), 'Both TD and Bus API stop pills must render qualitative Flowing/Slow/Heavy labels');
+  assert.ok(html.includes("labelTxt = `${dot} ${flowTxt}${seg.camKey ? ' 📷' : ''}`;"), 'Both TD and Bus API stop pills must render clean qualitative labels without source jargon');
   assert.ok(!html.includes('moving at ~${Math.round(opp.spd)} km/h'), 'Ambiguous ~XX km/h text (looks like -59 km/h) must be replaced');
   assert.ok(html.includes('Opposite carriageway is clear.') && html.includes('Opposite carriageway is moving slowly.'), 'Opposite carriageway modal readout must use clean qualitative phrasing without raw km/h clutter');
 
@@ -7313,13 +7313,13 @@ test('Unified Traffic Consistency 3: Non-terminus TD-blind spans without live ET
   assert.equal(sum.isSimulatedSource, true);
   assert.ok(sum.detail.includes('Road Est. · Low conf.') && !/km\/h/i.test(sum.detail), `Summary detail must display Road Est. · Low conf. without km/h, got: ${sum.detail}`);
 
-  // 4. UI templates in public/app-ui.js and public/eta-engine.js render Road Est. with confidence and zero km/h
+  // 4. UI templates in public/app-ui.js and public/eta-engine.js handle BUS_EST with subtle dotted pill styling, journey bar, and plain-English modal source
   const appUiSrc = fs.readFileSync('public/app-ui.js', 'utf8');
   const etaSrc = fs.readFileSync('public/eta-engine.js', 'utf8');
-  assert.ok(appUiSrc.includes('🚌 Road Est. ·') && appUiSrc.includes('source-bus-est'),
-    'public/app-ui.js must render BUS_EST stop pills with Road Est. + confidence');
-  assert.ok(etaSrc.includes('Road Est. ·') && etaSrc.includes("s.source === 'BUS_EST'"),
-    'public/eta-engine.js must render BUS_EST in journey bar and inline Details breakdown');
+  assert.ok(appUiSrc.includes('source-bus-est') && appUiSrc.includes("'Estimated from Road Flow'"),
+    'public/app-ui.js must style BUS_EST stop pills with source-bus-est and show plain-English Road Flow source in tap modal');
+  assert.ok(etaSrc.includes("seg.source === 'BUS_EST'"),
+    'public/eta-engine.js must render BUS_EST segments in the horizontal Journey Strip');
 });
 
 test('Unified Traffic Consistency 4: buildRouteSpeedGeoJson & buildDetailBusPolylineLayer paint BUS_API CONGESTED Red, MODERATE Amber, BUS_API/BUS_EST SMOOTH Green, and Blue only as last-resort fallback', () => {
@@ -8130,9 +8130,55 @@ test('Minimal Clutter-Free Bus Card: No Banner Box, No Vertical Breakdown, No Bu
   assert.ok(cssSrc.includes('.stop-item.active-stop .stop-seg-speed-slot { display: none; }'),
     'Expanded stop card must hide its redundant stop-row pill above the Journey Strip');
 
-  // 4. Tap modals show plain-English source labels instead of conf. acronyms
+  // 4. Tap modals show plain-English source labels instead of conf. acronyms and execute cleanly without ReferenceError
   assert.ok(appUiSrc.includes("'Live Road Sensor'") && appUiSrc.includes("'Estimated from Bus Times'") && appUiSrc.includes("'Estimated from Road Flow'"),
     'Tap modals must show plain-English source labels');
+  assert.ok(!appUiSrc.includes('confShort'), 'openStopSegmentTrafficModal must not reference undefined confShort');
+
+  const modalFnMatch = appUiSrc.match(/window\.openStopSegmentTrafficModal = function\([\s\S]*?\n\};/);
+  assert.ok(modalFnMatch, 'app-ui.js must define window.openStopSegmentTrafficModal');
+  const mockEls: Record<string, any> = {
+    trafficDecisionModal: { style: { display: 'none' } },
+    trafficModalBody: { innerHTML: '' },
+    trafficModalTitle: { innerText: '' },
+    trafficModalSub: { innerHTML: '' },
+    trafficModalCloseBtn: { innerText: '' },
+  };
+  const modalCtx: any = {
+    window: {
+      __DETAIL_STOP_SEGMENTS__: [
+        {
+          fromIdx: 14, toIdx: 15, fromSeq: 15, toSeq: 16,
+          fromNameEn: 'Yuen Long Plaza', toNameEn: 'Tung Lok Street Yuen Long',
+          source: 'BUS_API', tier: 'MODERATE', speedKmh: 12, roadDistKm: 0.42,
+        },
+        {
+          fromIdx: 10, toIdx: 11, fromSeq: 11, toSeq: 12,
+          fromNameEn: 'Yu Tung Court', toNameEn: 'TM-CLK Tunnel BBI',
+          source: 'BUS_EST', isSyntheticFallback: true, tier: 'SMOOTH', speedKmh: 56, roadDistKm: 9.8,
+        },
+      ],
+    },
+    document: { getElementById: (id: string) => mockEls[id] || null },
+    currentLang: 'en',
+    triggerHaptic: () => {},
+    escapeHtml: (s: any) => String(s ?? ''),
+    escapeJsAttr: (s: any) => String(s ?? ''),
+    buildTrafficCamProxyUrl: (k: string) => `/cam/${k}`,
+    Date, Math, Number, String, Array, Boolean,
+  };
+  vm.createContext(modalCtx);
+  vm.runInContext(modalFnMatch[0], modalCtx);
+
+  modalCtx.window.openStopSegmentTrafficModal(14);
+  assert.equal(mockEls.trafficDecisionModal.style.display, 'flex');
+  assert.ok(mockEls.trafficModalBody.innerHTML.includes('Estimated from Bus Times'), 'BUS_API modal must show Estimated from Bus Times');
+  assert.ok(mockEls.trafficModalBody.innerHTML.includes('Bus Times'), 'BUS_API modal metric box must show Bus Times source');
+  assert.ok(!/Low conf\.|Med conf\.|High conf\./i.test(mockEls.trafficModalBody.innerHTML), 'BUS_API modal must omit conf. acronyms');
+
+  modalCtx.window.openStopSegmentTrafficModal(10);
+  assert.ok(mockEls.trafficModalBody.innerHTML.includes('Estimated from Road Flow'), 'BUS_EST modal must show Estimated from Road Flow');
+  assert.ok(mockEls.trafficModalBody.innerHTML.includes('Road Flow'), 'BUS_EST modal metric box must show Road Flow source');
 });
 
 

@@ -2759,9 +2759,7 @@ window.openStopSegmentTrafficModal = function(fromIdx, detId = '') {
   if (titleEl) {
     titleEl.innerText = isUnmonitored
       ? (isZh ? `路段路況 (${seg.fromSeq}→${seg.toSeq}站)` : `Traffic Stretch (#${seg.fromSeq}→#${seg.toSeq})`)
-      : (isBusEst
-        ? (isZh ? `🚌 道路估算路況 (${seg.fromSeq}→${seg.toSeq}站)` : `🚌 Road Est. Traffic (#${seg.fromSeq}→#${seg.toSeq})`)
-        : (isZh ? `🚌 巴士推算路況 (${seg.fromSeq}→${seg.toSeq}站)` : `🚌 Bus ETA Traffic (#${seg.fromSeq}→#${seg.toSeq})`));
+      : (isZh ? `🚌 推算路況 (${seg.fromSeq}→${seg.toSeq}站)` : `🚌 Estimated Traffic (#${seg.fromSeq}→#${seg.toSeq})`);
   }
   if (subEl) subEl.innerHTML = `<span>${escapeHtml(spanLabel)}</span>`;
   if (closeEl) closeEl.innerText = isZh ? '✕ 關閉' : '✕ Close';
@@ -2788,10 +2786,6 @@ window.openStopSegmentTrafficModal = function(fromIdx, detId = '') {
     ? window.computeTrafficConfidence(seg)
     : (seg.confidenceMeta || {
         level: 'LOW',
-        shortEn: 'Low conf.',
-        shortTc: '低可信',
-        fullEn: isBusEst ? 'Low conf. · Road Est.' : 'Low conf. · Bus ETA',
-        fullTc: isBusEst ? '低可信 · 道路估算' : '低可信 · 巴士推算',
         reasonEn: 'Estimated without HKSAR TD road sensors — bus dwell and traffic lights can skew readings.',
         reasonTc: '未有運輸署感應器覆蓋，巴士停站及燈位時間或影響推算。'
       });
@@ -2799,6 +2793,9 @@ window.openStopSegmentTrafficModal = function(fromIdx, detId = '') {
   const confFull = isBusEst
     ? (isZh ? '按道路類型估算' : 'Estimated from Road Flow')
     : (isZh ? '由巴士到站時間推算' : 'Estimated from Bus Times');
+  const sourceShort = isBusEst
+    ? (isZh ? '道路估算' : 'Road Flow')
+    : (isZh ? '巴士到站' : 'Bus Times');
   const confReason = isZh ? confMeta.reasonTc : confMeta.reasonEn;
   const verdict = isUnmonitored
     ? (isZh ? '此路段暫無實時測速監測' : 'Unmonitored stretch (no live TD sensor or bus ETA pair)')
@@ -2851,8 +2848,8 @@ window.openStopSegmentTrafficModal = function(fromIdx, detId = '') {
         <div class="traffic-metric-lbl">${isZh ? '路況信號' : 'Traffic Signal'}</div>
       </div>
       <div class="traffic-metric-box">
-        <div class="traffic-metric-val">${escapeHtml(isUnmonitored ? '—' : confShort)}</div>
-        <div class="traffic-metric-lbl">${isZh ? '可信度' : 'Confidence'}</div>
+        <div class="traffic-metric-val">${escapeHtml(isUnmonitored ? '—' : sourceShort)}</div>
+        <div class="traffic-metric-lbl">${isZh ? '數據來源' : 'Source'}</div>
       </div>
       <div class="traffic-metric-box">
         <div class="traffic-metric-val">${escapeHtml(distTxt)}</div>

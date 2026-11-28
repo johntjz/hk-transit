@@ -2098,27 +2098,52 @@ function generateExpandedETAsHtml(arrs, group, stopKey, stopIdx) {
       : [];
     if (journeySegs.length > 0) {
       const endStopName = stops[journeyEndIdx] ? _cleanLbl(getStopName(stops[journeyEndIdx])) : (isZh ? '總站' : 'Terminus');
-      const normalizedLegs = journeySegs.map((seg) => {
+      const normalizedLegs = [];
+      for (let j = 0; j < journeySegs.length; j++) {
+        const seg = journeySegs[j];
         const isMonitored = seg.source === 'TD' || seg.source === 'BUS_API' || seg.source === 'BUS_EST';
+        if (seg.source === 'TD' && Array.isArray(seg.tdSubSegments) && seg.tdSubSegments.length >= 2) {
+          for (let k = 0; k < seg.tdSubSegments.length; k++) {
+            const sub = seg.tdSubSegments[k];
+            const subTier = sub.tier || 'SMOOTH';
+            const subTone = subTier === 'CONGESTED' ? 'congested' : (subTier === 'MODERATE' ? 'moderate' : 'smooth');
+            normalizedLegs.push({
+              seg,
+              sub,
+              isMonitored: true,
+              effTier: subTier,
+              legTone: subTone,
+              distKm: Math.abs(Number(sub.roadDistKm) || 0.35)
+            });
+          }
+          continue;
+        }
         const effTier = isMonitored ? _effSegTier(seg) : 'NONE';
         const legTone = !isMonitored
           ? 'none'
           : (effTier === 'CONGESTED' ? 'congested' : (effTier === 'MODERATE' ? 'moderate' : 'smooth'));
-        return { seg, isMonitored, effTier, legTone };
-      });
-      // On long routes (e.g. NLB 1 with 45+ stops), compact consecutive same-tone legs into proportional spans
-      // so early stops render ~12-18 clean tappable pills instead of 45+ tiny dots, while NEVER merging
-      // Slow/Jammed segments into Smooth segments.
+        normalizedLegs.push({
+          seg,
+          sub: (seg.source === 'TD' && Array.isArray(seg.tdSubSegments) && seg.tdSubSegments.length === 1) ? seg.tdSubSegments[0] : null,
+          isMonitored,
+          effTier,
+          legTone,
+          distKm: Math.abs(Number(seg.roadDistKm) || 0.35)
+        });
+      }
+      // On long routes (e.g. NLB 1 with 45+ stops), compact consecutive same-tone smooth legs into proportional spans
+      // while NEVER merging Slow/Jammed segments or distinct localized TD sub-detectors into neighboring blocks.
       const displayBlocks = [];
       if (normalizedLegs.length <= 18) {
         normalizedLegs.forEach((item) => displayBlocks.push({
           first: item.seg,
           last: item.seg,
+          sub: item.sub || null,
           legTone: item.legTone,
           effTier: item.effTier,
           isMonitored: item.isMonitored,
           count: 1,
-          totalDistKm: Math.abs(Number(item.seg.roadDistKm) || 0.35),
+          totalDistKm: item.distKm,
         }));
       } else {
         const maxChunk = Math.max(2, Math.ceil(normalizedLegs.length / 16));
@@ -2126,23 +2151,28 @@ function generateExpandedETAsHtml(arrs, group, stopKey, stopIdx) {
           const item = normalizedLegs[i];
           const prev = displayBlocks[displayBlocks.length - 1];
           const isAlertTone = item.legTone === 'moderate' || item.legTone === 'congested';
+          const isLocalizedTdSub = Boolean(item.sub && item.sub.detId);
+          const prevIsLocalizedTdSub = Boolean(prev && prev.sub && prev.sub.detId);
           const canMerge = prev
             && prev.legTone === item.legTone
             && !isAlertTone
+            && !isLocalizedTdSub
+            && !prevIsLocalizedTdSub
             && prev.count < maxChunk;
           if (canMerge) {
             prev.last = item.seg;
             prev.count += 1;
-            prev.totalDistKm += Math.abs(Number(item.seg.roadDistKm) || 0.35);
+            prev.totalDistKm += item.distKm;
           } else {
             displayBlocks.push({
               first: item.seg,
               last: item.seg,
+              sub: item.sub || null,
               legTone: item.legTone,
               effTier: item.effTier,
               isMonitored: item.isMonitored,
               count: 1,
-              totalDistKm: Math.abs(Number(item.seg.roadDistKm) || 0.35),
+              totalDistKm: item.distKm,
             });
           }
         }
@@ -2151,6 +2181,7 @@ function generateExpandedETAsHtml(arrs, group, stopKey, stopIdx) {
       const segButtonsHtml = displayBlocks.map((blk) => {
         const seg = blk.first;
         const endSeg = blk.last;
+        const sub = blk.sub || null;
         const qualLbl = !blk.isMonitored
           ? (isZh ? '未監測' : 'Unmonitored')
           : (blk.effTier === 'CONGESTED'
@@ -2158,17 +2189,29 @@ function generateExpandedETAsHtml(arrs, group, stopKey, stopIdx) {
             : (blk.effTier === 'MODERATE' ? (isZh ? '緩慢' : 'Slow') : (isZh ? '暢通' : 'Clear')));
         const rawFrom = isZh ? (seg.fromNameTc || seg.fromNameEn) : (seg.fromNameEn || seg.fromNameTc);
         const rawTo = isZh ? (endSeg.toNameTc || endSeg.toNameEn) : (endSeg.toNameEn || endSeg.toNameTc);
+        const targetDetId = (blk.count === 1) ? String(sub?.detId || (seg.source === 'TD' ? seg.detId : '') || '') : '';
+        const targetCamKey = (blk.count === 1) ? String(sub?.camKey || (seg.source === 'TD' ? seg.camKey : '') || '') : '';
+        const tdLocRaw = sub
+          ? (isZh ? (sub.roadTc || sub.roadEn || sub.camDesc) : (sub.camDesc || sub.roadEn || sub.roadTc))
+          : ((blk.count === 1 && seg.source === 'TD') ? (isZh ? (seg.roadTc || seg.roadEn || seg.camDesc) : (seg.camDesc || seg.roadEn || seg.roadTc)) : '');
+        const tdLocClean = tdLocRaw ? _cleanLbl(tdLocRaw) : '';
         const segConf = (typeof window.computeTrafficConfidence === 'function')
-          ? window.computeTrafficConfidence(seg)
-          : (seg.confidenceMeta || null);
+          ? window.computeTrafficConfidence(sub || seg)
+          : ((sub || seg).confidenceMeta || null);
         const segConfTxt = segConf ? (isZh ? segConf.fullTc : segConf.fullEn) : '';
+        const camMark = targetCamKey ? ' 📷' : '';
         const srcTipPart = (blk.count === 1 && segConfTxt)
-          ? ` · ${segConfTxt}`
+          ? ` · ${segConfTxt}${camMark}`
           : (blk.count > 1 ? (isZh ? ` (${blk.count}段)` : ` (${blk.count} legs)`) : '');
-        const legTip = `#${seg.fromSeq} ${_cleanLbl(rawFrom)} → #${endSeg.toSeq} ${_cleanLbl(rawTo)} · ${qualLbl}${srcTipPart}`;
+        const legTip = tdLocClean
+          ? `${tdLocClean} · ${qualLbl}${srcTipPart}`
+          : `#${seg.fromSeq} ${_cleanLbl(rawFrom)} → #${endSeg.toSeq} ${_cleanLbl(rawTo)} · ${qualLbl}${srcTipPart}`;
         const isAlertBlk = blk.legTone === 'moderate' || blk.legTone === 'congested';
         const flexWeight = Math.max(isAlertBlk ? 3 : 2, Math.min(24, Math.round(blk.totalDistKm * 10)));
-        return `<button type="button" class="traffic-journey-seg tone-${blk.legTone}" data-from-idx="${seg.fromIdx}" data-seg-tier="${escapeHtml(blk.effTier)}" style="flex:${flexWeight} 1 0;" title="${escapeHtml(legTip)}" aria-label="${escapeHtml(legTip)}" onclick="event.stopPropagation(); if(typeof focusJourneySegmentOnDetailMap==='function'){focusJourneySegmentOnDetailMap(${seg.fromIdx});}else if(typeof openStopSegmentTrafficModal==='function'){openStopSegmentTrafficModal(${seg.fromIdx});}"></button>`;
+        const detArgJs = targetDetId ? `, '${escapeJsAttr(targetDetId)}'` : '';
+        const detDataAttr = targetDetId ? ` data-det-id="${escapeHtml(targetDetId)}"` : '';
+        const camDataAttr = targetCamKey ? ` data-cam-key="${escapeHtml(targetCamKey)}"` : '';
+        return `<button type="button" class="traffic-journey-seg tone-${blk.legTone}" data-from-idx="${seg.fromIdx}"${detDataAttr}${camDataAttr} data-seg-tier="${escapeHtml(blk.effTier)}" style="flex:${flexWeight} 1 0;" title="${escapeHtml(legTip)}" aria-label="${escapeHtml(legTip)}" onclick="event.stopPropagation(); if(typeof focusJourneySegmentOnDetailMap==='function'){focusJourneySegmentOnDetailMap(${seg.fromIdx}${detArgJs});}else if(typeof openStopSegmentTrafficModal==='function'){openStopSegmentTrafficModal(${seg.fromIdx}${detArgJs});}"></button>`;
       }).join('');
       const headLeft = isZh
         ? `路況 · 第${stopIdx + 1}站 → 第${journeyEndIdx + 1}站 (${endStopName})`

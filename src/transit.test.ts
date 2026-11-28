@@ -7982,6 +7982,133 @@ test('Low-Noise Traffic Card, Confidence Model, Neutral Signals & Saturday Morni
     'eta-engine.js must render Traffic Card kicker, confidence badge, compact simulated Clear bar, and qualitative inline breakdown tags without km/h');
 });
 
+test('Exact Detector-to-Camera Colocation & Localized Journey Strip TD Sub-Segments (E36 Lung Fu Rd TDSLFR10001 vs Wong Chu Rd TDSLFR10002 vs Siu Hong TDS90053)', () => {
+  const bsWindow: any = {};
+  const bsSandbox: any = { window: bsWindow, console, Math, Date, Number, String, Array, Object, Set, Map, RegExp, JSON, isNaN, isFinite, parseFloat, parseInt };
+  vm.createContext(bsSandbox);
+  vm.runInContext(readHardcodeBundle(), bsSandbox);
+  vm.runInContext(fs.readFileSync('public/busspeed.js', 'utf8'), bsSandbox);
+  const engine: any = bsWindow.BusSpeedEngine;
+  const hc = loadHardcodeAndPlannerSandbox();
+
+  // Realistic E36 #11 (TM-CLK Tunnel BBI) -> #12 (Fung Chi Tsuen) polyline crossing:
+  // 1) Lung Fu Rd near Wong Chu Rd EB (TDSLFR10001, Jammed 13 km/h, 71% occ, ~15m lateral)
+  // 2) Wong Chu Rd near Hoi Wong Rd EB (TDSLFR10002, Slow 16 km/h, 63% occ, ~12m lateral)
+  // 3) Tuen Mun Rd near Siu Hong MTR Station NB (TDS90053, Clear 62 km/h, 12% occ, ONLY ~2m lateral!)
+  const e36SpanCoords = [
+    [22.3716, 113.9636], // Stop 11: TM-CLK Tunnel BBI
+    [22.3820, 113.9660], // Lung Fu Rd approach
+    [22.3855, 113.9690], // Lung Fu Rd near Wong Chu Rd (EB ~105 deg)
+    [22.3845, 113.9745], // Wong Chu Rd near Hoi Wong Rd (EB ~98 deg)
+    [22.3840, 113.9790], // Tuen Mun Rd turn NB
+    [22.4000, 113.9785], // Tuen Mun Rd Town Centre NB
+    [22.4125, 113.9788], // Tuen Mun Rd near Siu Hong MTR Stn NB
+    [22.4320, 113.9960], // Yuen Long Highway
+    [22.4455, 114.0172], // Stop 12: Fung Chi Tsuen
+  ];
+  const fromStop = { stopId: 'E36_11', stopName_e: 'Tuen Mun Chek Lap Kok Tunnel BBI', name_tc: '屯門赤鱲角隧道轉車站', latitude: '22.3716', longitude: '113.9636' };
+  const toStop = { stopId: 'E36_12', stopName_e: 'Fung Chi Tsuen', name_tc: '鳳池村', latitude: '22.4455', longitude: '114.0172' };
+
+  const tdDetectors = [
+    {
+      id: 'TDSLFR10001',
+      camKey: 'TDSLFR10001',
+      lat: 22.3854,
+      lon: 113.9702,
+      spd: 13,
+      occ: 71,
+      tier: 'JAMMED',
+      rot: 100,
+      roadEn: 'Lung Fu Road near Wong Chu Road - Eastbound',
+      roadTc: '龍富路近皇珠路 - 東行'
+    },
+    {
+      id: 'TDSLFR10002',
+      camKey: 'TDSLFR10002',
+      lat: 22.3844,
+      lon: 113.9752,
+      spd: 16,
+      occ: 63,
+      tier: 'SLOW',
+      rot: 96,
+      roadEn: 'Wong Chu Road near Hoi Wong Road - Eastbound',
+      roadTc: '皇珠路近海皇路 - 東行'
+    },
+    {
+      id: 'TDS90053',
+      camKey: 'TDS90053',
+      lat: 22.4125,
+      lon: 113.9788, // Dead-center on polyline (~0m lateral — closer than TDSLFR10001!)
+      spd: 62,
+      occ: 12,
+      tier: 'SMOOTH',
+      rot: 1,
+      roadEn: 'Tuen Mun Road near Siu Hong MTR Station - Northbound (2)',
+      roadTc: '屯門公路近兆康港鐵站 - 北行(2)'
+    }
+  ];
+
+  const tdCameras = [
+    { key: 'TDSLFR10001', lat: 22.38535, lon: 113.97025, desc: 'Lung Fu Road near Wong Chu Road - Eastbound', bearingDeg: 100 },
+    { key: 'TDSLFR10002', lat: 22.38435, lon: 113.97525, desc: 'Wong Chu Road near Hoi Wong Road - Eastbound', bearingDeg: 96 },
+    { key: 'TDS90053', lat: 22.4125, lon: 113.9788, desc: 'Tuen Mun Road near Siu Hong MTR Station - Northbound (2)', bearingDeg: 1 },
+  ];
+
+  // 1. Focus detector TDSLFR10001 MUST pair with camera TDSLFR10001 (NEVER TDS90053 Siu Hong even though TDS90053 is laterally closer!)
+  const tdTruth = engine.matchTdGroundTruthForSpan(e36SpanCoords, tdDetectors, tdCameras, {
+    fromStop, toStop, roadDistKm: 13.8, isRoadSnapped: true, routeNo: 'E36'
+  });
+  assert.equal(tdTruth.hasTd, true);
+  assert.equal(tdTruth.tdDetId, 'TDSLFR10001');
+  assert.equal(tdTruth.tdTier, 'CONGESTED');
+  assert.ok(tdTruth.cam, 'Colocated TDSLFR10001 camera must be paired');
+  assert.equal(tdTruth.cam.key, 'TDSLFR10001', 'Must pair Lung Fu Rd camera TDSLFR10001, NEVER distant Siu Hong camera TDS90053');
+
+  // 2. Ordered localized tdSubSegments must expose all 3 detectors in exact route order with their own cameras & tiers
+  assert.ok(Array.isArray(tdTruth.tdSubSegments) && tdTruth.tdSubSegments.length === 3,
+    `Expected 3 ordered tdSubSegments along E36 #11->#12, got ${tdTruth.tdSubSegments?.length}`);
+  assert.equal(tdTruth.tdSubSegments[0].detId, 'TDSLFR10001');
+  assert.equal(tdTruth.tdSubSegments[0].tier, 'CONGESTED');
+  assert.equal(tdTruth.tdSubSegments[0].camKey, 'TDSLFR10001');
+  assert.equal(tdTruth.tdSubSegments[1].detId, 'TDSLFR10002');
+  assert.equal(tdTruth.tdSubSegments[1].tier, 'MODERATE');
+  assert.equal(tdTruth.tdSubSegments[1].camKey, 'TDSLFR10002');
+  assert.equal(tdTruth.tdSubSegments[2].detId, 'TDS90053');
+  assert.equal(tdTruth.tdSubSegments[2].tier, 'SMOOTH');
+  assert.equal(tdTruth.tdSubSegments[2].camKey, 'TDS90053');
+
+  // 3. Detector WITHOUT any colocated camera (only distant TDS90053 camera exists 3+ km away) -> cam MUST be null (detector-only view!)
+  const detOnlyList = [
+    { ...tdDetectors[0], camKey: '' }, // Lung Fu Rd detector without camera
+    tdDetectors[2]
+  ];
+  const camOnlySiuHong = [tdCameras[2]]; // Only Siu Hong camera 3 km away
+  const tdTruthDetOnly = engine.matchTdGroundTruthForSpan(e36SpanCoords, detOnlyList, camOnlySiuHong, {
+    fromStop, toStop, roadDistKm: 13.8, isRoadSnapped: true, routeNo: 'E36'
+  });
+  assert.equal(tdTruthDetOnly.tdDetId, 'TDSLFR10001');
+  assert.equal(tdTruthDetOnly.cam, null, 'Must NEVER attach distant TDS90053 camera onto TDSLFR10001 when no camera exists within 350m');
+  assert.equal(tdTruthDetOnly.tdSubSegments[0].camKey, '', 'TDSLFR10001 sub-segment must stay detector-only');
+  assert.equal(tdTruthDetOnly.tdSubSegments[1].camKey, 'TDS90053', 'Siu Hong sub-segment keeps its own colocated TDS90053 camera');
+
+  // 4. Slow traffic modal consistency: 16 km/h, 72% occ, raw JAMMED -> Tier 2 Slow traffic headline MUST use tone='slow' (not red Jammed dot)
+  const slowVerdict = hc.synthesizeTrafficDecision({
+    status: 'JAMMED', avgSpd: 16, minSpd: 16, maxOcc: 72, estDelayMins: 9,
+    worstDet: { id: 'TDSLFR10001', spd: 16, occ: 72, tier: 'JAMMED', roadEn: 'Lung Fu Road near Wong Chu Road - Eastbound', roadTc: '龍富路近皇珠路 - 東行' }
+  }, null, false);
+  assert.equal(slowVerdict.tone, 'slow', 'Slow traffic headline (+9m at 16 km/h) must have tone="slow" so dot & metric match headline');
+  assert.match(slowVerdict.verdictEn, /^Slow traffic on Lung Fu Road/);
+
+  // 5. UI wiring checks: Journey Strip expands tdSubSegments, passes detId to focusJourneySegmentOnDetailMap, and app-ui enforces _isCamColocatedWithDet
+  const etaSrc = fs.readFileSync('public/eta-engine.js', 'utf8');
+  const overlaySrc = fs.readFileSync('public/map-traffic-overlay.js', 'utf8');
+  const appUiSrc = fs.readFileSync('public/app-ui.js', 'utf8');
+  assert.ok(etaSrc.includes('seg.tdSubSegments') && etaSrc.includes('data-det-id='), 'eta-engine.js must expand tdSubSegments onto the Journey Strip with data-det-id');
+  assert.ok(overlaySrc.includes('function focusJourneySegmentOnDetailMap(fromIdx, detId = \'\')'), 'map-traffic-overlay.js must focus exact sub-segment by detId');
+  assert.ok(appUiSrc.includes('window.openStopSegmentTrafficModal = function(fromIdx, detId = \'\')') && appUiSrc.includes('_isCamColocatedWithDet'),
+    'app-ui.js must resolve exact tdSubSegment by detId and enforce spatial colocation guard on cameras');
+});
+
 
 
 

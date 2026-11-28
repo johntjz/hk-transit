@@ -912,7 +912,7 @@ function synthesizeTrafficDecision(same, opp = null, isZh = false) {
       const delayEn = `+${dispMins}m`;
       const delayTc = `+${dispMins} 分鐘`;
       return {
-        tone: same.status === 'JAMMED' ? 'jammed' : 'slow',
+        tone: 'slow',
         modeRec: 'MTR_FASTER',
         estDelayMins: dispMins,
         verdictEn: `Slow traffic on ${roadShortEn} (${delayEn})`,
@@ -2555,24 +2555,29 @@ function inferDirectionalRoadTrafficForStops(stops, startIdx = 0, detectors = []
         }
       }
 
-      const matchedCam = (wDet?.camKey && camList.find(c => c.key === wDet.camKey))
-        ? (() => {
-            const cObj = camList.find(c => c.key === wDet.camKey);
-            const dM = (cObj && Number.isFinite(Number(cObj.lat)))
+      const matchedCam = (() => {
+        if (wDet?.camKey) {
+          const cObj = camList.find(c => c.key === wDet.camKey);
+          if (cObj) {
+            const dM = (Number.isFinite(Number(cObj.lat)) && Number.isFinite(Number(wDet.lat)))
               ? Math.round(_haversineKm(wDet.lat, wDet.lon, Number(cObj.lat), Number(cObj.lon)) * 1000)
               : 0;
-            return {
-              camKey: cObj.key,
-              key: cObj.key,
-              desc: cObj.desc || cObj.key,
-              meters: dM,
-              lat: Number(cObj.lat),
-              lon: Number(cObj.lon),
-              dir: cObj.dir || '',
-              bearingDeg: cObj.bearingDeg
-            };
-          })()
-        : _findNearestCamForPoint(wDet?.lat, wDet?.lon, forwardCameras, [], wDet?.rot, 0.65);
+            if (wDet.camKey === wDet.id || dM <= 450) {
+              return {
+                camKey: cObj.key,
+                key: cObj.key,
+                desc: cObj.desc || cObj.key,
+                meters: dM,
+                lat: Number(cObj.lat),
+                lon: Number(cObj.lon),
+                dir: cObj.dir || '',
+                bearingDeg: cObj.bearingDeg
+              };
+            }
+          }
+        }
+        return _findNearestCamForPoint(wDet?.lat, wDet?.lon, forwardCameras, [], wDet?.rot, 0.35);
+      })();
 
       segments.push({
         key: bucket.key,
@@ -2768,12 +2773,12 @@ function inferDirectionalRoadTrafficForStops(stops, startIdx = 0, detectors = []
       if (detObj.camKey && !forwardCamKeySet.has(detObj.camKey)) {
         const camInfo = camList.find(c => c.key === detObj.camKey);
         if (camInfo && forwardCameras.length) {
-          const nearFwd = forwardCameras.find(fc => _haversineKm(detObj.lat, detObj.lon, fc.cam.lat, fc.cam.lon) <= 0.65);
+          const nearFwd = forwardCameras.find(fc => _haversineKm(detObj.lat, detObj.lon, fc.cam.lat, fc.cam.lon) <= 0.35);
           return { ...detObj, camKey: nearFwd ? nearFwd.cam.key : '' };
         }
         if (camInfo) return { ...detObj, camKey: '' };
       } else if (!detObj.camKey && forwardCameras.length) {
-        const nearFwd = forwardCameras.find(fc => _haversineKm(detObj.lat, detObj.lon, fc.cam.lat, fc.cam.lon) <= 0.65);
+        const nearFwd = forwardCameras.find(fc => _haversineKm(detObj.lat, detObj.lon, fc.cam.lat, fc.cam.lon) <= 0.35);
         if (nearFwd) return { ...detObj, camKey: nearFwd.cam.key };
       }
       return detObj;

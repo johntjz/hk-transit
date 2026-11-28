@@ -435,6 +435,7 @@
   function _buildSpanSubSegs(segCoords) {
     let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity;
     const subSegs = [];
+    let cumKm = 0;
     for (let i = 0; i < segCoords.length - 1; i++) {
       const a = segCoords[i], b = segCoords[i + 1];
       if (!Array.isArray(a) || !Array.isArray(b)) continue;
@@ -454,10 +455,39 @@
         aLat, aLon, bLat, bLon,
         midLat: (aLat + bLat) * 0.5,
         midLon: (aLon + bLon) * 0.5,
-        brg: _bearingDegLocal(aLat, aLon, bLat, bLon)
+        brg: _bearingDegLocal(aLat, aLon, bLat, bLon),
+        cumKm,
+        lenKm
       });
+      cumKm += lenKm;
     }
-    return { subSegs, minLat, maxLat, minLon, maxLon };
+    return { subSegs, minLat, maxLat, minLon, maxLon, totalLenKm: cumKm };
+  }
+
+  function _sliceSubSegCoordsByKm(subSegs, startKm, endKm) {
+    if (!Array.isArray(subSegs) || !subSegs.length) return [];
+    const sKm = Math.max(0, Number(startKm) || 0);
+    const eKm = Math.max(sKm + 0.01, Number(endKm) || sKm + 0.1);
+    const pts = [];
+    const pushPt = (lat, lon) => {
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+      const prev = pts[pts.length - 1];
+      if (prev && Math.abs(prev[0] - lat) < 1e-6 && Math.abs(prev[1] - lon) < 1e-6) return;
+      pts.push([lat, lon]);
+    };
+    for (let i = 0; i < subSegs.length; i++) {
+      const ss = subSegs[i];
+      const segStart = ss.cumKm;
+      const segEnd = ss.cumKm + ss.lenKm;
+      if (segEnd < sKm - 1e-6) continue;
+      if (segStart > eKm + 1e-6) break;
+      const t0 = ss.lenKm > 0 ? Math.max(0, Math.min(1, (sKm - segStart) / ss.lenKm)) : 0;
+      const t1 = ss.lenKm > 0 ? Math.max(0, Math.min(1, (eKm - segStart) / ss.lenKm)) : 1;
+      if (t1 < t0) continue;
+      pushPt(ss.aLat + (ss.bLat - ss.aLat) * t0, ss.aLon + (ss.bLon - ss.aLon) * t0);
+      pushPt(ss.aLat + (ss.bLat - ss.aLat) * t1, ss.aLon + (ss.bLon - ss.aLon) * t1);
+    }
+    return pts;
   }
 
   function _matchTdSpeedLinksForSubSegs(subSegs, minLat, maxLat, minLon, maxLon, tdSpeedGeoJson, maxDistKm = 0.10, maxAngDeg = 45, adaptiveSnap = false) {
@@ -1825,7 +1855,7 @@
       });
     };
 
-    const { subSegs, minLat, maxLat, minLon, maxLon } = _buildSpanSubSegs(segCoords);
+    const { subSegs, minLat, maxLat, minLon, maxLon, totalLenKm } = _buildSpanSubSegs(segCoords);
     if (!subSegs.length) return empty;
 
     const padDeg = 0.0025; // ~275m bbox prefilter
@@ -1868,9 +1898,13 @@
           const diff = _angDiffLocal(Number(d.rot), bestBrg);
           if (diff > effMaxAngDeg) continue;
         }
+        const clampedT = Math.max(0, Math.min(1, bestRawT));
+        const detAlongKm = subSegs[bestS].cumKm + clampedT * subSegs[bestS].lenKm;
         matchedDets.push({
           det: d,
           distKm: bestKm,
+          alongKm: detAlongKm,
+          subSegIdx: bestS,
           spd: Math.abs(spd),
           occ: Math.abs(Number(d.occ) || 0),
           isRoundabout: detIsRoundabout,
@@ -1879,8 +1913,10 @@
       }
     }
 
-    // Match nearest same-direction TD camera along this span (<= 85 m divided hwy / <= 60 m highway / <= 45 m side street)
+    // Match ALL same-direction TD cameras along this span (<= 85 m divided hwy / <= 60 m highway / <= 45 m side street)
+    // Keep bestCam for non-TD spans, and matchedCams for strict colocated detector-to-camera pairing!
     let bestCam = null;
+    const matchedCams = [];
     if (Array.isArray(tdCameras) && tdCameras.length) {
       let bestCamScore = Infinity;
       for (let i = 0; i < tdCameras.length; i++) {
@@ -1917,21 +1953,93 @@
         if (Number.isFinite(Number(c.bearingDeg))) {
           if (_angDiffLocal(Number(c.bearingDeg), bestBrg) > effMaxCamAngDeg) continue;
         }
+        const camAlongKm = subSegs[bestS].cumKm + Math.max(0, Math.min(1, bestRawT)) * subSegs[bestS].lenKm;
+        const camEntry = {
+          key: c.key,
+          camKey: c.key,
+          desc: _sanitizeDirectionTypos(c.desc || c.key),
+          meters: Math.abs(Math.round(bestKm * 1000)),
+          lat: cLat,
+          lon: cLon,
+          dir: _sanitizeDirectionTypos(c.dir || ''),
+          bearingDeg: Number.isFinite(Number(c.bearingDeg)) ? Number(c.bearingDeg) : bestBrg,
+          alongKm: camAlongKm
+        };
+        matchedCams.push(camEntry);
         if (bestKm < bestCamScore) {
           bestCamScore = bestKm;
-          bestCam = {
-            key: c.key,
-            camKey: c.key,
-            desc: _sanitizeDirectionTypos(c.desc || c.key),
-            meters: Math.abs(Math.round(bestKm * 1000)),
-            lat: cLat,
-            lon: cLon,
-            dir: _sanitizeDirectionTypos(c.dir || ''),
-            bearingDeg: Number.isFinite(Number(c.bearingDeg)) ? Number(c.bearingDeg) : bestBrg
-          };
+          bestCam = camEntry;
         }
       }
     }
+
+    // Strictly pair a TD speed detector / link ONLY with a camera colocated at that exact detector (never a camera km away!)
+    const _resolveExactCamForTdFeature = (featObj, featLat, featLon, featRot = null, fallbackMeters = 0) => {
+      if (!featObj) return null;
+      const directKey = String(featObj.camKey || '').trim();
+      const detIdKey = String(featObj.id || '').trim();
+      const candKeys = [];
+      if (directKey) candKeys.push(directKey);
+      if (detIdKey && detIdKey !== directKey) candKeys.push(detIdKey);
+      const hasDetCoord = Number.isFinite(Number(featLat)) && Number.isFinite(Number(featLon));
+
+      // Priority 1: Exact TD station ID / pre-linked camKey (verified within <=450m if both have coordinates)
+      for (let k = 0; k < candKeys.length; k++) {
+        const key = candKeys[k];
+        const linked = Array.isArray(tdCameras) ? tdCameras.find(c => c && c.key === key) : null;
+        if (linked) {
+          if (!isCompatibleTdFeature(linked.desc || '', linked.descTc || '', key, linked.lat, linked.lon)) continue;
+          const cLat = Number(linked.lat), cLon = Number(linked.lon);
+          if (hasDetCoord && Number.isFinite(cLat) && Number.isFinite(cLon)) {
+            const sepKm = _haversineKmLocal(Number(featLat), Number(featLon), cLat, cLon);
+            if (sepKm > 0.45) continue;
+          }
+          return {
+            key,
+            camKey: key,
+            desc: _sanitizeDirectionTypos(linked.desc || featObj.roadEn || featObj.roadTc || key),
+            meters: Math.abs(Math.round(fallbackMeters)),
+            lat: Number.isFinite(cLat) ? cLat : Number(featLat),
+            lon: Number.isFinite(cLon) ? cLon : Number(featLon),
+            dir: _sanitizeDirectionTypos(linked.dir || ''),
+            bearingDeg: Number.isFinite(Number(linked.bearingDeg)) ? Number(linked.bearingDeg) : (Number.isFinite(Number(featRot)) ? Number(featRot) : null)
+          };
+        }
+        // If det explicitly carried camKey (not just id) and tdCameras catalog wasn't passed, keep directKey safely
+        if (key === directKey && (!Array.isArray(tdCameras) || !tdCameras.length)) {
+          return {
+            key,
+            camKey: key,
+            desc: _sanitizeDirectionTypos(featObj.roadEn || featObj.roadTc || key),
+            meters: Math.abs(Math.round(fallbackMeters)),
+            lat: Number(featLat),
+            lon: Number(featLon),
+            dir: _sanitizeDirectionTypos(featObj.dir || ''),
+            bearingDeg: Number.isFinite(Number(featRot)) ? Number(featRot) : null
+          };
+        }
+      }
+
+      // Priority 2: Closest same-direction camera within <=350m of this exact detector location
+      if (hasDetCoord && matchedCams.length) {
+        let bestLocal = null;
+        let bestLocalDist = 0.35;
+        for (let i = 0; i < matchedCams.length; i++) {
+          const mc = matchedCams[i];
+          const sepKm = _haversineKmLocal(Number(featLat), Number(featLon), mc.lat, mc.lon);
+          if (sepKm > bestLocalDist) continue;
+          if (Number.isFinite(Number(featRot)) && Number.isFinite(Number(mc.bearingDeg))) {
+            if (_angDiffLocal(Number(featRot), Number(mc.bearingDeg)) > 55) continue;
+          }
+          bestLocalDist = sepKm;
+          bestLocal = mc;
+        }
+        if (bestLocal) return bestLocal;
+      }
+
+      // Priority 3: No colocated camera — return null so the modal shows the TD detector signal cleanly without a wrong camera!
+      return null;
+    };
 
     // If no direct detector point hit, also check live TD speed-map GeoJSON links (with adaptive 85m divided-hwy / 120m roundabout snap)
     const tdSpeedGeoJson = (opts.tdSpeedGeoJson !== undefined)
@@ -1967,38 +2075,13 @@
         const resolvedOcc = Math.abs(Math.round(focusLink.occ || 0));
         const tdTier = normalizeTrafficTier((isRbBottleneck || activeSlowLinks.length) ? focusLink.tier : 'SMOOTH', resolvedSpd, resolvedOcc);
         const tdStatus = tdTier === 'CONGESTED' ? 'JAMMED' : (tdTier === 'MODERATE' ? 'SLOW' : 'SMOOTH');
-        const _isLinkedCamSafe = (linked, camKey) => {
-          if (!linked) return true; // No catalog coords; parent detector/link already passed strict lateral + road-name filter
-          if (!isCompatibleTdFeature(linked.desc || '', linked.descTc || '', camKey || '', linked.lat, linked.lon)) return false;
-          const cLat = Number(linked.lat), cLon = Number(linked.lon);
-          if (!Number.isFinite(cLat) || !Number.isFinite(cLon)) return true;
-          const limKm = isDividedHighwaySnapRoad(linked.desc || '', linked.descTc || '', camKey || '')
-            ? Math.max(maxCamDistKm, 0.085)
-            : (isRoundaboutOrInterchangeDetector(linked.desc || '', linked.descTc || '', camKey || '', cLat, cLon) ? Math.max(maxCamDistKm, 0.120) : maxCamDistKm);
-          let minKm = Infinity;
-          for (let s = 0; s < subSegs.length; s++) {
-            const ss = subSegs[s];
-            const dKm = _pointToSegKmLocal(cLat, cLon, ss.aLat, ss.aLon, ss.bLat, ss.bLon).distKm;
-            if (dKm < minKm) minKm = dKm;
-          }
-          return minKm <= limKm;
-        };
-
-        if (!bestCam && focusLink.camKey) {
-          const linked = Array.isArray(tdCameras) ? tdCameras.find(c => c.key === focusLink.camKey) : null;
-          if (_isLinkedCamSafe(linked, focusLink.camKey)) {
-            bestCam = {
-              key: focusLink.camKey,
-              camKey: focusLink.camKey,
-              desc: _sanitizeDirectionTypos(linked?.desc || focusLink.roadEn || focusLink.roadTc || focusLink.camKey),
-              meters: Math.abs(Math.round(focusLink.distKm * 1000)),
-              lat: Number(linked?.lat ?? subSegs[0].midLat),
-              lon: Number(linked?.lon ?? subSegs[0].midLon),
-              dir: _sanitizeDirectionTypos(linked?.dir || ''),
-              bearingDeg: linked?.bearingDeg ?? focusLink.rot
-            };
-          }
-        }
+        const resolvedLinkCam = _resolveExactCamForTdFeature(
+          { id: focusLink.id, camKey: focusLink.camKey, roadEn: focusLink.roadEn, roadTc: focusLink.roadTc },
+          focusLink.lat,
+          focusLink.lon,
+          focusLink.rot,
+          focusLink.distKm * 1000
+        );
         return {
           hasTd: true,
           tdSpeedKmh: resolvedSpd,
@@ -2013,7 +2096,8 @@
           tdMatchCount: linkMatches.length,
           roundaboutBottleneck: isRbBottleneck,
           roundaboutDetectors: roundaboutLinkBottlenecks.map(x => x.props || x),
-          cam: bestCam
+          tdSubSegments: [],
+          cam: resolvedLinkCam
         };
       }
     }
@@ -2051,42 +2135,83 @@
     const tdTier = normalizeTrafficTier((isRbBottleneck || activeSlow.length) ? focus.det.tier : 'SMOOTH', resolvedSpd, resolvedOcc);
     const tdStatus = tdTier === 'CONGESTED' ? 'JAMMED' : (tdTier === 'MODERATE' ? 'SLOW' : 'SMOOTH');
 
-    // If detector itself links a camKey and we didn't find a closer directional camera, attach that camera metadata only if nearby & road-compatible
-    if (!bestCam && focus.det?.camKey) {
-      const linked = Array.isArray(tdCameras) ? tdCameras.find(c => c.key === focus.det.camKey) : null;
-      let camOk = true;
-      if (linked) {
-        if (!isCompatibleTdFeature(linked.desc || '', linked.descTc || '', focus.det.camKey || '', linked.lat, linked.lon)) {
-          camOk = false;
-        } else {
-          const cLat = Number(linked.lat), cLon = Number(linked.lon);
-          if (Number.isFinite(cLat) && Number.isFinite(cLon)) {
-            const limKm = isDividedHighwaySnapRoad(linked.desc || '', linked.descTc || '', focus.det.camKey || '')
-              ? Math.max(maxCamDistKm, 0.085)
-              : (isRoundaboutOrInterchangeDetector(linked.desc || '', linked.descTc || '', focus.det.camKey || '', cLat, cLon) ? Math.max(maxCamDistKm, 0.120) : maxCamDistKm);
-            let minKm = Infinity;
-            for (let s = 0; s < subSegs.length; s++) {
-              const ss = subSegs[s];
-              const dKm = _pointToSegKmLocal(cLat, cLon, ss.aLat, ss.aLon, ss.bLat, ss.bLon).distKm;
-              if (dKm < minKm) minKm = dKm;
-            }
-            if (minKm > limKm) camOk = false;
-          }
-        }
-      }
-      if (camOk) {
-        bestCam = {
-          key: focus.det.camKey,
-          camKey: focus.det.camKey,
-          desc: _sanitizeDirectionTypos(linked?.desc || focus.det.roadEn || focus.det.roadTc || focus.det.camKey),
-          meters: Math.abs(Math.round(focus.distKm * 1000)),
-          lat: Number(linked?.lat ?? focus.det.lat),
-          lon: Number(linked?.lon ?? focus.det.lon),
-          dir: _sanitizeDirectionTypos(linked?.dir || ''),
-          bearingDeg: linked?.bearingDeg ?? focus.det.rot
-        };
+    // Pair focus detector STRICTLY with a camera colocated at focus.det (<=350m / exact station ID) — never a distant camera!
+    const focusCam = _resolveExactCamForTdFeature(
+      focus.det,
+      focus.det.lat,
+      focus.det.lon,
+      focus.det.rot,
+      focus.distKm * 1000
+    );
+
+    // Build ordered localized TD sub-segments along the route polyline so the Journey Strip
+    // matches the exact location of every TD speed detector (and its colocated camera, if any)!
+    const tierRank = { CONGESTED: 2, MODERATE: 1, SMOOTH: 0 };
+    const sortedByRoute = [...matchedDets].sort((a, b) => a.alongKm - b.alongKm);
+    const dedupedByRoute = [];
+    for (let i = 0; i < sortedByRoute.length; i++) {
+      const cur = sortedByRoute[i];
+      const curTier = normalizeTrafficTier(cur.det.tier, cur.spd, cur.occ);
+      const curCam = _resolveExactCamForTdFeature(cur.det, cur.det.lat, cur.det.lon, cur.det.rot, cur.distKm * 1000);
+      const curPack = { ...cur, subTier: curTier, subCam: curCam };
+      const prev = dedupedByRoute[dedupedByRoute.length - 1];
+      if (prev && Math.abs(cur.alongKm - prev.alongKm) < 0.18) {
+        const curR = tierRank[curTier] || 0;
+        const prevR = tierRank[prev.subTier] || 0;
+        const replacePrev =
+          curR > prevR ||
+          (curR === prevR && cur.spd < prev.spd) ||
+          (curR === prevR && cur.spd === prev.spd && Boolean(curCam) && !prev.subCam);
+        if (replacePrev) dedupedByRoute[dedupedByRoute.length - 1] = curPack;
+      } else {
+        dedupedByRoute.push(curPack);
       }
     }
+
+    const tdSubSegments = dedupedByRoute.map((item, idx) => {
+      const prevMid = idx === 0 ? 0 : (dedupedByRoute[idx - 1].alongKm + item.alongKm) * 0.5;
+      const nextMid = idx === dedupedByRoute.length - 1
+        ? Math.max(totalLenKm, item.alongKm + 0.1)
+        : (item.alongKm + dedupedByRoute[idx + 1].alongKm) * 0.5;
+      const subSpd = Math.abs(Math.round(item.spd));
+      const subOcc = Math.abs(Math.round(item.occ || 0));
+      const subTier = item.subTier;
+      const subCam = item.subCam;
+      const d = item.det;
+      const sliceStart = (nextMid - prevMid > 1.8) ? Math.max(prevMid, item.alongKm - 0.75) : prevMid;
+      const sliceEnd = (nextMid - prevMid > 1.8) ? Math.min(nextMid, item.alongKm + 0.75) : nextMid;
+      const sliceCoords = _sliceSubSegCoordsByKm(subSegs, sliceStart, sliceEnd);
+      const dispDistKm = (subTier !== 'SMOOTH' && (nextMid - prevMid) > 2.2)
+        ? Math.min(1.6, Math.max(0.35, sliceEnd - sliceStart))
+        : Math.max(0.12, nextMid - prevMid);
+      return {
+        subIdx: idx,
+        source: 'TD',
+        tier: subTier,
+        status: subTier === 'CONGESTED' ? 'JAMMED' : (subTier === 'MODERATE' ? 'SLOW' : 'SMOOTH'),
+        speedKmh: subSpd,
+        occ: subOcc,
+        color: getBusSpeedColorHex(subTier, subSpd),
+        detId: d.id || '',
+        detectorId: d.id || '',
+        det: d,
+        roadEn: _sanitizeDirectionTypos(subCam?.desc || d.roadEn || d.roadTc || ''),
+        roadTc: _sanitizeDirectionTypos(d.roadTc || d.roadEn || subCam?.desc || ''),
+        cam: subCam,
+        camKey: subCam?.camKey || subCam?.key || '',
+        camDesc: _sanitizeDirectionTypos(subCam?.desc || ''),
+        lat: Number(d.lat),
+        lon: Number(d.lon),
+        alongKm: Number(item.alongKm.toFixed(2)),
+        startKm: Number(sliceStart.toFixed(2)),
+        endKm: Number(sliceEnd.toFixed(2)),
+        roadDistKm: Number(dispDistKm.toFixed(2)),
+        coords: sliceCoords.length >= 2 ? sliceCoords : segCoords,
+        confidence: 'HIGH',
+        confidenceMeta: computeTrafficConfidence({ source: 'TD' }),
+        roundaboutBottleneck: Boolean(item.isRoundaboutBottleneck)
+      };
+    });
 
     return {
       hasTd: true,
@@ -2102,7 +2227,8 @@
       tdMatchCount: matchedDets.length,
       roundaboutBottleneck: isRbBottleneck,
       roundaboutDetectors: roundaboutBottlenecks.map(x => x.det),
-      cam: bestCam
+      tdSubSegments,
+      cam: focusCam
     };
   }
 
@@ -2911,6 +3037,7 @@
           roadTc: _sanitizeDirectionTypos(td.tdRoadTc),
           roundaboutBottleneck: td.roundaboutBottleneck || null,
           isRoundaboutBottleneck: Boolean(td.roundaboutBottleneck),
+          tdSubSegments: Array.isArray(td.tdSubSegments) ? td.tdSubSegments : [],
           cam: td.cam,
           camKey: td.cam?.camKey || td.cam?.key || '',
           camDesc: _sanitizeDirectionTypos(td.cam?.desc || '')
@@ -3074,6 +3201,7 @@
           roadTc: _sanitizeDirectionTypos(tdTruth.tdRoadTc),
           roundaboutBottleneck: tdTruth.roundaboutBottleneck || null,
           isRoundaboutBottleneck: Boolean(tdTruth.roundaboutBottleneck),
+          tdSubSegments: Array.isArray(tdTruth.tdSubSegments) ? tdTruth.tdSubSegments : [],
           cam: tdTruth.cam,
           camKey: tdTruth.cam?.camKey || tdTruth.cam?.key || '',
           camDesc: _sanitizeDirectionTypos(tdTruth.cam?.desc || ''),

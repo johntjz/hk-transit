@@ -1467,15 +1467,44 @@ window.openTrafficDecisionModal = function(detId, oppDetId = '', segmentNote = '
       .replace(/\bEastthbound\b/gi, 'Eastbound')
       .replace(/\bWestthbound\b/gi, 'Westbound');
   };
+  const _isCamColocatedWithDet = (camObj, detObj, maxKm = 0.40) => {
+    if (!camObj || !detObj) return false;
+    const cKey = String(camObj.key || camObj.camKey || '').trim();
+    const dId = String(detObj.id || '').trim();
+    const dCamKey = String(detObj.camKey || '').trim();
+    if (cKey && dId && cKey === dId) return true;
+    const cLat = Number(camObj.lat), cLon = Number(camObj.lon);
+    const dLat = Number(detObj.lat), dLon = Number(detObj.lon);
+    if (Number.isFinite(cLat) && Number.isFinite(cLon) && Number.isFinite(dLat) && Number.isFinite(dLon)) {
+      const toRad = (v) => (v * Math.PI) / 180;
+      const dLa = toRad(cLat - dLat);
+      const dLo = toRad(cLon - dLon);
+      const a = Math.sin(dLa / 2) ** 2 + Math.cos(toRad(dLat)) * Math.cos(toRad(cLat)) * Math.sin(dLo / 2) ** 2;
+      const sepKm = 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(Math.max(0, 1 - a)));
+      return sepKm <= maxKm;
+    }
+    return Boolean(cKey && dCamKey && cKey === dCamKey);
+  };
+  const safeCamOverride = (camOverride && _isCamColocatedWithDet(camOverride, det, 0.40)) ? camOverride : null;
+  const _normalizeTdModalStatus = (dObj) => {
+    if (!dObj) return 'SMOOTH';
+    const spd = Math.abs(Number(dObj.spd) || 0);
+    const occ = Math.abs(Number(dObj.occ) || 0);
+    if (spd >= 40) return 'SMOOTH';
+    if ((spd > 0 && spd < 15) || occ >= 75) return 'JAMMED';
+    const raw = String(dObj.tier || '').toUpperCase();
+    if (raw === 'JAMMED' || raw === 'CONGESTED' || raw === 'SLOW' || raw === 'MODERATE' || (spd > 0 && spd < 28)) return 'SLOW';
+    return 'SMOOTH';
+  };
   const baseRoadName = _cleanRoadText(isZh ? (det.roadTc || det.roadEn || '主要幹道') : (det.roadEn || det.roadTc || 'Major Road')) || (isZh ? '主要幹道' : 'Major Road');
-  const roadName = (camOverride && camOverride.desc) ? (_cleanRoadText(camOverride.desc) || baseRoadName) : baseRoadName;
+  const roadName = (safeCamOverride && safeCamOverride.desc) ? (_cleanRoadText(safeCamOverride.desc) || baseRoadName) : baseRoadName;
   segmentNote = _cleanRoadText(segmentNote);
   const detSpdAbs = Math.abs(Number(det.spd) || 0);
   const detOccAbs = Math.abs(Number(det.occ) || 0);
-  const detEffStatus = detSpdAbs >= 40 ? 'SMOOTH' : (det.tier || 'SMOOTH');
+  const detEffStatus = _normalizeTdModalStatus(det);
   const oppSpdAbs = opp ? Math.abs(Number(opp.spd) || 0) : 0;
   const oppOccAbs = opp ? Math.abs(Number(opp.occ) || 0) : 0;
-  const oppEffStatus = opp ? (oppSpdAbs >= 40 ? 'SMOOTH' : (opp.tier || 'SMOOTH')) : 'SMOOTH';
+  const oppEffStatus = opp ? _normalizeTdModalStatus(opp) : 'SMOOTH';
   const sameGrp = {
     status: detEffStatus,
     avgSpd: detSpdAbs,
@@ -1511,8 +1540,19 @@ window.openTrafficDecisionModal = function(detId, oppDetId = '', segmentNote = '
   const subEl = document.getElementById('trafficModalSub');
   const closeEl = document.getElementById('trafficModalCloseBtn');
   if (titleEl) titleEl.innerText = roadName;
-  const dirSource = camOverride ? { desc: _cleanRoadText(camOverride.desc), dir: _cleanRoadText(camOverride.dir || det.dir), roadEn: _cleanRoadText(det.roadEn), roadTc: _cleanRoadText(det.roadTc), rot: det.rot } : { ...det, roadEn: _cleanRoadText(det.roadEn), roadTc: _cleanRoadText(det.roadTc), dir: _cleanRoadText(det.dir) };
-  if (subEl) subEl.innerHTML = _buildTrafficModalSubHtml(dirSource, isZh, segmentNote, camOverride?.key || det.camKey || '');
+  const dirSource = safeCamOverride ? { desc: _cleanRoadText(safeCamOverride.desc), dir: _cleanRoadText(safeCamOverride.dir || det.dir), roadEn: _cleanRoadText(det.roadEn), roadTc: _cleanRoadText(det.roadTc), rot: det.rot } : { ...det, roadEn: _cleanRoadText(det.roadEn), roadTc: _cleanRoadText(det.roadTc), dir: _cleanRoadText(det.dir) };
+  const allCamsList = Array.isArray(window.__LIVE_TRAFFIC_CAMERAS__) ? window.__LIVE_TRAFFIC_CAMERAS__ : [];
+  let safeDetCamKey = String(det.camKey || '').trim();
+  if (safeDetCamKey && safeDetCamKey !== String(det.id || '').trim() && allCamsList.length) {
+    const detCamObj = allCamsList.find(c => c && c.key === safeDetCamKey);
+    if (detCamObj && !_isCamColocatedWithDet(detCamObj, det, 0.45)) {
+      safeDetCamKey = '';
+    }
+  }
+  const effectiveCamKey = (safeCamOverride && (safeCamOverride.key || safeCamOverride.camKey))
+    ? (safeCamOverride.key || safeCamOverride.camKey)
+    : safeDetCamKey;
+  if (subEl) subEl.innerHTML = _buildTrafficModalSubHtml(dirSource, isZh, segmentNote, effectiveCamKey);
   if (closeEl) closeEl.innerText = isZh ? '✕ 關閉' : '✕ Close';
 
   const toneDot = dec.tone === 'jammed' ? '🔴' : (dec.tone === 'slow' ? '🟠' : '🟢');
@@ -1534,7 +1574,6 @@ window.openTrafficDecisionModal = function(detId, oppDetId = '', segmentNote = '
        </button>`
     : '';
 
-  const effectiveCamKey = (camOverride && camOverride.key) ? camOverride.key : (det.camKey || '');
   const camUrl = effectiveCamKey ? buildTrafficCamProxyUrl(effectiveCamKey, Math.floor(Date.now() / 60000)) : '';
   const camHtml = camUrl
     ? `<div class="traffic-cam-frame" id="trafficDecisionCamFrame">
@@ -2696,19 +2735,26 @@ window.toggleTrafficInlineBreakdown = function(stopIdx, triggerEl = null) {
   }
 };
 
-window.openStopSegmentTrafficModal = function(fromIdx) {
+window.openStopSegmentTrafficModal = function(fromIdx, detId = '') {
   triggerHaptic(10);
   const segs = Array.isArray(window.__DETAIL_STOP_SEGMENTS__) ? window.__DETAIL_STOP_SEGMENTS__ : [];
   const seg = segs.find(s => Number(s.fromIdx) === Number(fromIdx));
   if (!seg) return;
+  const sub = (detId && Array.isArray(seg.tdSubSegments))
+    ? (seg.tdSubSegments.find(x => x && x.detId === detId) || null)
+    : null;
+  const target = sub || seg;
   const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
   const fromLbl = isZh ? (seg.fromNameTc || seg.fromNameEn) : (seg.fromNameEn || seg.fromNameTc);
   const toLbl = isZh ? (seg.toNameTc || seg.toNameEn) : (seg.toNameEn || seg.toNameTc);
   const spanLabel = `${seg.fromSeq}. ${fromLbl} → ${seg.toSeq}. ${toLbl}`;
 
-  // Tier 1: TD Speed Detector (+ matched TD camera if available)
-  if (seg.source === 'TD' && seg.detId && typeof window.openTrafficDecisionModal === 'function') {
-    window.openTrafficDecisionModal(seg.detId, '', spanLabel, false, seg.cam || null);
+  // Tier 1: TD Speed Detector (+ strictly colocated TD camera if available, never a distant camera)
+  if (target.source === 'TD' && target.detId && typeof window.openTrafficDecisionModal === 'function') {
+    const detList = Array.isArray(window.__LIVE_TRAFFIC_DETECTORS__) ? window.__LIVE_TRAFFIC_DETECTORS__ : [];
+    const detObj = target.det || detList.find(d => d && d.id === target.detId) || null;
+    const oppId = (detObj && typeof _findOppositeTrafficDetectorId === 'function') ? _findOppositeTrafficDetectorId(detObj) : '';
+    window.openTrafficDecisionModal(target.detId, oppId, spanLabel, false, target.cam || null);
     return;
   }
 

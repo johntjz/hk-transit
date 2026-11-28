@@ -2793,7 +2793,7 @@ function formatDeduplicatedRoutesLabel(routes, maxRoutes = 5) {
 window.formatDeduplicatedRoutesLabel = formatDeduplicatedRoutesLabel;
 
 var _detailJourneyHighlightLayer = null;
-function focusJourneySegmentOnDetailMap(fromIdx) {
+function focusJourneySegmentOnDetailMap(fromIdx, detId = '') {
   if (typeof window.restoreDetailSheetSplitMap === 'function') {
     window.restoreDetailSheetSplitMap();
   }
@@ -2801,14 +2801,20 @@ function focusJourneySegmentOnDetailMap(fromIdx) {
     ? window.__DETAIL_STOP_SEGMENTS__
     : (Array.isArray(window.__DETAIL_STOP_TRAFFIC_SEGMENTS__) ? window.__DETAIL_STOP_TRAFFIC_SEGMENTS__ : []);
   const seg = segs.find((s) => Number(s?.fromIdx) === Number(fromIdx)) || segs[Number(fromIdx)] || null;
-  if (seg && window.mapInstance && typeof L !== 'undefined') {
+  const sub = (detId && seg && Array.isArray(seg.tdSubSegments))
+    ? (seg.tdSubSegments.find((x) => x && x.detId === detId) || null)
+    : null;
+  const target = sub || seg;
+  if (target && window.mapInstance && typeof L !== 'undefined') {
     if (_detailJourneyHighlightLayer) {
       try { window.mapInstance.removeLayer(_detailJourneyHighlightLayer); } catch (e) {}
       _detailJourneyHighlightLayer = null;
     }
-    const coords = Array.isArray(seg.coords) && seg.coords.length >= 2 ? seg.coords : null;
+    const coords = Array.isArray(target.coords) && target.coords.length >= 2
+      ? target.coords
+      : (Array.isArray(seg?.coords) && seg.coords.length >= 2 ? seg.coords : null);
     if (coords) {
-      const effTier = seg.source === 'BUS_API' ? _capBusApiTierMap(seg.tier, seg.speedKmh, seg) : seg.tier;
+      const effTier = target.source === 'BUS_API' ? _capBusApiTierMap(target.tier, target.speedKmh, target) : target.tier;
       const hiColor = effTier === 'CONGESTED' ? '#ef4444' : (effTier === 'MODERATE' ? '#f59e0b' : (effTier === 'SMOOTH' ? '#22c55e' : '#38bdf8'));
       const halo = L.polyline(coords, {
         color: '#ffffff',
@@ -2829,15 +2835,17 @@ function focusJourneySegmentOnDetailMap(fromIdx) {
       _detailJourneyHighlightLayer = L.layerGroup([halo, stroke]).addTo(window.mapInstance);
       if (typeof window.mapInstance.fitBounds === 'function') {
         try {
-          window.mapInstance.fitBounds(coords, { padding: [36, 36], maxZoom: 15, animate: true });
+          window.mapInstance.fitBounds(coords, { padding: [36, 36], maxZoom: sub ? 16 : 15, animate: true });
         } catch (e) {}
       }
+    } else if (Number.isFinite(Number(target.lat)) && Number.isFinite(Number(target.lon)) && typeof window.mapInstance.setView === 'function') {
+      try { window.mapInstance.setView([Number(target.lat), Number(target.lon)], 16, { animate: true }); } catch (e) {}
     }
   }
   if (typeof window.openStopSegmentTrafficModal === 'function') {
-    window.openStopSegmentTrafficModal(fromIdx);
+    window.openStopSegmentTrafficModal(fromIdx, detId);
   }
-  return seg;
+  return target;
 }
 window.focusJourneySegmentOnDetailMap = focusJourneySegmentOnDetailMap;
 

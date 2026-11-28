@@ -1,5 +1,5 @@
 /* Transit HK (通) Service Worker — Silent Auto-Update + SKIP_WAITING Lifecycle */
-const SW_BUILD_VERSION = '2026-11-28 09:59 HKT';
+const SW_BUILD_VERSION = '2026-11-28 10:40 HKT';
 const CACHE_PREFIX = 'transit-hk-shell-';
 const CACHE_NAME = `${CACHE_PREFIX}${SW_BUILD_VERSION.replace(/[^0-9A-Za-z_-]+/g, '-')}`;
 

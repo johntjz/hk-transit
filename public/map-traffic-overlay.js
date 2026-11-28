@@ -1174,12 +1174,11 @@ function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) 
           : (cappedTier === 'MODERATE'
             ? (isZh ? '緩慢' : 'Slow')
             : (isZh ? '暢通' : 'Clear'));
-        const absSpd = Number.isFinite(Number(seg.speedKmh)) && Number(seg.speedKmh) > 0
-          ? Math.abs(Math.round(Number(seg.speedKmh)))
-          : null;
-        const busLabel = absSpd !== null
-          ? (isZh ? `🚌 巴士推算 • ${absSpd} km/h` : `🚌 Bus API • ${absSpd} km/h`)
-          : (isZh ? '🚌 巴士推算' : '🚌 Bus API');
+        const confMeta = (typeof window.computeTrafficConfidence === 'function')
+          ? window.computeTrafficConfidence(seg)
+          : (seg.confidenceMeta || { shortEn: 'Low conf.', shortTc: '低可信' });
+        const confTxt = isZh ? confMeta.shortTc : confMeta.shortEn;
+        const busLabel = isZh ? `🚌 巴士推算 · ${confTxt}` : `🚌 Bus ETA · ${confTxt}`;
         busLine.bindTooltip(
           `${busLabel} · ${flowTxt} (${fromNm} → ${toNm})`,
           { sticky: true, className: 'kmb-map-stop-label' }
@@ -1308,9 +1307,13 @@ function buildDetailBusPolylineLayer(coords, stops, activeStopIdx, routeAccent) 
             const fromNm = sanitizeBottleneckLabel(rawFrom || (p.fromSeq ? `Stop ${p.fromSeq}` : ''));
             const toNm = sanitizeBottleneckLabel(rawTo || (p.toSeq ? `Stop ${p.toSeq}` : ''));
             const spanPart = (fromNm && toNm) ? ` (${fromNm} → ${toNm})` : '';
+            const confMeta = (typeof window.computeTrafficConfidence === 'function')
+              ? window.computeTrafficConfidence(p)
+              : (p.confidenceMeta || { shortEn: 'Low conf.', shortTc: '低可信' });
+            const confTxt = isZh ? confMeta.shortTc : confMeta.shortEn;
             const srcLabel = p.source === 'BUS_EST'
-              ? (isZh ? `🚌 路況估算 • ${absSpd} km/h` : `🚌 Bus Est. • ${absSpd} km/h`)
-              : (isZh ? `🚌 巴士推算 • ${absSpd} km/h` : `🚌 Bus API • ${absSpd} km/h`);
+              ? (isZh ? `🚌 道路估算 · ${confTxt}` : `🚌 Road Est. · ${confTxt}`)
+              : (isZh ? `🚌 巴士推算 · ${confTxt}` : `🚌 Bus ETA · ${confTxt}`);
             if (typeof lyr.bindTooltip === 'function') {
               lyr.bindTooltip(`${srcLabel} · ${flowTxt}${spanPart}`, { sticky: true, className: 'kmb-map-stop-label' });
             }
@@ -2910,15 +2913,13 @@ function _drawBusSpeedSegmentsIntoLayer(segments, layerGroup, routeLabel = '', d
           : (cappedTier === 'MODERATE'
             ? (isZh ? '緩慢' : 'Slow')
             : (isZh ? '暢通' : 'Clear'));
-        const absSpd = Number.isFinite(Number(c.speedKmh)) && Number(c.speedKmh) > 0
-          ? Math.abs(Math.round(Number(c.speedKmh)))
-          : null;
-        const speedPart = absSpd !== null
-          ? (isZh ? `巴士推算 • ${absSpd} km/h • ` : `Bus API • ${absSpd} km/h • `)
-          : '';
+        const confMeta = (typeof window.computeTrafficConfidence === 'function')
+          ? window.computeTrafficConfidence(c)
+          : (c.confidenceMeta || { shortEn: 'Low conf.', shortTc: '低可信' });
+        const confTxt = isZh ? confMeta.shortTc : confMeta.shortEn;
         const tooltipText = c.isScheduledFallback
-          ? `🚌 ${dedupTag ? `${dedupTag} • ` : ''}${isZh ? '預計班次推算' : 'Scheduled headway'} • ${flowTxt}`
-          : `🚌 ${dedupTag ? `${dedupTag} • ` : ''}${speedPart}${flowTxt} (${fromNm} → ${toNm})`;
+          ? `🚌 ${dedupTag ? `${dedupTag} • ` : ''}${isZh ? '預計班次推算' : 'Scheduled headway'} · ${confTxt} · ${flowTxt}`
+          : `🚌 ${dedupTag ? `${dedupTag} • ` : ''}${isZh ? '巴士推算' : 'Bus ETA'} · ${confTxt} · ${flowTxt} (${fromNm} → ${toNm})`;
         line.bindTooltip(
           tooltipText,
           { sticky: true, className: 'kmb-map-stop-label' }
@@ -2990,15 +2991,13 @@ function _drawBusSpeedSegmentsIntoLayer(segments, layerGroup, routeLabel = '', d
         : (cappedTier === 'MODERATE'
           ? (isZh ? '緩慢' : 'Slow')
           : (isZh ? '暢通' : 'Clear'));
-      const absSpd = Number.isFinite(Number(seg.speedKmh)) && Number(seg.speedKmh) > 0
-        ? Math.abs(Math.round(Number(seg.speedKmh)))
-        : null;
-      const speedPart = absSpd !== null
-        ? (isZh ? `巴士推算 • ${absSpd} km/h • ` : `Bus API • ${absSpd} km/h • `)
-        : '';
+      const confMeta = (typeof window.computeTrafficConfidence === 'function')
+        ? window.computeTrafficConfidence(seg)
+        : (seg.confidenceMeta || { shortEn: 'Low conf.', shortTc: '低可信' });
+      const confTxt = isZh ? confMeta.shortTc : confMeta.shortEn;
       const tooltipText = seg.isScheduledFallback
-        ? `🚌 ${dedupTag ? `${dedupTag} • ` : ''}${isZh ? '預計班次推算' : 'Scheduled headway'} • ${flowTxt}`
-        : `🚌 ${dedupTag ? `${dedupTag} • ` : ''}${speedPart}${flowTxt} (${fromNm} → ${toNm})`;
+        ? `🚌 ${dedupTag ? `${dedupTag} • ` : ''}${isZh ? '預計班次推算' : 'Scheduled headway'} · ${confTxt} · ${flowTxt}`
+        : `🚌 ${dedupTag ? `${dedupTag} • ` : ''}${isZh ? '巴士推算' : 'Bus ETA'} · ${confTxt} · ${flowTxt} (${fromNm} → ${toNm})`;
       line.bindTooltip(
         tooltipText,
         { sticky: true, className: 'kmb-map-stop-label' }

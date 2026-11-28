@@ -2517,22 +2517,22 @@ test('hardcode.js & planner.js: directional road inference distinguishes smooth 
   assert.ok(sumEn, 'Expected directional road summary');
   assert.equal(sumEn.tone, 'smooth', 'Same-direction traffic is smooth despite opposite-side jam');
   assert.equal(sumEn.modeRec, 'TAKE_BUS');
-  assert.ok(sumEn.headline.includes('Take Bus · Corridor clear (No delay)'), `Unexpected EN headline: ${sumEn.headline}`);
+  assert.ok(sumEn.headline.includes('Traffic clear ahead') && !/Take Bus|Switch to MTR/i.test(sumEn.headline), `Unexpected EN headline: ${sumEn.headline}`);
   assert.ok(!sumEn.detail.includes('Opp. bound jammed'), `Forward summary must NOT inject Opp. bound jammed: ${sumEn.detail}`);
 
   const sumZh = sb.getDirectionalRoadSummary(e36Stops, 0, detectors, true, 14);
-  assert.ok(sumZh.headline.includes('可乘巴士 · 前路暢通 (無延誤)'), `Unexpected ZH headline: ${sumZh.headline}`);
+  assert.ok(sumZh.headline.includes('前路暢通') && !/可乘巴士|改乘港鐵/.test(sumZh.headline), `Unexpected ZH headline: ${sumZh.headline}`);
   assert.ok(!sumZh.detail.includes('對面線塞車'), `Forward ZH summary must NOT inject opposite-bound jam: ${sumZh.detail}`);
 
-  // Opposite scenario: bus's OWN direction ahead is jammed (19 km/h, 94% occ -> severe jam -> Switch to MTR)
+  // Opposite scenario: bus's OWN direction ahead is jammed (19 km/h, 94% occ -> severe jam, neutral traffic signal without assumptive MTR advice)
   const jammedDetectors = [
     { id: 'AID_NB_JAM', lat: 22.3465, lon: 113.9640, rot: 28, spd: 19, occ: 94, tier: 'JAMMED', roadEn: 'Tuen Mun Rd', roadTc: '屯門公路', camKey: 'TM108F' },
   ];
   const jammedSum = sb.getDirectionalRoadSummary(e36Stops, 0, jammedDetectors, false, 14);
   assert.equal(jammedSum.tone, 'jammed');
   assert.equal(jammedSum.modeRec, 'SWITCH_MTR');
-  assert.ok(jammedSum.headline.includes('Switch to MTR · Jammed on Tuen Mun Rd (+15m)'), `Unexpected jammed headline: ${jammedSum.headline}`);
-  assert.ok(jammedSum.detail.includes('19 km/h'), `Unexpected jammed detail: ${jammedSum.detail}`);
+  assert.ok(jammedSum.headline.includes('Jammed on Tuen Mun Rd (+15m)') && !/Switch to MTR/i.test(jammedSum.headline), `Unexpected jammed headline: ${jammedSum.headline}`);
+  assert.ok(jammedSum.detail.includes('TD Sensor · High conf.') && !/km\/h/i.test(jammedSum.detail), `Unexpected jammed detail: ${jammedSum.detail}`);
 
   // Planner leg inline road badge when live detectors loaded
   sb.ctx.window.__LIVE_TRAFFIC_DETECTORS__ = detectors;
@@ -3205,28 +3205,28 @@ test('map.js: route-scoped traffic filtering hides off-route & opposite-smooth d
 test('Decision-first Transit: zero off-route clutter (<=2 bottlenecks on route map), 3-tier Bus-vs-MTR verdicts, and E36 Tuen Mun Rd (TDS90048) + YLH (TDS90067) worst-bottleneck ranking rejecting CPR-*', () => {
   const sb = loadHardcodeAndPlannerSandbox();
 
-  // --- AC 2: 3-tier plain-English & ZH Bus-vs-MTR Decision Verdicts ---
+  // --- AC 2: 3-tier plain-English & ZH Neutral Traffic Signal Verdicts (no assumptive MTR directives) ---
   const dMinor = sb.synthesizeTrafficDecision({
     status: 'SLOW', avgSpd: 38, minSpd: 38, maxOcc: 32, estDelayMins: 4,
     worstDet: { id: 'TDS90048', spd: 38, occ: 32, tier: 'SLOW', roadEn: 'Tuen Mun Road near San Hui Market - Northbound', roadTc: '屯門公路近新墟街市 - 北行' }
   }, null, false);
   assert.equal(dMinor.modeRec, 'TAKE_BUS');
-  assert.equal(dMinor.verdictEn, 'Take Bus · Corridor moving (+2–5m)');
+  assert.equal(dMinor.verdictEn, 'Slower flow · Tuen Mun Road (+2–5m)');
 
   const dMod = sb.synthesizeTrafficDecision({
     status: 'SLOW', avgSpd: 26, minSpd: 26, maxOcc: 58, estDelayMins: 8,
     worstDet: { id: 'TDS90048', spd: 26, occ: 58, tier: 'SLOW', roadEn: 'Tuen Mun Road near San Hui Market - Northbound', roadTc: '屯門公路近新墟街市 - 北行' }
   }, null, false);
   assert.equal(dMod.modeRec, 'MTR_FASTER');
-  assert.equal(dMod.verdictEn, 'Bus delayed (+8m) · MTR may be faster');
+  assert.equal(dMod.verdictEn, 'Slow traffic on Tuen Mun Road (+8m)');
 
   const dSevere = sb.synthesizeTrafficDecision({
     status: 'JAMMED', avgSpd: 12, minSpd: 12, maxOcc: 88, estDelayMins: 15,
     worstDet: { id: 'TDS90048', spd: 12, occ: 88, tier: 'JAMMED', roadEn: 'Tuen Mun Road near San Hui Market - Northbound', roadTc: '屯門公路近新墟街市 - 北行' }
   }, null, false);
   assert.equal(dSevere.modeRec, 'SWITCH_MTR');
-  assert.equal(dSevere.verdictEn, 'Switch to MTR · Jammed on Tuen Mun Road (+15m)');
-  assert.ok(dSevere.verdictTc.includes('改乘港鐵') && dSevere.verdictTc.includes('屯門公路'));
+  assert.equal(dSevere.verdictEn, 'Jammed on Tuen Mun Road (+15m)');
+  assert.ok(dSevere.verdictTc.includes('擠塞') && dSevere.verdictTc.includes('屯門公路') && !dSevere.verdictTc.includes('改乘港鐵'));
 
   // --- AC 3: E36 (TM-CLK Tunnel BBI -> Fung Chi Tsuen) keeps BOTH Tuen Mun Road (TDS90048) & YLH (TDS90067),
   // rejects Castle Peak Rd (TDSCPRHSK10004 / CPR-*), and surfaces whichever main carriageway is slower/more delayed ---
@@ -3258,9 +3258,9 @@ test('Decision-first Transit: zero off-route clutter (<=2 bottlenecks on route m
   ];
   const sumA = sb.getDirectionalRoadSummary(e36Stops, 1, detCaseA, false, 8, e36RealPolyline);
   assert.equal(sumA.focusDet?.id, 'TDS90048', 'When TMR is slower than YLH, TDS90048 must win while CPR-* is rejected');
-  assert.equal(sumA.headline, 'Take Bus · Corridor moving (+2–5m)');
+  assert.equal(sumA.headline, 'Slower flow · Tuen Mun Road (+2–5m)');
 
-  // Case B: Tuen Mun Rd slow at 38 km/h, YLH severely jammed at 11 km/h -> TDS90067 wins with Switch to MTR verdict!
+  // Case B: Tuen Mun Rd slow at 38 km/h, YLH severely jammed at 11 km/h -> TDS90067 wins with neutral Jammed signal!
   const detCaseB = [
     detCaseA[0],
     detCaseA[1],
@@ -3269,7 +3269,7 @@ test('Decision-first Transit: zero off-route clutter (<=2 bottlenecks on route m
   const sumB = sb.getDirectionalRoadSummary(e36Stops, 1, detCaseB, false, 8, e36RealPolyline);
   assert.equal(sumB.focusDet?.id, 'TDS90067', 'When YLH is jammed worse than TMR, TDS90067 must win');
   assert.equal(sumB.modeRec, 'SWITCH_MTR');
-  assert.ok(sumB.headline.includes('Switch to MTR · Jammed on Yuen Long Highway (+15m)'), `Unexpected YLH severe jam headline: ${sumB.headline}`);
+  assert.ok(sumB.headline.includes('Jammed on Yuen Long Highway (+15m)') && !/Switch to MTR/i.test(sumB.headline), `Unexpected YLH severe jam headline: ${sumB.headline}`);
 
   // --- AC 1: Zoomed-out E36 map hides Sha Tin / Ma On Shan / Tsuen Wan off-route badges and caps route bottlenecks to <= 2 ---
   const mapCode = readMapBundle();
@@ -5885,8 +5885,8 @@ test('Side-Road <=45m Highway Leakage Blocking (Kam Ho Rd / Castle Peak Rd), Ter
   assert.ok(html.includes('unifiedSegments: unifiedSegs'), 'generateExpandedETAsHtml must pass unifiedSegments into getDirectionalRoadSummary');
   assert.ok(html.includes('toggleTrafficInlineBreakdown(') && html.includes('class="traffic-inline-breakdown"'),
     'generateExpandedETAsHtml must wire Details > to toggleTrafficInlineBreakdown and render .traffic-inline-breakdown');
-  assert.ok(html.includes('TD Detector') && html.includes('Bus API inferred'),
-    'Inline stop-by-stop breakdown must distinguish TD Detector vs Bus API inferred sources');
+  assert.ok(html.includes('TD Sensor') && html.includes('Bus ETA') && html.includes('Road Est.'),
+    'Inline stop-by-stop breakdown must distinguish TD Sensor vs Bus ETA vs Road Est. sources with confidence');
   assert.ok(!html.includes('traffic-segment-list') && !html.includes('traffic-segment-row') && !html.includes('traffic-approaching-strip'),
     'Must preserve decluttered card contract without legacy clutter classes');
 
@@ -6234,7 +6234,7 @@ test('Follow-up Fix 2: Clean qualitative Flowing/Slow/Heavy pills (no raw car km
   assert.ok(!html.includes('${Math.round(seg.speedKmh)} km/h · ${srcTag}'), 'Stop-row TD pills must NOT render raw car km/h speeds (73 km/h, 105 km/h, 52 km/h)');
   assert.ok(html.includes('labelTxt = `${dot} ${flowTxt} · ${srcTag}`;'), 'Both TD and Bus API stop pills must render qualitative Flowing/Slow/Heavy labels');
   assert.ok(!html.includes('moving at ~${Math.round(opp.spd)} km/h'), 'Ambiguous ~XX km/h text (looks like -59 km/h) must be replaced');
-  assert.ok(html.includes('moving at about ${Math.round(oppSpdAbs)} km/h'), 'Opposite carriageway modal readout must use Math.abs with unambiguous phrasing');
+  assert.ok(html.includes('Opposite carriageway is clear.') && html.includes('Opposite carriageway is moving slowly.'), 'Opposite carriageway modal readout must use clean qualitative phrasing without raw km/h clutter');
 
   // 3. Sub-minute ETA rounding artifact (Δt <= 65s over > 600 m) clamped Flowing + logged as eta_rounding_artifact
   const t0 = Date.UTC(2026, 10, 27, 8, 0, 0);
@@ -6500,8 +6500,8 @@ test('Follow-up Fix 6: Deduplicated operator prefixes in Bus-API tooltips (NLB 1
   ], drawCtx.L.layerGroup(), '', new Map(), { laneOffsetM: 2.5 });
 
   assert.equal(boundTooltips.length, 1);
-  assert.equal(boundTooltips[0], '🚌 NLB 1, 2, A35 • Scheduled headway • Clear',
-    `Expected clean deduplicated qualitative tooltip, got: ${boundTooltips[0]}`);
+  assert.equal(boundTooltips[0], '🚌 NLB 1, 2, A35 • Scheduled headway · Low conf. · Clear',
+    `Expected clean deduplicated qualitative tooltip with confidence, got: ${boundTooltips[0]}`);
   assert.ok(!/km\/h/i.test(boundTooltips[0]), 'Bus-API corridor tooltip must use clean qualitative status without raw km/h');
 
   // 3. .kmb-map-stop-label CSS removes narrow max-width: 220px & text-overflow: ellipsis clipping
@@ -6561,11 +6561,11 @@ test('Tasks 1-3 Regression: Modularized domain scripts in exact 12-script order,
     assert.ok(swSrc.includes(asset), `public/sw.js must precache ${asset}`);
   }
 
-  // 2. Task 2: Build timestamp 2026-11-27 21:20 HKT & Settings About subtitle cleanup
-  const expectedTs = '2026-11-27 21:20 HKT';
+  // 2. Task 2: Build timestamp consistency across version.json, public/version.json, index.html & public/sw.js
+  const expectedTs = JSON.parse(fs.readFileSync('version.json', 'utf8')).version;
+  assert.ok(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2} HKT$/.test(expectedTs), `version.json must hold a valid HKT build timestamp, got: ${expectedTs}`);
   assert.ok(rawIndex.includes(expectedTs), `index.html must contain build timestamp ${expectedTs}`);
   assert.ok(swSrc.includes(expectedTs), `public/sw.js must contain build timestamp ${expectedTs}`);
-  assert.equal(JSON.parse(fs.readFileSync('version.json', 'utf8')).version, expectedTs);
   assert.equal(JSON.parse(fs.readFileSync('public/version.json', 'utf8')).version, expectedTs);
   assert.ok(rawIndex.includes('HK Layer, HK Sundry, HK Property &amp; HK MPF'), 'Settings About subtitle must list the 4 remaining companion apps');
 
@@ -6685,14 +6685,14 @@ test('Task 2A: Bus API inferred severity cap (6-17 km/h single-bus caps at Slow 
   assert.equal(unified[2].tier, 'MODERATE', 'Stop 10 Yau San St single-bus 8 km/h MUST cap at MODERATE (Amber), NEVER CONGESTED');
   assert.equal(unified[3].tier, 'SMOOTH', '24 km/h (>= 18 km/h) Bus API segment MUST classify SMOOTH (Clear Green)');
 
-  // Expanded banner summary from hardcode.js
+  // Expanded banner summary from hardcode.js (no raw km/h clutter; clear source + confidence)
   const sumStop1 = sb.getDirectionalRoadSummary(e36Stops, 0, [], false, 40, null, 12000, [], { unifiedSegments: unified });
   assert.ok(sumStop1, 'Expected road summary for Bus API stop 1');
   assert.equal(sumStop1.tone, 'slow', 'Stop 1 Pat Heung Rd expanded banner must be slow (Amber), NEVER jammed (Red)');
-  assert.ok(sumStop1.detail.includes('Bus API • 6 km/h'), `Expected clean Bus API • 6 km/h label, got: ${sumStop1.detail}`);
+  assert.ok(sumStop1.detail.includes('Bus ETA · Low conf.') && !/km\/h/i.test(sumStop1.detail), `Expected clean Bus ETA · Low conf. label without km/h, got: ${sumStop1.detail}`);
   assert.ok(!sumStop1.detail.includes('~'), `Bus API detail must NEVER include tilde (~): ${sumStop1.detail}`);
 
-  // Map Bus API solid route polyline caps single-bus 6 km/h at Amber #f59e0b and labels cleanly with Bus API • 6 km/h
+  // Map Bus API solid route polyline caps single-bus 6 km/h at Amber #f59e0b and labels cleanly with Bus ETA + confidence (no raw km/h)
   const geoStrokes: any[] = [];
   const drawnTips: string[] = [];
   const mapCtx: any = {
@@ -6703,6 +6703,7 @@ test('Task 2A: Bus API inferred severity cap (6-17 km/h single-bus caps at Slow 
       capBusApiTierHardcode: sb.ctx.window.capBusApiTierHardcode,
       buildRouteSpeedGeoJson: sb.ctx.window.buildRouteSpeedGeoJson,
       buildStopByStopSegmentTraffic: engine.buildStopByStopSegmentTraffic,
+      computeTrafficConfidence: engine.computeTrafficConfidence,
     },
     document: { getElementById: () => null },
     currentLang: 'en',
@@ -6729,8 +6730,8 @@ test('Task 2A: Bus API inferred severity cap (6-17 km/h single-bus caps at Slow 
   assert.ok(busGeoStrokes.length >= 1, 'Expected solid GeoJSON BUS_API stroke merged onto detail route polyline');
   assert.equal(busGeoStrokes[0].style.color, '#f59e0b', 'Single-bus 6 km/h map polyline MUST render Amber #f59e0b, NEVER Red');
   assert.equal(busGeoStrokes[0].style.dashArray, null, 'Merged BUS_API route stroke must render solid (dashArray: null)');
-  assert.ok(drawnTips.some((t) => t.includes('Bus API • 6 km/h') && !t.includes('~')),
-    `Map Bus API tooltip must show Bus API • 6 km/h without tilde, got: ${drawnTips.join(' | ')}`);
+  assert.ok(drawnTips.some((t) => t.includes('Bus ETA · Low conf.') && !/km\/h/i.test(t) && !t.includes('~')),
+    `Map Bus API tooltip must show Bus ETA · Low conf. without km/h or tilde, got: ${drawnTips.join(' | ')}`);
 });
 
 test('Task 2B: Divided-highway <=85m TD snap (E36 TDS91038 62 km/h Green), roundabout/interchange bottleneck preservation, South Lantau 450m gap & Mui Wo <60m stub pruning', () => {
@@ -7306,18 +7307,20 @@ test('Unified Traffic Consistency 3: Non-terminus TD-blind spans without live ET
   assert.equal(unified[2].tier, 'SMOOTH');
   assert.equal(unified[2].isTerminusApproach, true);
 
-  // 3. Expanded summary & breakdown label BUS_EST cleanly as "Bus Est. • 56 km/h"
+  // 3. Expanded summary & breakdown label BUS_EST cleanly as "Road Est. · Low conf." (zero km/h clutter)
   const sum = sb.getDirectionalRoadSummary(e36MidStops, 0, [], false, 40, null, 12000, [], { unifiedSegments: unified });
   assert.ok(sum, 'Expected road summary driven by BUS_EST');
   assert.equal(sum.tone, 'smooth', 'BUS_EST must never produce jammed (Red) tone');
-  assert.ok(sum.detail.includes('Bus Est. • 56 km/h'), `Summary detail must display Bus Est. • 56 km/h, got: ${sum.detail}`);
+  assert.equal(sum.confidence, 'LOW');
+  assert.equal(sum.isSimulatedSource, true);
+  assert.ok(sum.detail.includes('Road Est. · Low conf.') && !/km\/h/i.test(sum.detail), `Summary detail must display Road Est. · Low conf. without km/h, got: ${sum.detail}`);
 
-  // 4. UI templates in public/app-ui.js and public/eta-engine.js render Bus Est. pills & inline breakdown
+  // 4. UI templates in public/app-ui.js and public/eta-engine.js render Road Est. with confidence and zero km/h
   const appUiSrc = fs.readFileSync('public/app-ui.js', 'utf8');
   const etaSrc = fs.readFileSync('public/eta-engine.js', 'utf8');
-  assert.ok(appUiSrc.includes('🚌 Bus Est. •') && appUiSrc.includes('source-bus-est'),
-    'public/app-ui.js must render BUS_EST stop pills with Bus Est. • XX km/h');
-  assert.ok(etaSrc.includes('Bus Est. •') && etaSrc.includes("s.source === 'BUS_EST'"),
+  assert.ok(appUiSrc.includes('🚌 Road Est. ·') && appUiSrc.includes('source-bus-est'),
+    'public/app-ui.js must render BUS_EST stop pills with Road Est. + confidence');
+  assert.ok(etaSrc.includes('Road Est. ·') && etaSrc.includes("s.source === 'BUS_EST'"),
     'public/eta-engine.js must render BUS_EST in journey bar and inline Details breakdown');
 });
 
@@ -7428,8 +7431,8 @@ test('Unified Traffic Consistency 4: buildRouteSpeedGeoJson & buildDetailBusPoly
     'Detail polyline must paint smooth 28 km/h BUS_API in Green #16a34a');
   assert.ok(styledFeats.some((f) => f.props.source === 'BUS_EST' && f.props.speedKmh === 56 && f.style.color === '#16a34a'),
     'Detail polyline must paint smooth 56 km/h BUS_EST in Green #16a34a');
-  assert.ok(tips.some((t) => t.includes('Bus API • 7 km/h')), `Expected Bus API • 7 km/h tooltip, got: ${tips.join(' | ')}`);
-  assert.ok(tips.some((t) => t.includes('Bus Est. • 56 km/h')), `Expected Bus Est. • 56 km/h tooltip, got: ${tips.join(' | ')}`);
+  assert.ok(tips.some((t) => t.includes('Bus ETA ·') && t.includes('Jammed') && !/km\/h/i.test(t)), `Expected qualitative Bus ETA Jammed tooltip without km/h, got: ${tips.join(' | ')}`);
+  assert.ok(tips.some((t) => t.includes('Road Est. ·') && t.includes('Clear') && !/km\/h/i.test(t)), `Expected qualitative Road Est. Clear tooltip without km/h, got: ${tips.join(' | ')}`);
   assert.ok(!styledFeats.some((f) => f.style.color === '#3b82f6'), 'Detail polyline must NEVER emit Blue #3b82f6 features');
   assert.ok(!tips.some((t) => t.includes('no TD speed detector')), 'Detail polyline must NEVER emit "no TD speed detector" blue fallback tooltips');
 });
@@ -7697,10 +7700,10 @@ test('E36 Yuen Long Zero Off-By-One Span Projection: Stop 16 -> 17 (7 km/h Red) 
   mapCtx.buildDetailBusPolylineLayer(roadPoly, stops, 0, '#FF3B30');
 
   assert.equal(styledByFromSeq.get(16)?.color, '#dc2626', 'Map layer Stop 16 -> 17 must be Red');
-  assert.ok(styledByFromSeq.get(16)?.tip.includes('Tung Lok Street → Kuk Ting Street') && styledByFromSeq.get(16)?.tip.includes('7 km/h'),
+  assert.ok(styledByFromSeq.get(16)?.tip.includes('Tung Lok Street → Kuk Ting Street') && styledByFromSeq.get(16)?.tip.includes('Jammed') && !/km\/h/i.test(styledByFromSeq.get(16)?.tip || ''),
     `Unexpected Stop 16 -> 17 tooltip: ${styledByFromSeq.get(16)?.tip}`);
   assert.equal(styledByFromSeq.get(17)?.color, '#16a34a', 'Map layer Stop 17 -> 18 must be Green');
-  assert.ok(styledByFromSeq.get(17)?.tip.includes('Kuk Ting Street → Yoho Mall II') && styledByFromSeq.get(17)?.tip.includes('19 km/h'),
+  assert.ok(styledByFromSeq.get(17)?.tip.includes('Kuk Ting Street → Yoho Mall II') && styledByFromSeq.get(17)?.tip.includes('Clear') && !/km\/h/i.test(styledByFromSeq.get(17)?.tip || ''),
     `Unexpected Stop 17 -> 18 tooltip: ${styledByFromSeq.get(17)?.tip}`);
 });
 
@@ -7889,6 +7892,96 @@ test('iOS PWA Journey Bar Containment: zero horizontal overflow CSS (min-width: 
   assert.ok(etaSrc.includes('data-density="ultra-dense"') && etaSrc.includes('data-density="dense"'),
     'eta-engine.js must apply data-density attributes for high-density bars');
 });
+
+test('Low-Noise Traffic Card, Confidence Model, Neutral Signals & Saturday Morning False-Positive Guards (E36 Stop 12 & NLB 3M)', () => {
+  const sb = loadHardcodeAndPlannerSandbox();
+  const bsWindow: any = {};
+  const bsSandbox: any = { window: bsWindow, globalThis: bsWindow, Math, Date, Number, String, Array, Map, Set, Object, Uint8Array, parseFloat, isFinite };
+  vm.createContext(bsSandbox);
+  vm.runInContext(readHardcodeBundle(), bsSandbox);
+  vm.runInContext(fs.readFileSync('public/busspeed.js', 'utf8'), bsSandbox);
+  const engine: any = bsWindow.BusSpeedEngine;
+
+  // 1. E36 Stop 12 (Fung Chi Tsuen) -> Stop 13 (San Shui House): 56 m straight-line across signalized U-turn loop on Saturday 08:28 HKT
+  // Even if 2 consecutive buses take 3 minutes across the traffic-light U-turn, MUST NEVER flag CONGESTED (Red) or Multi-Bus Stall!
+  const satMorningMs = Date.parse('2026-11-28T08:28:00+08:00');
+  const e36Stop12Stops = [
+    { stopKey: 'E12', stopName_e: 'Fung Chi Tsuen', name_tc: '鳳池村', latitude: '22.44644', longitude: '114.01946' },
+    { stopKey: 'E13', stopName_e: 'San Shui House, Shui Pin Wai Estate', name_tc: '水邊圍邨山水樓', latitude: '22.44621', longitude: '114.01994' },
+    { stopKey: 'E14', stopName_e: 'Shui Pin Wai Estate', name_tc: '水邊圍邨', latitude: '22.44460', longitude: '114.02180' },
+  ];
+  const e36UTurnPoly: [number, number][] = [
+    [22.44644, 114.01946],
+    [22.44735, 114.02115], // U-turn apex on Wang Tat Rd
+    [22.44621, 114.01994], // San Shui House on Ma Wang Rd
+    [22.44460, 114.02180], // Shui Pin Wai Estate
+  ];
+  const e36SatEtas = {
+    0: [
+      { eta: new Date(satMorningMs + 2 * 60000).toISOString(), seq: 1 },
+      { eta: new Date(satMorningMs + 14 * 60000).toISOString(), seq: 2 },
+    ],
+    1: [
+      { eta: new Date(satMorningMs + 5 * 60000).toISOString(), seq: 1 }, // 3 min across traffic-light U-turn
+      { eta: new Date(satMorningMs + 17 * 60000).toISOString(), seq: 2 }, // 3 min across traffic-light U-turn
+    ],
+    2: [
+      { eta: new Date(satMorningMs + 6 * 60000).toISOString(), seq: 1 }, // 1 min smooth downstream
+      { eta: new Date(satMorningMs + 18 * 60000).toISOString(), seq: 2 },
+    ],
+  };
+  const e36SatSegs = engine.inferBusApiSegmentSpeeds(e36Stop12Stops, e36SatEtas, e36UTurnPoly, {
+    company: 'LWB', routeNo: 'E36', nowMs: satMorningMs, tdDetectors: [],
+  });
+  assert.ok(e36SatSegs.length >= 1, 'Expected E36 Stop 12 -> 13 segment');
+  assert.equal(e36SatSegs[0].isShortUrbanTurn, true, '56m straight-line U-turn loop at E36 Stop 12 must set isShortUrbanTurn=true');
+  assert.equal(e36SatSegs[0].tier, 'SMOOTH', `E36 Stop 12 on Saturday 08:28 HKT must classify SMOOTH, got ${e36SatSegs[0].tier}`);
+  assert.equal(e36SatSegs[0].isVerifiedMultiBusStall, false, 'Short U-turn loop must NEVER flag isVerifiedMultiBusStall');
+  assert.equal(e36SatSegs[0].confidence, 'LOW', 'Short U-turn Bus ETA segment must carry LOW confidence');
+
+  // 2. NLB 3M Saturday 08:25 HKT: rural South Lantau winding corridor at ~17 km/h must classify SMOOTH (Clear), NOT propagate Slow across stops 1-12
+  const nlb3mSatMs = Date.parse('2026-11-28T08:25:00+08:00');
+  const nlb3mStops = [
+    { stopKey: 'N11', stopName_e: 'Pui O Petrol Station, South Lantau Road', name_tc: '貝澳油站，嶼南道', latitude: '22.2442', longitude: '113.9788' },
+    { stopKey: 'N12', stopName_e: 'Lo Wai Tsuen, South Lantau Road', name_tc: '老圍村，嶼南道', latitude: '22.2435', longitude: '113.9760' },
+    { stopKey: 'N13', stopName_e: 'Sun Wai Tsuen, South Lantau Road', name_tc: '新圍村，嶼南道', latitude: '22.2428', longitude: '113.9749' }, // ~139m rural hop
+  ];
+  const nlb3mEtas = {
+    0: [{ targetMs: nlb3mSatMs + 2 * 60000, rawTargetMs: nlb3mSatMs + 2 * 60000, isSched: false }],
+    1: [{ targetMs: nlb3mSatMs + 3 * 60000, rawTargetMs: nlb3mSatMs + 3 * 60000, isSched: false }],
+    2: [{ targetMs: nlb3mSatMs + 4 * 60000, rawTargetMs: nlb3mSatMs + 4 * 60000, isSched: false }], // 1-min step across 139m rural hop (~17 km/h)
+  };
+  const nlb3mSegs = engine.inferBusApiSegmentSpeeds(nlb3mStops, nlb3mEtas, null, {
+    company: 'NLB', routeNo: '3M', nowMs: nlb3mSatMs, tdDetectors: [],
+  });
+  assert.ok(nlb3mSegs.length >= 2);
+  nlb3mSegs.forEach((s: any) => {
+    assert.equal(s.tier, 'SMOOTH', `NLB 3M Saturday morning rural stop span ${s.fromSeq}->${s.toSeq} must be SMOOTH, got ${s.tier}`);
+  });
+
+  // 3. Traffic Confidence Model: TD -> HIGH; multi-bus >= 450m live non-short non-rural BUS_API -> MEDIUM; short/single/rural/scheduled/BUS_EST -> LOW
+  assert.equal(engine.computeTrafficConfidence({ source: 'TD' }).level, 'HIGH');
+  assert.equal(engine.computeTrafficConfidence({ source: 'BUS_EST', isSyntheticFallback: true }).level, 'LOW');
+  assert.equal(engine.computeTrafficConfidence({ source: 'BUS_API', matchedBusCount: 2, roadDistKm: 0.95, isShortUrbanTurn: false, isRuralWinding: false, allRounded: false }).level, 'MEDIUM');
+  assert.equal(engine.computeTrafficConfidence({ source: 'BUS_API', matchedBusCount: 1, roadDistKm: 0.95 }).level, 'LOW');
+  assert.equal(engine.computeTrafficConfidence({ source: 'BUS_API', matchedBusCount: 3, roadDistKm: 0.18, isShortUrbanTurn: true }).level, 'LOW');
+  assert.equal(engine.computeTrafficConfidence({ source: 'BUS_API', matchedBusCount: 2, roadDistKm: 1.2, isRuralWinding: true }).level, 'LOW');
+  assert.equal(engine.computeTrafficConfidence({ source: 'BUS_API', matchedBusCount: 2, roadDistKm: 1.2, isScheduledOnly: true }).level, 'LOW');
+
+  // 4. Neutral signals & zero km/h across hardcode.js, app-ui.js, and eta-engine.js
+  const hardcodeSrc = fs.readFileSync('public/hardcode.js', 'utf8');
+  const appUiSrc = fs.readFileSync('public/app-ui.js', 'utf8');
+  const etaSrc = fs.readFileSync('public/eta-engine.js', 'utf8');
+  assert.ok(!/Switch to MTR|MTR may be faster|compare MTR|Take Bus|改乘港鐵|港鐵或較快|可乘巴士/.test(hardcodeSrc),
+    'hardcode.js must never emit assumptive MTR or Take Bus recommendations');
+  assert.ok(appUiSrc.includes("if (isSimulatedSource && dispTier === 'SMOOTH')") && appUiSrc.includes("slotEl.innerHTML = '';"),
+    'app-ui.js must suppress stop-row pills for simulated Clear (SMOOTH) segments so green colour stripe speaks cleanly');
+  assert.ok(appUiSrc.includes('data-seg-confidence=') && !appUiSrc.includes('🚌 Bus API •'),
+    'app-ui.js stop pills must attach confidence level and omit raw km/h numbers');
+  assert.ok(etaSrc.includes('traffic-card-kicker') && etaSrc.includes('traffic-conf-badge') && etaSrc.includes('traffic-inline-tier-tag') && etaSrc.includes('compact-clear'),
+    'eta-engine.js must render Traffic Card kicker, confidence badge, compact simulated Clear bar, and qualitative inline breakdown tags without km/h');
+});
+
 
 
 

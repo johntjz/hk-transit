@@ -627,6 +627,79 @@ function capBusApiTierHardcode(rawTier, speedKmh, opts = {}) {
   return 'SMOOTH';
 }
 
+function resolveTrafficConfidenceHardcode(seg) {
+  if (typeof window !== 'undefined' && typeof window.computeTrafficConfidence === 'function') {
+    return window.computeTrafficConfidence(seg);
+  }
+  if (!seg || typeof seg !== 'object' || seg.source === 'NONE') {
+    return {
+      level: 'LOW',
+      shortEn: 'Low conf.',
+      shortTc: '低可信',
+      fullEn: 'Low confidence · Unmonitored',
+      fullTc: '低可信 · 未監測路段',
+      reasonEn: 'No live HKSAR TD speed detector or bus ETA pair covers this stretch.',
+      reasonTc: '此路段暫無運輸署車速感應器或實時巴士站間配對數據。'
+    };
+  }
+  if (seg.source === 'TD') {
+    return {
+      level: 'HIGH',
+      shortEn: 'High conf.',
+      shortTc: '高可信',
+      fullEn: 'High confidence · TD Sensor',
+      fullTc: '高可信 · 運輸署感應器',
+      reasonEn: 'Measured directly by HKSAR Transport Department road speed detectors.',
+      reasonTc: '由運輸署實時道路車速感應器直接量度。'
+    };
+  }
+  if (seg.source === 'BUS_EST' || seg.isSyntheticFallback) {
+    return {
+      level: 'LOW',
+      shortEn: 'Low conf.',
+      shortTc: '低可信',
+      fullEn: 'Low confidence · Road Est.',
+      fullTc: '低可信 · 道路估算',
+      reasonEn: 'Estimated from stop spacing and road class — no live TD detector or bus ETA pair covers this stretch.',
+      reasonTc: '此路段無運輸署感應器及實時巴士站間配對，僅按站距及道路類型估算。'
+    };
+  }
+  const matchedBusCount = Math.max(0, Number(seg.matchedBusCount) || 0);
+  const roadDistKm = Math.abs(Number(seg.roadDistKm ?? seg.distKm) || 0);
+  const isSched = Boolean(seg.isScheduledOnly || seg.isScheduledFallback);
+  const isShortTurn = Boolean(seg.isShortUrbanTurn || (roadDistKm > 0 && roadDistKm < 0.45));
+  const isRural = Boolean(seg.isRuralWinding);
+  const isRoundedShort = Boolean(seg.allRounded && roadDistKm < 0.80);
+  const isMedium = Boolean(
+    !isSched &&
+    matchedBusCount >= 2 &&
+    !isShortTurn &&
+    !isRural &&
+    !isRoundedShort &&
+    roadDistKm >= 0.45
+  );
+  if (isMedium) {
+    return {
+      level: 'MEDIUM',
+      shortEn: 'Med conf.',
+      shortTc: '中可信',
+      fullEn: 'Med confidence · Bus ETA',
+      fullTc: '中可信 · 巴士推算',
+      reasonEn: 'Inferred from multiple live bus ETAs — less precise than TD road detectors due to stop dwell & traffic lights.',
+      reasonTc: '由多班實時巴士站間到站時間推算，受上落客及燈位影響，準確度低於運輸署道路感應器。'
+    };
+  }
+  return {
+    level: 'LOW',
+    shortEn: 'Low conf.',
+    shortTc: '低可信',
+    fullEn: 'Low confidence · Bus ETA',
+    fullTc: '低可信 · 巴士推算',
+    reasonEn: 'Estimated from live bus ETA — stop dwell, traffic lights, or single-bus variance can skew this signal.',
+    reasonTc: '由實時巴士到站時間推算，受上落客、紅綠燈或單一班次差異影響，僅供參考。'
+  };
+}
+
 function _isOffRouteHighwayLeakHardcode(roadEn = '', roadTc = '', id = '', routeCtx = null, seg = null) {
   const idStr = String(id || '').toUpperCase();
   const txt = `${roadEn || ''} ${roadTc || ''} ${idStr}`;
@@ -797,7 +870,8 @@ function summarizeDetectorBucket(hits) {
   };
 }
 
-// Synthesize clear "Bus vs. MTR" decision guidance directly from live TD corridor telemetry.
+// Synthesize neutral, factual traffic signal guidance from live TD corridor telemetry
+// (shows the traffic signal cleanly without presuming whether the commuter should switch modes).
 function synthesizeTrafficDecision(same, opp = null, isZh = false) {
   if (!same && !opp) return null;
 
@@ -810,7 +884,7 @@ function synthesizeTrafficDecision(same, opp = null, isZh = false) {
     const roadShortTc = _shortRoadNameForVerdict(same.worstDet || same.representativeDet, true);
     const estDelay = Number.isFinite(same.estDelayMins) ? same.estDelayMins : _estimateDetectorDelayMins({ spd, occ, tier: same.status });
 
-    // Tier 1: Severe jam (+13m+ or < 15 km/h) -> Switch to MTR
+    // Tier 1: Severe jam (+13m+ or < 15 km/h) -> Jammed traffic signal
     const isSevereJam = (same.status === 'JAMMED' && (spd < 15 || occ >= 75 || estDelay >= 13)) || (same.status !== 'SMOOTH' && spd > 0 && spd < 15);
     if (isSevereJam) {
       const dispMins = Math.max(13, estDelay || 15);
@@ -820,10 +894,10 @@ function synthesizeTrafficDecision(same, opp = null, isZh = false) {
         tone: 'jammed',
         modeRec: 'SWITCH_MTR',
         estDelayMins: dispMins,
-        verdictEn: `Switch to MTR · Jammed on ${roadShortEn} (${delayEn})`,
-        verdictTc: `改乘港鐵 · ${roadShortTc}嚴重擠塞 (${delayTc})`,
-        actionEn: `Jammed (${spd} km/h) — MTR avoids highway gridlock`,
-        actionTc: `路面嚴重擠塞 (${spd} km/h)，建議改乘港鐵更快捷穩定`,
+        verdictEn: `Jammed on ${roadShortEn} (${delayEn})`,
+        verdictTc: `${roadShortTc}嚴重擠塞 (${delayTc})`,
+        actionEn: `Heavy congestion reported on ${roadShortEn}`,
+        actionTc: `${roadShortTc}路面嚴重擠塞，預計行車時間明顯增加`,
         delayLabelEn: delayEn,
         delayLabelTc: delayTc,
         densityEn,
@@ -831,7 +905,7 @@ function synthesizeTrafficDecision(same, opp = null, isZh = false) {
       };
     }
 
-    // Tier 2: Moderate delay (+6–12m) -> Bus delayed · MTR may be faster
+    // Tier 2: Moderate delay (+6–12m) -> Slow traffic signal
     const isModerateDelay = same.status === 'JAMMED' || (same.status === 'SLOW' && (spd <= 28 || occ >= 55 || estDelay >= 6));
     if (isModerateDelay) {
       const dispMins = Math.max(6, Math.min(12, estDelay || (same.status === 'JAMMED' ? 10 : 8)));
@@ -841,10 +915,10 @@ function synthesizeTrafficDecision(same, opp = null, isZh = false) {
         tone: same.status === 'JAMMED' ? 'jammed' : 'slow',
         modeRec: 'MTR_FASTER',
         estDelayMins: dispMins,
-        verdictEn: `Bus delayed (${delayEn}) · MTR may be faster`,
-        verdictTc: `巴士延誤 (${delayTc}) · 港鐵或較快`,
-        actionEn: `Congestion on ${roadShortEn} (${spd} km/h) — compare MTR option`,
-        actionTc: `${roadShortTc}車流緩慢 (${spd} km/h)，建議比較港鐵車程`,
+        verdictEn: `Slow traffic on ${roadShortEn} (${delayEn})`,
+        verdictTc: `${roadShortTc}車流緩慢 (${delayTc})`,
+        actionEn: `Slower flow reported on ${roadShortEn}`,
+        actionTc: `${roadShortTc}車流緩慢，預計有輕微延誤`,
         delayLabelEn: delayEn,
         delayLabelTc: delayTc,
         densityEn,
@@ -852,7 +926,7 @@ function synthesizeTrafficDecision(same, opp = null, isZh = false) {
       };
     }
 
-    // Tier 3: Minor slowdown (+2–5m) -> Take Bus · Corridor moving (+2–5m)
+    // Tier 3: Minor slowdown (+2–5m) -> Slower flow signal
     if (same.status === 'SLOW') {
       const delayEn = '+2–5m';
       const delayTc = '+2–5 分鐘';
@@ -860,10 +934,10 @@ function synthesizeTrafficDecision(same, opp = null, isZh = false) {
         tone: 'slow',
         modeRec: 'TAKE_BUS',
         estDelayMins: 4,
-        verdictEn: `Take Bus · Corridor moving (${delayEn})`,
-        verdictTc: `可乘巴士 · 路段尚算暢順 (${delayTc})`,
-        actionEn: `Minor slowdown on ${roadShortEn} (${spd} km/h) — bus still moving steadily`,
-        actionTc: `${roadShortTc}稍為車多 (${spd} km/h)，整體維持穩定移動`,
+        verdictEn: `Slower flow · ${roadShortEn} (${delayEn})`,
+        verdictTc: `${roadShortTc}車流稍慢 (${delayTc})`,
+        actionEn: `Minor slowdown on ${roadShortEn} — traffic still moving`,
+        actionTc: `${roadShortTc}稍為車多，整體維持移動`,
         delayLabelEn: delayEn,
         delayLabelTc: delayTc,
         densityEn,
@@ -871,16 +945,16 @@ function synthesizeTrafficDecision(same, opp = null, isZh = false) {
       };
     }
 
-    // Tier 4: Clear (+0m) -> Take Bus · Corridor clear
+    // Tier 4: Clear (+0m) -> Clear traffic signal
     const oppJam = opp && opp.status === 'JAMMED';
     return {
       tone: 'smooth',
       modeRec: 'TAKE_BUS',
       estDelayMins: 0,
-      verdictEn: oppJam ? 'Take Bus · Your side clear (No delay)' : 'Take Bus · Corridor clear (No delay)',
-      verdictTc: oppJam ? '可乘巴士 · 你方向暢通 (無延誤)' : '可乘巴士 · 前路暢通 (無延誤)',
-      actionEn: oppJam ? 'Jam is only on the opposite carriageway — no delay on your side' : 'Normal travel time expected',
-      actionTc: oppJam ? '擠塞僅在對面行車線，你方向不受影響' : '路面順暢，按正常車程出行',
+      verdictEn: oppJam ? 'Traffic clear on your bound' : 'Traffic clear ahead',
+      verdictTc: oppJam ? '你方向路面暢通' : '前路暢通',
+      actionEn: oppJam ? 'Congestion is on the opposite carriageway only' : 'Normal traffic flow reported',
+      actionTc: oppJam ? '擠塞僅在對面行車線，你方向不受影響' : '路面順暢，按正常車程行駛',
       delayLabelEn: 'No delay',
       delayLabelTc: '無延誤',
       densityEn,
@@ -894,10 +968,10 @@ function synthesizeTrafficDecision(same, opp = null, isZh = false) {
     tone: 'smooth',
     modeRec: 'TAKE_BUS',
     estDelayMins: 0,
-    verdictEn: oppJam ? `Take Bus · Opposite bound jammed (${opp.minSpd} km/h)` : `Take Bus · Nearby road clear (${Math.abs(Math.round(Number(opp.avgSpd) || 0))} km/h)`,
-    verdictTc: oppJam ? `可乘巴士 · 僅對面線擠塞 (${opp.minSpd} km/h)` : `可乘巴士 · 鄰近路面暢通 (約 ${opp.avgSpd} km/h)`,
-    actionEn: oppJam ? 'Opposite carriageway congested; monitor return leg' : 'Nearby road flowing normally',
-    actionTc: oppJam ? '對面線擠塞，回程時請留意' : '鄰近路段交通暢順',
+    verdictEn: oppJam ? 'Your bound clear · Opposite bound jammed' : 'Nearby road clear',
+    verdictTc: oppJam ? '你方向暢通 · 僅對面線擠塞' : '鄰近路面暢通',
+    actionEn: oppJam ? 'Opposite carriageway congested' : 'Nearby road flowing normally',
+    actionTc: oppJam ? '對面行車線擠塞，回程時請留意' : '鄰近路段交通暢順',
     delayLabelEn: 'No delay',
     delayLabelTc: '無延誤',
     densityEn: 'Nearby road',
@@ -2365,6 +2439,13 @@ function inferDirectionalRoadTrafficForStops(stops, startIdx = 0, detectors = []
           isScheduledFallback: Boolean(u.isScheduledFallback),
           isVerifiedMultiBusStall: isVerifiedStall,
           isSyntheticFallback: false,
+          roadDistKm: Math.abs(Number(u.roadDistKm || hopKm)),
+          matchedBusCount: Number(u.matchedBusCount) || 1,
+          isShortUrbanTurn: Boolean(u.isShortUrbanTurn),
+          isRuralWinding: Boolean(u.isRuralWinding),
+          allRounded: Boolean(u.allRounded),
+          confidence: u.confidence || resolveTrafficConfidenceHardcode(u).level,
+          confidenceMeta: u.confidenceMeta || resolveTrafficConfidenceHardcode(u),
           farAheadNoteEn: isFarAhead ? 'Far ahead · may clear before arrival' : '',
           farAheadNoteTc: isFarAhead ? '較遠路段 · 抵達前或已消散' : '',
           detectorId: '',
@@ -2413,6 +2494,8 @@ function inferDirectionalRoadTrafficForStops(stops, startIdx = 0, detectors = []
           isScheduledFallback: false,
           isVerifiedMultiBusStall: false,
           isSyntheticFallback: true,
+          confidence: 'LOW',
+          confidenceMeta: resolveTrafficConfidenceHardcode({ source: 'BUS_EST', isSyntheticFallback: true }),
           allowRed: false,
           farAheadNoteEn: isFarAhead ? 'Far ahead · estimated road-class flow' : '',
           farAheadNoteTc: isFarAhead ? '較遠路段 · 按道路類型估算' : '',
@@ -2601,6 +2684,13 @@ function inferDirectionalRoadTrafficForStops(stops, startIdx = 0, detectors = []
           isScheduledFallback: Boolean(bs.isScheduledFallback),
           isVerifiedMultiBusStall: isVerifiedStall,
           isSyntheticFallback: isEstSeg,
+          roadDistKm: Math.abs(Number(bs.roadDistKm || 0)),
+          matchedBusCount: Number(bs.matchedBusCount) || 1,
+          isShortUrbanTurn: Boolean(bs.isShortUrbanTurn),
+          isRuralWinding: Boolean(bs.isRuralWinding),
+          allRounded: Boolean(bs.allRounded),
+          confidence: bs.confidence || resolveTrafficConfidenceHardcode({ ...bs, source: isEstSeg ? 'BUS_EST' : 'BUS_API', isSyntheticFallback: isEstSeg }).level,
+          confidenceMeta: bs.confidenceMeta || resolveTrafficConfidenceHardcode({ ...bs, source: isEstSeg ? 'BUS_EST' : 'BUS_API', isSyntheticFallback: isEstSeg }),
           allowRed: !isEstSeg && Boolean(isVerifiedStall),
           farAheadNoteEn: isFarAhead ? 'Far ahead · may clear before arrival' : '',
           farAheadNoteTc: isFarAhead ? '較遠路段 · 抵達前或已消散' : '',
@@ -2692,29 +2782,39 @@ function inferDirectionalRoadTrafficForStops(stops, startIdx = 0, detectors = []
     sameSide.representativeDet = attachSafeForwardCam(sameSide.representativeDet);
   }
 
-  const stopBreakdownSegments = segments.map((s) => ({
-    fromIdx: s.fromIdx ?? (s.fromSeq ? s.fromSeq - 1 : null),
-    toIdx: s.toIdx ?? (s.toSeq ? s.toSeq - 1 : null),
-    fromSeq: s.fromSeq,
-    toSeq: s.toSeq,
-    fromNameEn: s.fromNameEn || '',
-    fromNameTc: s.fromNameTc || '',
-    toNameEn: s.toNameEn || '',
-    toNameTc: s.toNameTc || '',
-    source: s.source,
-    tier: s.tier,
-    speedKmh: Math.abs(Math.round(Number(s.speedKmh))),
-    occ: Math.abs(Math.round(Number(s.occ) || 0)),
-    roadEn: s.roadEn || '',
-    roadTc: s.roadTc || '',
-    detId: s.detId || '',
-    camKey: s.camKey || '',
-    distKm: s.distKm,
-    roundaboutBottleneck: Boolean(s.roundaboutBottleneck),
-    isTerminusApproach: Boolean(s.isTerminusApproach),
-    isVerifiedMultiBusStall: Boolean(s.isVerifiedMultiBusStall),
-    isSyntheticFallback: Boolean(s.isSyntheticFallback || s.source === 'BUS_EST')
-  }));
+  const stopBreakdownSegments = segments.map((s) => {
+    const conf = s.confidenceMeta || resolveTrafficConfidenceHardcode(s);
+    return {
+      fromIdx: s.fromIdx ?? (s.fromSeq ? s.fromSeq - 1 : null),
+      toIdx: s.toIdx ?? (s.toSeq ? s.toSeq - 1 : null),
+      fromSeq: s.fromSeq,
+      toSeq: s.toSeq,
+      fromNameEn: s.fromNameEn || '',
+      fromNameTc: s.fromNameTc || '',
+      toNameEn: s.toNameEn || '',
+      toNameTc: s.toNameTc || '',
+      source: s.source,
+      tier: s.tier,
+      speedKmh: Math.abs(Math.round(Number(s.speedKmh))),
+      occ: Math.abs(Math.round(Number(s.occ) || 0)),
+      roadEn: s.roadEn || '',
+      roadTc: s.roadTc || '',
+      detId: s.detId || '',
+      camKey: s.camKey || '',
+      distKm: s.distKm,
+      roadDistKm: s.roadDistKm ?? s.distKm,
+      matchedBusCount: Number(s.matchedBusCount) || 0,
+      isShortUrbanTurn: Boolean(s.isShortUrbanTurn),
+      isRuralWinding: Boolean(s.isRuralWinding),
+      allRounded: Boolean(s.allRounded),
+      confidence: conf.level,
+      confidenceMeta: conf,
+      roundaboutBottleneck: Boolean(s.roundaboutBottleneck),
+      isTerminusApproach: Boolean(s.isTerminusApproach),
+      isVerifiedMultiBusStall: Boolean(s.isVerifiedMultiBusStall),
+      isSyntheticFallback: Boolean(s.isSyntheticFallback || s.source === 'BUS_EST')
+    };
+  });
 
   const hasBusApiSegment = segments.some(s => s.source === 'BUS_API' || s.source === 'BUS_EST');
   return {
@@ -2789,26 +2889,24 @@ function getDirectionalRoadSummary(stops, startIdx, detectors, isZh = false, loo
     const busTone = cappedBusTier === 'CONGESTED' ? 'jammed' : (cappedBusTier === 'MODERATE' ? 'slow' : 'smooth');
     const busHeadline = isBusEst
       ? (cappedBusTier === 'MODERATE'
-        ? (isZh ? '估算車流稍慢' : 'Estimated Slow Flow')
-        : (isZh ? '估算行車暢通' : 'Estimated Clear Flow'))
+        ? (isZh ? '估算前方車流較慢' : 'Estimated Slow Traffic')
+        : (isZh ? '前方路面暢通' : 'Traffic Clear'))
       : (cappedBusTier === 'CONGESTED'
-        ? (isZh ? '巴士車流嚴重受阻 · 多班緩慢' : 'Jammed Bus Flow · Multi-Bus Stall')
+        ? (isZh ? '前方巴士路段擠塞' : 'Jammed Traffic Ahead')
         : (cappedBusTier === 'MODERATE'
-          ? (isZh ? '巴士車流偏慢' : 'Slow Bus Flow')
-          : (isZh ? '巴士車流暢通' : 'Clear Bus Flow')));
+          ? (isZh ? '前方車流較慢' : 'Slow Traffic Ahead')
+          : (isZh ? '前方路面暢通' : 'Traffic Clear')));
     const betweenLabel = topRanked.betweenStops ? _formatBetweenStopsLabel(topRanked.betweenStops, isZh) : '';
-    const absSpd = Number.isFinite(Number(topRanked.speedKmh)) && Number(topRanked.speedKmh) > 0
-      ? Math.abs(Math.round(Number(topRanked.speedKmh)))
-      : null;
+    const confMeta = topRanked.confidenceMeta || resolveTrafficConfidenceHardcode({ ...topRanked, source: isBusEst ? 'BUS_EST' : 'BUS_API', isSyntheticFallback: isBusEst });
     const busSrcLabel = isBusEst
-      ? (absSpd !== null
-        ? (isZh ? `🚌 路況估算 • ${absSpd} km/h` : `🚌 Bus Est. • ${absSpd} km/h`)
-        : (isZh ? '🚌 路況估算' : '🚌 Bus Est.'))
-      : (absSpd !== null
-        ? (isZh ? `🚌 巴士推算 • ${absSpd} km/h` : `🚌 Bus API • ${absSpd} km/h`)
-        : (isZh ? '🚌 巴士推算' : '🚌 Bus API'));
+      ? (isZh ? `🚌 道路估算 · ${confMeta.shortTc}` : `🚌 Road Est. · ${confMeta.shortEn}`)
+      : (isZh ? `🚌 巴士推算 · ${confMeta.shortTc}` : `🚌 Bus ETA · ${confMeta.shortEn}`);
     return {
       ...res,
+      source: isBusEst ? 'BUS_EST' : 'BUS_API',
+      isSimulatedSource: true,
+      confidence: confMeta.level,
+      confidenceMeta: confMeta,
       tone: busTone,
       modeRec: cappedBusTier === 'CONGESTED' ? 'MTR_FASTER' : 'TAKE_BUS',
       headline: busHeadline,
@@ -2817,11 +2915,9 @@ function getDirectionalRoadSummary(stops, startIdx, detectors, isZh = false, loo
         betweenLabel,
         topRanked.etaMins ? (isZh ? `約 ${topRanked.etaMins} 分鐘後` : `${Math.abs(Math.round(Number(topRanked.etaMins)))}m ahead`) : ''
       ].filter(Boolean).join(' · '),
-      actionTip: isBusEst
-        ? (isZh ? '此路段暫無運輸署感應器或實時配對，按道路類型及距離估算' : 'No TD sensor or live ETA pair on this stretch — estimated from road class & distance')
-        : (isZh ? '此路段未設運輸署感應器，以巴士實時站間時間推算' : 'No TD sensor on this stretch — inferred from live bus stop-to-stop ETAs'),
+      actionTip: isZh ? confMeta.reasonTc : confMeta.reasonEn,
       delayLabel: cappedBusTier === 'CONGESTED' ? '+6–10m' : (cappedBusTier === 'MODERATE' ? (isBusEst ? '+1–3m' : '+2–4m') : (isZh ? '無延誤' : 'No delay')),
-      densityLabel: isBusEst ? (isZh ? '道路類型估算' : 'Road-class estimate') : (isZh ? '巴士實時推算' : 'Bus API speed'),
+      densityLabel: isZh ? confMeta.fullTc : confMeta.fullEn,
       aheadKm: topRanked.distKm,
       betweenLabel,
       isApproaching: false,
@@ -2854,6 +2950,7 @@ function getDirectionalRoadSummary(stops, startIdx, detectors, isZh = false, loo
   const decision = synthesizeTrafficDecision(syntheticApproachingSame, null, isZh);
   if (!decision) return null;
 
+  const tdConfMeta = resolveTrafficConfidenceHardcode({ source: 'TD' });
   const roadLabel = focusDet ? _sanitizeDirectionTyposHardcode(isZh ? (focusDet.roadTc || focusDet.roadEn) : (focusDet.roadEn || focusDet.roadTc)) : '';
   const aheadKm = Math.abs(Number((topRanked && !topRanked.isApproaching ? topRanked.distKm : primary?.aheadKm) || 0));
   const betweenStops = (topRanked && !topRanked.isApproaching ? topRanked.betweenStops : primary?.betweenStops) || null;
@@ -2867,20 +2964,15 @@ function getDirectionalRoadSummary(stops, startIdx, detectors, isZh = false, loo
   if (approachingLeads && (!same || same.status === 'SMOOTH')) {
     const rShort = _sanitizeDirectionTyposHardcode(isZh ? approaching.roadTc : approaching.roadEn);
     headline = isZh
-      ? `到站前塞車 · ${rShort} (${Math.abs(approaching.minSpd)} km/h)`
-      : `Jam before stop · ${rShort} (${Math.abs(approaching.minSpd)} km/h)`;
+      ? `到站前塞車 · ${rShort}`
+      : `Traffic jam before stop · ${rShort}`;
   }
 
-  const detailParts = [];
+  const detailParts = [
+    isZh ? `運輸署感應器 · ${tdConfMeta.shortTc}` : `TD Sensor · ${tdConfMeta.shortEn}`
+  ];
   if (approachingLeads) {
-    detailParts.push(`${Math.abs(approaching.minSpd)} km/h`);
     detailParts.push(isZh ? `站前 ${Math.abs(approaching.distKm).toFixed(1)} km` : `${Math.abs(approaching.distKm).toFixed(1)} km before stop`);
-  } else if (same) {
-    const spdDisp = same.status === 'SMOOTH' ? `${Math.abs(Math.round(Number(same.avgSpd)))}` : `${Math.abs(Math.round(Number(same.minSpd)))}`;
-    detailParts.push(`${spdDisp} km/h`);
-    if (same.status !== 'SMOOTH' && Math.abs(Number(same.worstDet?.occ) || 0) > 0) {
-      detailParts.push(isZh ? `佔用率 ${Math.abs(Math.round(Number(same.worstDet.occ)))}%` : `${Math.abs(Math.round(Number(same.worstDet.occ)))}% occ`);
-    }
   }
   if (roadLabel) detailParts.push(roadLabel);
   if (betweenLabel) detailParts.push(betweenLabel);
@@ -2894,6 +2986,10 @@ function getDirectionalRoadSummary(stops, startIdx, detectors, isZh = false, loo
 
   return {
     ...res,
+    source: 'TD',
+    isSimulatedSource: false,
+    confidence: tdConfMeta.level,
+    confidenceMeta: tdConfMeta,
     tone: approachingLeads ? (approaching.tier === 'CONGESTED' ? 'jammed' : 'slow') : decision.tone,
     modeRec: decision.modeRec,
     headline,

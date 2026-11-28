@@ -141,6 +141,98 @@
     return 'MODERATE';
   }
 
+  // Honest traffic signal confidence scoring:
+  // - HIGH: HKSAR TD hardware speed detector / speed-map link (ground truth)
+  // - MEDIUM: Live GPS-backed Bus API inference with >= 2 agreeing buses on a clean >= 450m non-rural span
+  // - LOW: Single-bus ETA, short urban hop / U-turn (< 220m straight or < 450m road), minute-quantized short span,
+  //        winding rural corridor, timetable fallback, or road-class BUS_EST estimate.
+  function computeTrafficConfidence(seg, opts = {}) {
+    if (!seg || typeof seg !== 'object' || seg.source === 'NONE') {
+      return {
+        level: 'LOW',
+        shortEn: 'Low conf.',
+        shortTc: '低可信',
+        fullEn: 'Low confidence · Unmonitored',
+        fullTc: '低可信 · 未監測路段',
+        reasonEn: 'No live HKSAR TD speed detector or bus ETA pair covers this stretch.',
+        reasonTc: '此路段暫無運輸署車速感應器或實時巴士站間配對數據。'
+      };
+    }
+    if (seg.source === 'TD') {
+      return {
+        level: 'HIGH',
+        shortEn: 'High conf.',
+        shortTc: '高可信',
+        fullEn: 'High confidence · TD Sensor',
+        fullTc: '高可信 · 運輸署感應器',
+        reasonEn: 'Measured directly by HKSAR Transport Department road speed detectors.',
+        reasonTc: '由運輸署實時道路車速感應器直接量度。'
+      };
+    }
+    if (seg.source === 'BUS_EST' || seg.isSyntheticFallback) {
+      return {
+        level: 'LOW',
+        shortEn: 'Low conf.',
+        shortTc: '低可信',
+        fullEn: 'Low confidence · Road Est.',
+        fullTc: '低可信 · 道路估算',
+        reasonEn: 'Estimated from stop spacing and road class — no live TD detector or bus ETA pair covers this stretch.',
+        reasonTc: '此路段無運輸署感應器及實時巴士站間配對，僅按站距及道路類型估算。'
+      };
+    }
+    const matchedBusCount = Math.max(0, Number(seg.matchedBusCount) || 0);
+    const roadDistKm = Math.abs(Number(seg.roadDistKm) || 0);
+    const isSched = Boolean(seg.isScheduledOnly || seg.isScheduledFallback);
+    const isShortTurn = Boolean(seg.isShortUrbanTurn || (roadDistKm > 0 && roadDistKm < 0.45));
+    const isRural = Boolean(seg.isRuralWinding);
+    const isRoundedShort = Boolean(seg.allRounded && roadDistKm < 0.80);
+
+    // Bus ETA inference can NEVER exceed MEDIUM confidence because bus stops, boarding dwell,
+    // traffic lights, and ETA rounding make it less precise than TD hardware speed detectors.
+    const isMedium = Boolean(
+      !isSched &&
+      matchedBusCount >= 2 &&
+      !isShortTurn &&
+      !isRural &&
+      !isRoundedShort &&
+      roadDistKm >= 0.45
+    );
+
+    if (isMedium) {
+      return {
+        level: 'MEDIUM',
+        shortEn: 'Med conf.',
+        shortTc: '中可信',
+        fullEn: 'Med confidence · Bus ETA',
+        fullTc: '中可信 · 巴士推算',
+        reasonEn: 'Inferred from multiple live bus ETAs — less precise than TD road detectors due to stop dwell & traffic lights.',
+        reasonTc: '由多班實時巴士站間到站時間推算，受上落客及燈位影響，準確度低於運輸署道路感應器。'
+      };
+    }
+
+    let reasonEn = 'Estimated from live bus ETA — stop dwell, traffic lights, or single-bus variance can skew this signal.';
+    let reasonTc = '由實時巴士到站時間推算，受上落客、紅綠燈或單一班次差異影響，僅供參考。';
+    if (isSched) {
+      reasonEn = 'Based on scheduled timetable intervals rather than live road sensors.';
+      reasonTc = '基於時間表班次間隔推算，並非實時道路感應器數據。';
+    } else if (isShortTurn) {
+      reasonEn = 'Short stop spacing or junction turn — traffic lights and boarding dwell heavily affect bus ETA speed.';
+      reasonTc = '站距較短或途經路口掉頭，燈位及上落客時間對推算影響較大，僅供參考。';
+    } else if (isRural) {
+      reasonEn = 'Winding rural corridor — terrain and village stops cause wide bus pace variations.';
+      reasonTc = '鄉郊彎路及村落車站多，巴士行車節奏變化較大，僅供參考。';
+    }
+    return {
+      level: 'LOW',
+      shortEn: 'Low conf.',
+      shortTc: '低可信',
+      fullEn: 'Low confidence · Bus ETA',
+      fullTc: '低可信 · 巴士推算',
+      reasonEn,
+      reasonTc
+    };
+  }
+
   // Detect scheduled / timetable-only ETA entries so timetable padding is never misread as a live road jam.
   function isScheduledBusEtaEntry(entry) {
     if (!entry || typeof entry !== 'object') return false;
@@ -161,7 +253,7 @@
 
   function isRuralWindingCorridor(fromStop = null, toStop = null) {
     const names = `${fromStop?.stopName_e || ''} ${toStop?.stopName_e || ''} ${fromStop?.name_tc || ''} ${toStop?.name_tc || ''}`;
-    return /south\s*lantau|pui\s*o|mui\s*wo|cheung\s*sha|tong\s*fuk|shui\s*hau|shek\s*pik|ngong\s*ping|tai\s*o|tung\s*chung\s*road|pak\s*kung\s*au|san\s*shek\s*wan|nam\s*shan|lai\s*chi\s*yuen|sai\s*kung|clear\s*water\s*bay|hiram'?s\s*highway|shek\s*o|stanley|repulse\s*bay|tai\s*tam|peak\s*road|route\s*twisk|lam\s*kam|bride'?s\s*pool|貝澳|梅窩|長沙|塘福|水口|石壁|昂坪|大澳|東涌道|伯公坳|嶼南道|散石灣|南山|荔枝園|西貢|清水灣|西貢公路|石澳|赤柱|淺水灣|大潭|山頂道|荃錦公路|林錦公路|新娘潭/i.test(names);
+    return /south\s*lantau|pui\s*o|mui\s*wo|cheung\s*sha|tong\s*fuk|shui\s*hau|shek\s*pik|ngong\s*ping|tai\s*o|tung\s*chung\s*road|pak\s*kung\s*au|san\s*shek\s*wan|nam\s*shan|lai\s*chi\s*yuen|sai\s*kung|clear\s*water\s*bay|hiram'?s\s*highway|shek\s*o|stanley|repulse\s*bay|tai\s*tam|(?<!castle\s)peak\s*road|route\s*twisk|lam\s*kam|bride'?s\s*pool|貝澳|梅窩|長沙|塘福|水口|石壁|昂坪|大澳|東涌道|伯公坳|嶼南道|散石灣|南山|荔枝園|西貢|清水灣|西貢公路|石澳|赤柱|淺水灣|大潭|山頂道|荃錦公路|林錦公路|新娘潭/i.test(names);
   }
 
   // Continuous rural coastal / mountain highway spans (e.g. South Lantau Rd Pui O -> Cheung Sha)
@@ -2157,7 +2249,8 @@
       hasConsecutiveSlowSpan: false,
       color: getBusSpeedColorHex(tier, estSpeedKmh),
       source: 'BUS_EST',
-      confidence: 'ESTIMATE',
+      confidence: 'LOW',
+      confidenceMeta: computeTrafficConfidence({ source: 'BUS_EST', isSyntheticFallback: true }),
       isScheduledOnly: false,
       isScheduledFallback: false,
       coveredByTd: false,
@@ -2219,6 +2312,15 @@
       return [];
     }
     const nowMs = Number.isFinite(Number(opts.nowMs)) ? Number(opts.nowMs) : Date.now();
+    // HK local time-of-day context (UTC+8) to avoid false Saturday/Sunday morning & late-night jam alarms
+    const hkDate = new Date(nowMs + 8 * 3600 * 1000);
+    const hkDay = hkDate.getUTCDay(); // 0 = Sun, 6 = Sat
+    const hkHour = hkDate.getUTCHours();
+    const hkYmd = `${hkDate.getUTCFullYear()}-${String(hkDate.getUTCMonth() + 1).padStart(2, '0')}-${String(hkDate.getUTCDate()).padStart(2, '0')}`;
+    const isHkHoliday = Boolean(globalScope.__HK_PUBLIC_HOLIDAYS__ instanceof Set && globalScope.__HK_PUBLIC_HOLIDAYS__.has(hkYmd));
+    const isWeekendMorning = Boolean((hkDay === 0 || hkDay === 6 || isHkHoliday) && hkHour >= 5 && hkHour < 12);
+    const isLateNight = Boolean(hkHour >= 22 || hkHour < 7);
+    const isLightTrafficWindow = Boolean(isWeekendMorning || isLateNight);
     const tdDetectors = Array.isArray(opts.tdDetectors)
       ? opts.tdDetectors
       : (Array.isArray(globalScope.__LIVE_TRAFFIC_DETECTORS__) ? globalScope.__LIVE_TRAFFIC_DETECTORS__ : []);
@@ -2419,13 +2521,23 @@
       const maxCapKmh = Number(roadProfile.maxRealisticKmh) || 85;
       let busSpeedKmh = Math.abs(Math.max(4, Math.min(maxCapKmh, Number((roadDistKm / (movingSec / 3600)).toFixed(1)))));
 
+      // Detect short urban hops & tight signalized U-turn loops (e.g. E36 #12 Fung Chi Tsuen -> #13 San Shui House:
+      // 56 m straight-line across a divided-road U-turn + traffic light, or 3M #12 Lo Wai Tsuen -> #13 Sun Wai Tsuen: 139 m)
+      // where boarding dwell + 1 traffic-light cycle + minute-quantized ETAs routinely look like 4–17 km/h on empty roads!
+      const isTightUTurnLoop = Boolean(
+        straightKm < 0.30 &&
+        sliced.isRoadSnapped &&
+        polyKm / Math.max(0.02, straightKm) >= 2.2
+      );
+      const isShortUrbanTurn = Boolean(straightKm < 0.22 || isTightUTurnLoop);
+
       // Guard 0: Sub-minute ETA rounding artifact (Δt <= 65s over > 600 m) is always Flowing / Green
       const isEtaRoundingArtifact = Boolean(deltaSec <= 65 && roadDistKm > 0.60);
 
       // Count how many distinct matched live buses on this span crawled at < 8 km/h (strict multi-bus stall gate)
       const matchedBusCount = matched.deltas.length;
       let severeSlowBusCount = 0;
-      if (!matched.isScheduledOnly && matchedBusCount >= 2) {
+      if (!matched.isScheduledOnly && !isShortUrbanTurn && matchedBusCount >= 2) {
         for (let di = 0; di < matchedBusCount; di++) {
           const dSecI = Math.abs(matched.deltas[di]);
           const qAdjI = (matched.allRounded && dSecI >= 90) ? (roadDistKm < 0.78 ? 25 : 14) : 0;
@@ -2439,15 +2551,19 @@
         !matched.isScheduledOnly &&
         !isTerminusApproach &&
         !isOriginLayoverLoop &&
+        !isShortUrbanTurn &&
         matchedBusCount >= 2 &&
         severeSlowBusCount >= 2 &&
         busSpeedKmh < 8
       );
 
       // Classify Bus API tier:
-      // - Clear (Green): >= 18 km/h (or >= 20 km/h on Airport Perimeter)
-      // - Slow (Amber): < 18 km/h (single-bus speeds 6–17 km/h ALWAYS cap at Slow Amber, NEVER Red!)
-      // - Jammed (Red): strictly reserved for verified severe multi-bus stalls (< 8 km/h across >= 2 consecutive buses)
+      // - Clear (Green): >= 18 km/h urban, >= 20 km/h Airport Perimeter, or >= 14 km/h on winding rural village corridors
+      //   (13 km/h on weekend mornings / late night so normal rural hill-climb pacing like 17 km/h on NLB 3M is Clear!)
+      // - Slow (Amber): below smooth floor (single-bus & short-turn spans ALWAYS cap at Slow Amber, NEVER Red!)
+      // - Jammed (Red): strictly reserved for verified severe multi-bus stalls (< 8 km/h across >= 2 consecutive live buses
+      //   on genuine non-short spans)
+      const ruralSmoothFloor = isLightTrafficWindow ? 13 : 14;
       let busTier = 'SMOOTH';
       if (isEtaRoundingArtifact) {
         busTier = 'SMOOTH';
@@ -2465,16 +2581,33 @@
         busTier = 'CONGESTED';
       } else if (isAirportPerimeter) {
         busTier = busSpeedKmh >= 20 ? 'SMOOTH' : 'MODERATE';
+      } else if (isRuralWinding) {
+        busTier = busSpeedKmh >= ruralSmoothFloor ? 'SMOOTH' : 'MODERATE';
+        if (busTier === 'SMOOTH' && busSpeedKmh < 18) {
+          busSpeedKmh = 18;
+        }
       } else if (busSpeedKmh >= 18) {
         busTier = 'SMOOTH';
       } else {
         busTier = 'MODERATE';
       }
 
-      // Guard 1: Short urban/new-town hop (<= 2 min rounded ETA) is normal bus pacing — NEVER false RED!
+      // Guard 1: Short urban/new-town hop or signalized U-turn (e.g. Fung Chi Tsuen -> San Shui House)
+      // - <= 2 min rounded ETA on < 780m hop is normal bus pacing — NEVER false RED!
+      // - Short straight-line (< 220m) or tight U-turn loop with <= 185s (3 min: 1 boarding + 1 traffic-light cycle)
+      //   is normal signalized geometry on non-jammed roads — clamp Flowing unless downstream corridor is also slow!
       if (roadDistKm < 0.78 && deltaSec <= 125 && busTier === 'CONGESTED') {
         busTier = 'SMOOTH';
         busSpeedKmh = Math.max(busSpeedKmh, 18);
+      }
+      if (isShortUrbanTurn && !coveredByTd) {
+        if (busTier === 'CONGESTED') {
+          busTier = 'MODERATE';
+        }
+        if (deltaSec <= (isLightTrafficWindow ? 215 : 185)) {
+          busTier = 'SMOOTH';
+          busSpeedKmh = Math.max(busSpeedKmh, 18);
+        }
       }
       // Guard 2: Terminus departure (stop 0 -> 1) <= 3 min or origin layover loop within 150m is normal departure padding — NEVER false slow/red!
       if (isOriginLayoverLoop && !coveredByTd) {
@@ -2559,7 +2692,7 @@
       }
 
       const verifiedMultiBusStall = Boolean(hasMultiBusStallOnSpan && busTier === 'CONGESTED');
-      rawSegs.push({
+      const segDraft = {
         fromIdx: i,
         toIdx: j,
         fromSeq: i + 1,
@@ -2572,12 +2705,14 @@
         company,
         roadClass: roadProfile.roadClass,
         isRuralWinding,
+        isShortUrbanTurn,
+        allRounded: Boolean(matched.allRounded),
         isTerminusDep,
         isOriginLayover: isOriginLayoverLoop,
         isTerminusApproach,
         isEtaRoundingArtifact,
         isRoadSnapped: Boolean(sliced.isRoadSnapped),
-        smoothMinKmh: isAirportPerimeter ? 20 : 18,
+        smoothMinKmh: isAirportPerimeter ? 20 : (isRuralWinding ? ruralSmoothFloor : 18),
         moderateMinKmh: roadProfile.moderateMinKmh,
         roadDistKm: Math.abs(Number(roadDistKm.toFixed(2))),
         deltaSec: Math.abs(Math.round(deltaSec)),
@@ -2594,14 +2729,17 @@
         hasConsecutiveSlowSpan: false,
         color: getBusSpeedColorHex(busTier, busSpeedKmh),
         source: 'BUS_API',
-        confidence: matched.isScheduledOnly ? 'LOW' : (matchedBusCount >= 2 ? 'HIGH' : 'MEDIUM'),
         isScheduledOnly: matched.isScheduledOnly,
         isScheduledFallback,
         coveredByTd,
         tdCovered: coveredByTd,
         tdTruth,
         coords: segCoords
-      });
+      };
+      const confMeta = computeTrafficConfidence(segDraft);
+      segDraft.confidence = confMeta.level;
+      segDraft.confidenceMeta = confMeta;
+      rawSegs.push(segDraft);
       i = j;
     }
 
@@ -2721,7 +2859,8 @@
       const hasPrevSlow = (k > 0 && rawSegs[k - 1].toIdx === seg.fromIdx && neighborQualifies(k - 1));
       const hasNextSlow = (k + 1 < rawSegs.length && rawSegs[k + 1].fromIdx === seg.toIdx && neighborQualifies(k + 1));
 
-      if (seg.tier === 'CONGESTED' && seg.isVerifiedMultiBusStall && seg.speedKmh < 8 && (hasPrevSlow || hasNextSlow || seg.severeSlowBusCount >= 2)) {
+      const allowWeekendRed = Boolean(!isLightTrafficWindow || hasPrevSlow || hasNextSlow);
+      if (seg.tier === 'CONGESTED' && seg.isVerifiedMultiBusStall && !seg.isShortUrbanTurn && seg.speedKmh < 8 && allowWeekendRed && (hasPrevSlow || hasNextSlow || seg.severeSlowBusCount >= 2)) {
         seg.hasConsecutiveSlowSpan = Boolean(hasPrevSlow || hasNextSlow);
         seg.allowRed = true;
       } else {
@@ -2761,6 +2900,8 @@
           isBottleneck: td.tdTier === 'CONGESTED' || td.tdTier === 'MODERATE',
           color: td.tdColor,
           source: 'TD',
+          confidence: 'HIGH',
+          confidenceMeta: computeTrafficConfidence({ source: 'TD' }),
           isSyntheticFallback: false,
           tdConflictResolved: conflict,
           detId: td.tdDetId,
@@ -2781,6 +2922,8 @@
         return {
           ...seg,
           source: 'BUS_EST',
+          confidence: 'LOW',
+          confidenceMeta: computeTrafficConfidence({ source: 'BUS_EST', isSyntheticFallback: true }),
           isSyntheticFallback: true,
           allowRed: false,
           speedKmh: estSpd,
@@ -2796,8 +2939,11 @@
           camDesc: _sanitizeDirectionTypos(td?.cam?.desc || seg.camDesc || '')
         };
       }
+      const resolvedBusConf = computeTrafficConfidence(seg);
       return {
         ...seg,
+        confidence: resolvedBusConf.level,
+        confidenceMeta: resolvedBusConf,
         detId: '',
         detectorId: '',
         occ: 0,
@@ -2917,6 +3063,8 @@
           toNameTc,
           source: 'TD',
           tier: tdTruth.tdTier,
+          confidence: 'HIGH',
+          confidenceMeta: computeTrafficConfidence({ source: 'TD' }),
           speedKmh: Math.abs(Number(tdTruth.tdSpeedKmh) || 0),
           color: tdTruth.tdColor,
           occ: Math.abs(Number(tdTruth.tdOcc) || 0),
@@ -2953,14 +3101,15 @@
         Number.isFinite(Number(busSeg.speedKmh))
       ) {
         let effSpeed = Math.abs(Math.round(Number(busSeg.speedKmh)));
-        const verifiedStall = Boolean(busSeg.isVerifiedMultiBusStall && !isTerminusApproach && !busSeg.isScheduledOnly && !busSeg.isScheduledFallback && effSpeed < 8);
+        const isShortTurnSeg = Boolean(busSeg.isShortUrbanTurn || straightKm < 0.22);
+        const verifiedStall = Boolean(busSeg.isVerifiedMultiBusStall && !isShortTurnSeg && !isTerminusApproach && !busSeg.isScheduledOnly && !busSeg.isScheduledFallback && effSpeed < 8);
         let tier = capBusApiTier(busSeg.tier, effSpeed, verifiedStall);
         if (isTerminusApproach && tier !== 'SMOOTH') {
           tier = 'SMOOTH';
           effSpeed = Math.max(effSpeed, Math.round(Number(busSeg.smoothMinKmh) || 18));
         }
         const matchedCam = tdTruth.cam || busSeg.cam || null;
-        out.push({
+        const busSegPayload = {
           fromIdx: i,
           toIdx: i + 1,
           fromSeq: i + 1,
@@ -2984,8 +3133,10 @@
           roadDistKm: Math.abs(Number(busSeg.roadDistKm || roadDistKm)),
           deltaSec: busSeg.deltaSec ? Math.abs(Number(busSeg.deltaSec)) : null,
           expectedKmh: busSeg.expectedKmh || null,
-          confidence: busSeg.confidence || 'MEDIUM',
           matchedBusCount: Number(busSeg.matchedBusCount) || 1,
+          isShortUrbanTurn: isShortTurnSeg,
+          isRuralWinding: Boolean(busSeg.isRuralWinding || isRuralWindingCorridor(a, b)),
+          allRounded: Boolean(busSeg.allRounded),
           isVerifiedMultiBusStall: verifiedStall,
           isScheduledOnly: Boolean(busSeg.isScheduledOnly),
           isScheduledFallback: Boolean(busSeg.isScheduledFallback),
@@ -2993,7 +3144,11 @@
           isTerminusApproach,
           allowRed: Boolean(verifiedStall && busSeg.allowRed !== false),
           coords: segCoords
-        });
+        };
+        const busConfMeta = computeTrafficConfidence(busSegPayload);
+        busSegPayload.confidence = busConfMeta.level;
+        busSegPayload.confidenceMeta = busConfMeta;
+        out.push(busSegPayload);
         continue;
       }
 
@@ -3396,6 +3551,7 @@
     sanitizeDirectionTypos: _sanitizeDirectionTypos,
     normalizeTrafficTier,
     capBusApiTier,
+    computeTrafficConfidence,
     isScheduledBusEtaEntry,
     isTerminusLikeStop,
     isRuralWindingCorridor,
@@ -3425,6 +3581,7 @@
   };
 
   globalScope.BusSpeedEngine = BusSpeedEngine;
+  globalScope.computeTrafficConfidence = computeTrafficConfidence;
   globalScope.getBusSpeedLayerColorHex = getBusSpeedColorHex;
   globalScope.isSegmentCoveredByTdGroundTruth = isSegmentCoveredByTdGroundTruth;
   globalScope.subdividePolylineMicroSteps = subdividePolylineMicroSteps;

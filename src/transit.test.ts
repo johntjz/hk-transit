@@ -5880,13 +5880,11 @@ test('Side-Road <=45m Highway Leakage Blocking (Kam Ho Rd / Castle Peak Rd), Ter
   assert.ok(Array.isArray(roadSumStop24.stopBreakdownSegments) && roadSumStop24.stopBreakdownSegments.length >= 1,
     'getDirectionalRoadSummary must expose stopBreakdownSegments for inline Details > breakdown');
 
-  // 4. Working "Details >" inline breakdown in index.html generateExpandedETAsHtml + toggleTrafficInlineBreakdown
+  // 4. Unified Journey Strip in generateExpandedETAsHtml (replaces legacy vertical breakdown list) + toggleTrafficInlineBreakdown helper intact
   const html = readAppBundle();
   assert.ok(html.includes('unifiedSegments: unifiedSegs'), 'generateExpandedETAsHtml must pass unifiedSegments into getDirectionalRoadSummary');
-  assert.ok(html.includes('toggleTrafficInlineBreakdown(') && html.includes('class="traffic-inline-breakdown"'),
-    'generateExpandedETAsHtml must wire Details > to toggleTrafficInlineBreakdown and render .traffic-inline-breakdown');
-  assert.ok(html.includes('TD Sensor') && html.includes('Bus ETA') && html.includes('Road Est.'),
-    'Inline stop-by-stop breakdown must distinguish TD Sensor vs Bus ETA vs Road Est. sources with confidence');
+  assert.ok(html.includes('class="traffic-journey-bar-wrap') && html.includes('traffic-journey-alert-head'),
+    'generateExpandedETAsHtml must fold traffic alerts directly into the unified Journey Strip header');
   assert.ok(!html.includes('traffic-segment-list') && !html.includes('traffic-segment-row') && !html.includes('traffic-approaching-strip'),
     'Must preserve decluttered card contract without legacy clutter classes');
 
@@ -7974,12 +7972,12 @@ test('Low-Noise Traffic Card, Confidence Model, Neutral Signals & Saturday Morni
   const etaSrc = fs.readFileSync('public/eta-engine.js', 'utf8');
   assert.ok(!/Switch to MTR|MTR may be faster|compare MTR|Take Bus|改乘港鐵|港鐵或較快|可乘巴士/.test(hardcodeSrc),
     'hardcode.js must never emit assumptive MTR or Take Bus recommendations');
-  assert.ok(appUiSrc.includes("if (isSimulatedSource && dispTier === 'SMOOTH')") && appUiSrc.includes("slotEl.innerHTML = '';"),
-    'app-ui.js must suppress stop-row pills for simulated Clear (SMOOTH) segments so green colour stripe speaks cleanly');
-  assert.ok(appUiSrc.includes('data-seg-confidence=') && !appUiSrc.includes('🚌 Bus API •'),
-    'app-ui.js stop pills must attach confidence level and omit raw km/h numbers');
-  assert.ok(etaSrc.includes('traffic-card-kicker') && etaSrc.includes('traffic-conf-badge') && etaSrc.includes('traffic-inline-tier-tag') && etaSrc.includes('compact-clear'),
-    'eta-engine.js must render Traffic Card kicker, confidence badge, compact simulated Clear bar, and qualitative inline breakdown tags without km/h');
+  assert.ok(appUiSrc.includes("if (seg.source !== 'CAM_ONLY' && dispTier === 'SMOOTH')") && appUiSrc.includes("slotEl.innerHTML = '';"),
+    'app-ui.js must suppress stop-row pills for Clear (SMOOTH) segments so green colour stripe speaks cleanly');
+  assert.ok(appUiSrc.includes('data-seg-confidence=') && !appUiSrc.includes('🚌 Bus API •') && !appUiSrc.includes('🚌 Bus ETA ·'),
+    'app-ui.js stop pills must attach confidence attribute without Bus ETA/conf. jargon or km/h numbers');
+  assert.ok(!etaSrc.includes('class="traffic-road-status-bar') && !etaSrc.includes('class="traffic-inline-breakdown"'),
+    'eta-engine.js must omit redundant banner box and vertical Details breakdown list in favor of the unified Journey Strip');
 });
 
 test('Exact Detector-to-Camera Colocation & Localized Journey Strip TD Sub-Segments (E36 Lung Fu Rd TDSLFR10001 vs Wong Chu Rd TDSLFR10002 vs Siu Hong TDS90053)', () => {
@@ -8107,6 +8105,34 @@ test('Exact Detector-to-Camera Colocation & Localized Journey Strip TD Sub-Segme
   assert.ok(overlaySrc.includes('function focusJourneySegmentOnDetailMap(fromIdx, detId = \'\')'), 'map-traffic-overlay.js must focus exact sub-segment by detId');
   assert.ok(appUiSrc.includes('window.openStopSegmentTrafficModal = function(fromIdx, detId = \'\')') && appUiSrc.includes('_isCamColocatedWithDet'),
     'app-ui.js must resolve exact tdSubSegment by detId and enforce spatial colocation guard on cameras');
+});
+
+test('Minimal Clutter-Free Bus Card: No Banner Box, No Vertical Breakdown, No Bus ETA/Conf Jargon, Unified Alert Strip Header & Plain-English Modals', () => {
+  const etaSrc = fs.readFileSync('public/eta-engine.js', 'utf8');
+  const appUiSrc = fs.readFileSync('public/app-ui.js', 'utf8');
+  const cssSrc = fs.readFileSync('public/app.css', 'utf8');
+
+  // 1. Expanded bus card omits separate banner box, vertical breakdown list, and confidence acronyms
+  assert.ok(!etaSrc.includes('traffic-road-status-bar'), 'Expanded bus card must NOT render the separate traffic banner box above the strip');
+  assert.ok(!etaSrc.includes('traffic-inline-breakdown'), 'Expanded bus card must NOT render the redundant vertical Details breakdown list');
+  assert.ok(!etaSrc.includes('Low conf.') && !etaSrc.includes('Med conf.') && !etaSrc.includes('High conf.'),
+    'Expanded bus card must NOT render Low/Med/High conf. jargon');
+
+  // 2. Journey Strip folds Slow/Jammed alert location cleanly into its single header line
+  assert.ok(etaSrc.includes('traffic-journey-alert-head') && etaSrc.includes('const alertToneCls = hasAlertAhead ? ` tone-${roadSum.tone}` : \'\';'),
+    'Journey Strip must fold Slow/Jammed location into the strip header with subtle alert tone');
+  assert.ok(cssSrc.includes('.traffic-journey-bar-wrap.tone-slow') && cssSrc.includes('.traffic-journey-bar-wrap.tone-jammed'),
+    'app.css must style subtle alert tones on .traffic-journey-bar-wrap');
+
+  // 3. Collapsed stop pills omit Bus ETA / TD / conf. jargon and are hidden when stop card is expanded
+  assert.ok(!appUiSrc.includes('🚌 Bus ETA ·') && !appUiSrc.includes('🚌 Road Est. ·'),
+    'Collapsed stop pills must NOT show Bus ETA / Road Est. / conf. jargon');
+  assert.ok(cssSrc.includes('.stop-item.active-stop .stop-seg-speed-slot { display: none; }'),
+    'Expanded stop card must hide its redundant stop-row pill above the Journey Strip');
+
+  // 4. Tap modals show plain-English source labels instead of conf. acronyms
+  assert.ok(appUiSrc.includes("'Live Road Sensor'") && appUiSrc.includes("'Estimated from Bus Times'") && appUiSrc.includes("'Estimated from Road Flow'"),
+    'Tap modals must show plain-English source labels');
 });
 
 

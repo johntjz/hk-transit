@@ -1556,10 +1556,7 @@ window.openTrafficDecisionModal = function(detId, oppDetId = '', segmentNote = '
   if (closeEl) closeEl.innerText = isZh ? '✕ 關閉' : '✕ Close';
 
   const toneDot = dec.tone === 'jammed' ? '🔴' : (dec.tone === 'slow' ? '🟠' : '🟢');
-  const tdConf = (typeof window.computeTrafficConfidence === 'function')
-    ? window.computeTrafficConfidence({ source: 'TD' })
-    : { level: 'HIGH', shortEn: 'High conf.', shortTc: '高可信', fullEn: 'High conf. · TD Sensor', fullTc: '高可信 · 運輸署感應器' };
-  const tdConfTxt = isZh ? tdConf.fullTc : tdConf.fullEn;
+  const tdConfTxt = isZh ? '實時路面感應器' : 'Live Road Sensor';
   const flowLbl = dec.tone === 'jammed'
     ? (isZh ? '擠塞' : 'Jammed')
     : (dec.tone === 'slow' ? (isZh ? '緩慢' : 'Slow') : (isZh ? '暢通' : 'Clear'));
@@ -2649,22 +2646,16 @@ window.refreshStopByStopTrafficUI = function() {
         continue;
       }
 
-      const isSimulatedSource = seg.source === 'BUS_API' || seg.source === 'BUS_EST' || Boolean(seg.isSyntheticFallback);
-      // Noise reduction: for simulated bus-speed data (BUS_API / BUS_EST), only show alert pills when traffic is Slow (Yellow) or Jammed (Red).
-      // Clear stretches rely cleanly on the green left-edge colour stripe.
-      if (isSimulatedSource && dispTier === 'SMOOTH') {
+      // Noise reduction: Clear (SMOOTH) stretches rely cleanly on the green left-edge colour stripe.
+      // Only Slow (Amber), Jammed (Red), or camera-only stops show a compact pill on collapsed rows.
+      if (seg.source !== 'CAM_ONLY' && dispTier === 'SMOOTH') {
         slotEl.innerHTML = '';
         continue;
       }
 
       const confMeta = (typeof window.computeTrafficConfidence === 'function')
         ? window.computeTrafficConfidence(seg)
-        : (seg.confidenceMeta || {
-            level: seg.source === 'TD' ? 'HIGH' : 'LOW',
-            shortEn: seg.source === 'TD' ? 'High conf.' : 'Low conf.',
-            shortTc: seg.source === 'TD' ? '高可信' : '低可信'
-          });
-      const confShort = isZh ? confMeta.shortTc : confMeta.shortEn;
+        : (seg.confidenceMeta || { level: seg.source === 'TD' ? 'HIGH' : 'LOW' });
 
       const toneCls = seg.source === 'CAM_ONLY'
         ? 'tone-cam'
@@ -2685,19 +2676,10 @@ window.refreshStopByStopTrafficUI = function() {
           : (isZh ? '暢通' : 'Clear'));
 
       let labelTxt = '';
-      if (seg.source === 'TD') {
-        const srcTag = seg.camKey ? 'TD 📷' : 'TD';
-        labelTxt = `${dot} ${flowTxt} · ${srcTag}`;
-      } else if (seg.source === 'BUS_API') {
-        const busTag = isZh ? `🚌 巴士推算 · ${confShort}` : `🚌 Bus ETA · ${confShort}`;
-        const srcTag = seg.camKey ? `${busTag} 📷` : busTag;
-        labelTxt = `${dot} ${flowTxt} · ${srcTag}`;
-      } else if (seg.source === 'BUS_EST' || seg.isSyntheticFallback) {
-        const estTag = isZh ? `🚌 道路估算 · ${confShort}` : `🚌 Road Est. · ${confShort}`;
-        const srcTag = seg.camKey ? `${estTag} 📷` : estTag;
-        labelTxt = `${dot} ${flowTxt} · ${srcTag}`;
-      } else {
+      if (seg.source === 'CAM_ONLY') {
         labelTxt = isZh ? '📷 路段鏡頭' : '📷 Road Cam';
+      } else {
+        labelTxt = `${dot} ${flowTxt}${seg.camKey ? ' 📷' : ''}`;
       }
 
       const spanFrom = Number(seg.fromSeq || (modalFromIdx + 1));
@@ -2814,8 +2796,9 @@ window.openStopSegmentTrafficModal = function(fromIdx, detId = '') {
         reasonTc: '未有運輸署感應器覆蓋，巴士停站及燈位時間或影響推算。'
       });
   const confCls = `conf-${String(confMeta.level || 'LOW').toLowerCase()}`;
-  const confShort = isZh ? confMeta.shortTc : confMeta.shortEn;
-  const confFull = isZh ? confMeta.fullTc : confMeta.fullEn;
+  const confFull = isBusEst
+    ? (isZh ? '按道路類型估算' : 'Estimated from Road Flow')
+    : (isZh ? '由巴士到站時間推算' : 'Estimated from Bus Times');
   const confReason = isZh ? confMeta.reasonTc : confMeta.reasonEn;
   const verdict = isUnmonitored
     ? (isZh ? '此路段暫無實時測速監測' : 'Unmonitored stretch (no live TD sensor or bus ETA pair)')

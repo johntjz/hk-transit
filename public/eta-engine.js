@@ -2195,17 +2195,11 @@ function generateExpandedETAsHtml(arrs, group, stopKey, stopIdx) {
           ? (isZh ? (sub.roadTc || sub.roadEn || sub.camDesc) : (sub.camDesc || sub.roadEn || sub.roadTc))
           : ((blk.count === 1 && seg.source === 'TD') ? (isZh ? (seg.roadTc || seg.roadEn || seg.camDesc) : (seg.camDesc || seg.roadEn || seg.roadTc)) : '');
         const tdLocClean = tdLocRaw ? _cleanLbl(tdLocRaw) : '';
-        const segConf = (typeof window.computeTrafficConfidence === 'function')
-          ? window.computeTrafficConfidence(sub || seg)
-          : ((sub || seg).confidenceMeta || null);
-        const segConfTxt = segConf ? (isZh ? segConf.fullTc : segConf.fullEn) : '';
         const camMark = targetCamKey ? ' 📷' : '';
-        const srcTipPart = (blk.count === 1 && segConfTxt)
-          ? ` · ${segConfTxt}${camMark}`
-          : (blk.count > 1 ? (isZh ? ` (${blk.count}段)` : ` (${blk.count} legs)`) : '');
+        const multiPart = blk.count > 1 ? (isZh ? ` (${blk.count}段)` : ` (${blk.count} legs)`) : '';
         const legTip = tdLocClean
-          ? `${tdLocClean} · ${qualLbl}${srcTipPart}`
-          : `#${seg.fromSeq} ${_cleanLbl(rawFrom)} → #${endSeg.toSeq} ${_cleanLbl(rawTo)} · ${qualLbl}${srcTipPart}`;
+          ? `${tdLocClean} · ${qualLbl}${camMark}`
+          : `#${seg.fromSeq} ${_cleanLbl(rawFrom)} → #${endSeg.toSeq} ${_cleanLbl(rawTo)} · ${qualLbl}${camMark}${multiPart}`;
         const isAlertBlk = blk.legTone === 'moderate' || blk.legTone === 'congested';
         const flexWeight = Math.max(isAlertBlk ? 3 : 2, Math.min(24, Math.round(blk.totalDistKm * 10)));
         const detArgJs = targetDetId ? `, '${escapeJsAttr(targetDetId)}'` : '';
@@ -2213,155 +2207,59 @@ function generateExpandedETAsHtml(arrs, group, stopKey, stopIdx) {
         const camDataAttr = targetCamKey ? ` data-cam-key="${escapeHtml(targetCamKey)}"` : '';
         return `<button type="button" class="traffic-journey-seg tone-${blk.legTone}" data-from-idx="${seg.fromIdx}"${detDataAttr}${camDataAttr} data-seg-tier="${escapeHtml(blk.effTier)}" style="flex:${flexWeight} 1 0;" title="${escapeHtml(legTip)}" aria-label="${escapeHtml(legTip)}" onclick="event.stopPropagation(); if(typeof focusJourneySegmentOnDetailMap==='function'){focusJourneySegmentOnDetailMap(${seg.fromIdx}${detArgJs});}else if(typeof openStopSegmentTrafficModal==='function'){openStopSegmentTrafficModal(${seg.fromIdx}${detArgJs});}"></button>`;
       }).join('');
-      const headLeft = isZh
+      const hasAlertAhead = Boolean(roadSum && (roadSum.tone === 'jammed' || roadSum.tone === 'slow'));
+      const alertToneCls = hasAlertAhead ? ` tone-${roadSum.tone}` : '';
+      let headLeft = isZh
         ? `路況 · 第${stopIdx + 1}站 → 第${journeyEndIdx + 1}站 (${endStopName})`
         : `Traffic · #${stopIdx + 1} → #${journeyEndIdx + 1} ${endStopName}`;
+      if (hasAlertAhead) {
+        const alertDot = roadSum.tone === 'jammed' ? '🔴' : '🟠';
+        const alertWord = roadSum.tone === 'jammed'
+          ? (isZh ? '擠塞' : 'Jammed')
+          : (isZh ? '緩慢' : 'Slow');
+        const rawSpot = String(roadSum.betweenLabel || roadSum.focusDet?.roadEn || '').trim();
+        const rawSpotZh = String(roadSum.betweenLabel || roadSum.focusDet?.roadTc || roadSum.focusDet?.roadEn || '').trim();
+        const cleanSpot = _cleanLbl(isZh ? rawSpotZh : rawSpot)
+          .replace(/^(?:Between|位於)\s+/i, '')
+          .trim();
+        headLeft = cleanSpot
+          ? `${alertDot} ${alertWord} · ${cleanSpot}`
+          : `${alertDot} ${alertWord}${isZh ? '（前方路段）' : ' ahead'}`;
+      }
       const headRight = isZh ? '點按路段' : 'Tap leg';
       const barDensityAttr = displayBlocks.length > 28
         ? ' data-density="ultra-dense"'
         : (displayBlocks.length > 16 ? ' data-density="dense"' : '');
-      journeyBarHtml = `<div class="traffic-journey-bar-wrap" data-board-idx="${stopIdx}" data-end-idx="${journeyEndIdx}" onclick="event.stopPropagation();"><div class="traffic-journey-bar-head"><span>${escapeHtml(headLeft)}</span><span style="opacity:0.75;">${escapeHtml(headRight)}</span></div><div class="traffic-journey-bar"${barDensityAttr} role="group" aria-label="${escapeHtml(headLeft)}">${segButtonsHtml}</div></div>`;
+      journeyBarHtml = `<div class="traffic-journey-bar-wrap${alertToneCls}" data-board-idx="${stopIdx}" data-end-idx="${journeyEndIdx}" onclick="event.stopPropagation();"><div class="traffic-journey-bar-head"><span class="${hasAlertAhead ? 'traffic-journey-alert-head' : ''}">${escapeHtml(headLeft)}</span><span style="opacity:0.75;">${escapeHtml(headRight)}</span></div><div class="traffic-journey-bar"${barDensityAttr} role="group" aria-label="${escapeHtml(headLeft)}">${segButtonsHtml}</div></div>`;
     }
 
-    if (roadSum && roadSum.headline) {
-      const fDet = roadSum.focusDet;
-      const oppDet = roadSum.oppDet;
-      const segNote = roadSum.betweenLabel || '';
-      const breakdownSegs = Array.isArray(roadSum.stopBreakdownSegments)
-        ? roadSum.stopBreakdownSegments.filter(s => s && (s.source === 'TD' || s.source === 'BUS_API' || s.source === 'BUS_EST'))
-        : [];
-      const hasInlineBreakdown = breakdownSegs.length > 0;
-      const breakdownId = `traffic-inline-breakdown-${stopIdx}`;
-      const barUsesInlineToggle = Boolean(hasInlineBreakdown && (!fDet || !fDet.camKey));
-
-      const openCall = barUsesInlineToggle
-        ? `event.stopPropagation(); toggleTrafficInlineBreakdown(${stopIdx}, this);`
-        : (fDet
-          ? `event.stopPropagation(); openTrafficDecisionModal('${escapeJsAttr(fDet.id)}', '${escapeJsAttr(oppDet?.id || '')}', '${escapeJsAttr(segNote)}', false);`
-          : (roadSum.aheadCam?.key
-            ? `event.stopPropagation(); openTrafficCameraByKey('${escapeJsAttr(roadSum.aheadCam.key)}', '${escapeJsAttr(roadSum.aheadCam.desc || '')}');`
-            : `event.stopPropagation(); toggleTrafficInlineBreakdown(${stopIdx}, this);`));
-      const camIcon = (!barUsesInlineToggle && fDet?.camKey)
-        ? (isZh ? '📷 詳情/實拍 ›' : '📷 Traffic & Cam ›')
-        : ((!barUsesInlineToggle && roadSum.aheadCam?.key) ? (isZh ? '📷 鏡頭 ›' : '📷 Cam ›') : (isZh ? '詳情 ›' : 'Details ›'));
-      const toneDot = roadSum.tone === 'jammed' ? '🔴' : (roadSum.tone === 'slow' ? '🟠' : '🟢');
-      const cleanHeadline = _cleanLbl(roadSum.headline);
-      const cleanDetail = roadSum.detail
-        ? _cleanLbl(roadSum.detail).replace(/\s*[·•]\s*(?:High|Med|Low)\s+conf\.?/gi, '').replace(/\s*[·•]\s*(?:高|中|低)可信度?/g, '').trim()
+    const chipParts = [];
+    if (roadSum && roadSum.aheadCam?.key) {
+      const mVal = Math.abs(Number(roadSum.aheadCam.aheadMeters));
+      const distTag = Number.isFinite(mVal)
+        ? (mVal < 1000 ? `${Math.max(50, Math.round(mVal / 50) * 50)}m` : `${(mVal / 1000).toFixed(1)}km`)
         : '';
-      const sumConfMeta = roadSum.confidenceMeta || (typeof window.computeTrafficConfidence === 'function'
-        ? window.computeTrafficConfidence({ source: roadSum.source || (roadSum.isSimulatedSource ? 'BUS_API' : 'TD') })
-        : {
-            level: roadSum.isSimulatedSource ? 'LOW' : 'HIGH',
-            shortEn: roadSum.isSimulatedSource ? 'Low conf.' : 'High conf.',
-            shortTc: roadSum.isSimulatedSource ? '低可信' : '高可信',
-            fullEn: roadSum.isSimulatedSource ? 'Low conf. · Bus ETA' : 'High conf. · TD Sensor',
-            fullTc: roadSum.isSimulatedSource ? '低可信 · 巴士推算' : '高可信 · 運輸署感應器'
-          });
-      const sumConfLevel = String(roadSum.confidence || sumConfMeta?.level || (roadSum.isSimulatedSource ? 'LOW' : 'HIGH')).toUpperCase();
-      const sumConfCls = `conf-${sumConfLevel.toLowerCase()}`;
-      const sumConfShort = isZh ? (sumConfMeta.shortTc || '低可信') : (sumConfMeta.shortEn || 'Low conf.');
-      const sumConfBadgeHtml = `<span class="traffic-conf-badge ${sumConfCls}" data-confidence="${escapeHtml(sumConfLevel)}">${escapeHtml(sumConfShort)}</span>`;
-      const isCompactSimClear = Boolean(roadSum.isSimulatedSource && roadSum.tone === 'smooth');
+      const chipLbl = isZh
+        ? `📷 前方路況${distTag ? ` · ${distTag}` : ''}`
+        : `📷 Road Ahead${distTag ? ` · ${distTag}` : ''}`;
+      chipParts.push(
+        `<button type="button" class="traffic-ahead-cam-chip" data-cam-key="${escapeHtml(roadSum.aheadCam.key)}" onclick="event.stopPropagation(); openTrafficCameraByKey('${escapeJsAttr(roadSum.aheadCam.key)}', '${escapeJsAttr(_cleanLbl(roadSum.aheadCam.desc || ''))}');">${escapeHtml(chipLbl)}</button>`
+      );
+    }
+    if (exitStopIdx !== null && stops[exitStopIdx]) {
+      const exitName = getStopName(stops[exitStopIdx]);
+      chipParts.push(
+        `<span class="traffic-tod-chip" style="border-color:rgba(22,163,74,0.45);color:#16a34a;">${isZh ? `下車範圍：至第${exitStopIdx + 1}站 ${escapeHtml(exitName)}` : `Clamped to Exit #${exitStopIdx + 1}`}</span>`
+      );
+    }
+    const extrasHtml = chipParts.length
+      ? `<div class="traffic-card-extras"><div class="traffic-chip-row">${chipParts.join('')}</div></div>`
+      : '';
 
-      // Keep ONLY 1 clean top corridor status bar + compact colour-stripe journey bar + optional camera chip + toggleable Details breakdown
-      const chipParts = [];
-      if (roadSum.aheadCam?.key) {
-        const mVal = Math.abs(Number(roadSum.aheadCam.aheadMeters));
-        const distTag = Number.isFinite(mVal)
-          ? (mVal < 1000 ? `${Math.max(50, Math.round(mVal / 50) * 50)}m` : `${(mVal / 1000).toFixed(1)}km`)
-          : '';
-        const chipLbl = isZh
-          ? `📷 前方路況${distTag ? ` · ${distTag}` : ''}`
-          : `📷 Road Ahead${distTag ? ` · ${distTag}` : ''}`;
-        chipParts.push(
-          `<button type="button" class="traffic-ahead-cam-chip" data-cam-key="${escapeHtml(roadSum.aheadCam.key)}" onclick="event.stopPropagation(); openTrafficCameraByKey('${escapeJsAttr(roadSum.aheadCam.key)}', '${escapeJsAttr(_cleanLbl(roadSum.aheadCam.desc || ''))}');">${escapeHtml(chipLbl)}</button>`
-        );
-      }
-      if (!barUsesInlineToggle && hasInlineBreakdown) {
-        chipParts.push(
-          `<button type="button" class="traffic-tod-chip" aria-expanded="false" aria-controls="${breakdownId}" onclick="event.stopPropagation(); toggleTrafficInlineBreakdown(${stopIdx}, this);">${isZh ? '分段詳情 ›' : 'Details ›'}</button>`
-        );
-      }
-      if (exitStopIdx !== null && stops[exitStopIdx]) {
-        const exitName = getStopName(stops[exitStopIdx]);
-        chipParts.push(
-          `<span class="traffic-tod-chip" style="border-color:rgba(22,163,74,0.45);color:#16a34a;">${isZh ? `下車範圍：至第${exitStopIdx + 1}站 ${escapeHtml(exitName)}` : `Clamped to Exit #${exitStopIdx + 1}`}</span>`
-        );
-      }
-      const extrasHtml = chipParts.length
-        ? `<div class="traffic-card-extras"><div class="traffic-chip-row">${chipParts.join('')}</div></div>`
-        : '';
-
-      let inlineBreakdownHtml = '';
-      if (hasInlineBreakdown) {
-        const breakdownRows = breakdownSegs.slice(0, 10).map((seg) => {
-          const effTier = _effSegTier(seg);
-          const sDot = effTier === 'CONGESTED' ? '🔴' : (effTier === 'MODERATE' ? '🟠' : '🟢');
-          const tierCls = effTier === 'CONGESTED' ? 'tone-congested' : (effTier === 'MODERATE' ? 'tone-moderate' : 'tone-smooth');
-          const tierLbl = effTier === 'CONGESTED'
-            ? (isZh ? '擠塞' : 'Jammed')
-            : (effTier === 'MODERATE' ? (isZh ? '緩慢' : 'Slow') : (isZh ? '暢通' : 'Clear'));
-          const rawFrom = isZh ? (seg.fromNameTc || seg.fromNameEn) : (seg.fromNameEn || seg.fromNameTc);
-          const rawTo = isZh ? (seg.toNameTc || seg.toNameEn) : (seg.toNameEn || seg.toNameTc);
-          const pairLbl = (rawFrom && rawTo)
-            ? `${seg.fromSeq ? `#${seg.fromSeq} ` : ''}${_cleanLbl(rawFrom)} → ${seg.toSeq ? `#${seg.toSeq} ` : ''}${_cleanLbl(rawTo)}`
-            : (_cleanLbl(isZh ? (seg.roadTc || seg.roadEn) : (seg.roadEn || seg.roadTc)) || (isZh ? '前方路段' : 'Forward stretch'));
-          const segConf = (typeof window.computeTrafficConfidence === 'function')
-            ? window.computeTrafficConfidence(seg)
-            : (seg.confidenceMeta || {
-                level: seg.source === 'TD' ? 'HIGH' : 'LOW',
-                shortEn: seg.source === 'TD' ? 'High conf.' : 'Low conf.',
-                shortTc: seg.source === 'TD' ? '高可信' : '低可信',
-                fullEn: seg.source === 'TD' ? 'High conf. · TD Sensor' : (seg.source === 'BUS_EST' ? 'Low conf. · Road Est.' : 'Low conf. · Bus ETA'),
-                fullTc: seg.source === 'TD' ? '高可信 · 運輸署感應器' : (seg.source === 'BUS_EST' ? '低可信 · 道路估算' : '低可信 · 巴士推算')
-              });
-          const srcLabel = seg.source === 'TD'
-            ? (seg.roundaboutBottleneck
-              ? (isZh ? `運輸署感應器 · 迴旋處/交匯處 · ${segConf.shortTc}` : `TD Sensor · Roundabout · ${segConf.shortEn}`)
-              : (isZh ? `運輸署感應器 · ${segConf.shortTc}` : `TD Sensor · ${segConf.shortEn}`))
-            : ((seg.source === 'BUS_EST' || seg.isSyntheticFallback)
-              ? (isZh ? `道路估算 · ${segConf.shortTc}` : `Road Est. · ${segConf.shortEn}`)
-              : (isZh ? `巴士推算 · ${segConf.shortTc}` : `Bus ETA · ${segConf.shortEn}`));
-          return `<div class="traffic-inline-item" data-seg-source="${escapeHtml(seg.source)}" data-seg-tier="${escapeHtml(effTier)}" data-seg-confidence="${escapeHtml(segConf.level || 'LOW')}" style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid rgba(148,163,184,0.18);">
-            <span style="min-width:0;flex:1;line-height:1.3;">${sDot} <strong>${escapeHtml(pairLbl)}</strong><br><span class="traffic-inline-src" style="font-size:0.68rem;color:var(--text-sub);">${escapeHtml(srcLabel)}</span></span>
-            <span class="traffic-inline-tier-tag ${tierCls}">${escapeHtml(tierLbl)}</span>
-          </div>`;
-        }).join('');
-        const modalBtnHtml = fDet
-          ? `<div style="padding-top:6px;text-align:right;"><button type="button" class="traffic-tod-chip" onclick="event.stopPropagation(); openTrafficDecisionModal('${escapeJsAttr(fDet.id)}', '${escapeJsAttr(oppDet?.id || '')}', '${escapeJsAttr(segNote)}', false);">${isZh ? '查看運輸署感應器詳情 ›' : 'Open TD Sensor Details ›'}</button></div>`
-          : '';
-        inlineBreakdownHtml = `<div id="${breakdownId}" class="traffic-inline-breakdown" data-stop-idx="${stopIdx}" style="display:none;margin-top:6px;padding:6px 10px;border-radius:10px;background:rgba(15,23,42,0.05);border:1px solid var(--border-color);font-size:0.75rem;text-align:left;" onclick="event.stopPropagation();">${breakdownRows}${modalBtnHtml}</div>`;
-      }
-
-      if (isCompactSimClear) {
-        roadTrafficBannerHtml = `
-          <button type="button" class="traffic-road-status-bar tone-smooth compact-clear" data-traffic-confidence="${escapeHtml(sumConfLevel)}"${barUsesInlineToggle ? ` aria-expanded="false" aria-controls="${breakdownId}"` : ''} onclick="${openCall}">
-            <span class="traffic-road-main">
-              <span class="traffic-road-top-row">
-                <span class="traffic-card-kicker">${isZh ? '路況' : 'Traffic'}</span>
-                <span class="traffic-road-headline">${toneDot} ${escapeHtml(isZh ? '前路暢通' : 'Clear ahead')}</span>
-                ${sumConfBadgeHtml}
-              </span>
-            </span>
-            <span class="traffic-road-cta">${camIcon}</span>
-          </button>${journeyBarHtml}${extrasHtml}${inlineBreakdownHtml}`;
-      } else {
-        roadTrafficBannerHtml = `
-          <button type="button" class="traffic-road-status-bar tone-${roadSum.tone}" data-traffic-confidence="${escapeHtml(sumConfLevel)}"${barUsesInlineToggle ? ` aria-expanded="false" aria-controls="${breakdownId}"` : ''} onclick="${openCall}">
-            <span class="traffic-road-main">
-              <span class="traffic-road-top-row">
-                <span class="traffic-card-kicker">${isZh ? '路況' : 'Traffic'}</span>
-                ${sumConfBadgeHtml}
-              </span>
-              <span class="traffic-road-headline">${toneDot} ${escapeHtml(cleanHeadline)}</span>
-              ${cleanDetail ? `<span class="traffic-road-sub">${escapeHtml(cleanDetail)}</span>` : ''}
-            </span>
-            <span class="traffic-road-cta">${camIcon}</span>
-          </button>${journeyBarHtml}${extrasHtml}${inlineBreakdownHtml}`;
-      }
-    } else if (journeyBarHtml) {
-      roadTrafficBannerHtml = journeyBarHtml;
+    if (journeyBarHtml) {
+      roadTrafficBannerHtml = `${journeyBarHtml}${extrasHtml}`;
+    } else if (extrasHtml) {
+      roadTrafficBannerHtml = extrasHtml;
     }
   }
 

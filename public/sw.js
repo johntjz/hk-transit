@@ -10,6 +10,8 @@ const CORE_SHELL_URLS = [
   'icon.svg',
   'app.css',
   'transit-data.js',
+  'weathercoorelation.js',
+  'bussurge.js',
   'fare-load-engine.js',
   'hardcode.js',
   'busspeed.js',

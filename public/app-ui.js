@@ -2486,12 +2486,101 @@ function toggleStopBookmark(idx) {
   SafeStorage.setItem('transit_stop_bookmarks_v1', JSON.stringify(bookmarkedStops));
 }
 
+window._lastDeletedBookmark = null;
+
+function toggleRiderBusLoadReport(groupKey, stopKey, stopIdx) {
+  triggerHaptic(14);
+  if (typeof setRiderLoadReport !== 'function' || typeof getActiveRiderLoadReport !== 'function') return;
+  const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
+  const existing = getActiveRiderLoadReport(groupKey, stopKey);
+  const nextStatus = existing?.status === 'FULL' ? 'SEATS' : 'FULL';
+  setRiderLoadReport(groupKey, stopKey, nextStatus);
+
+  if (detailRouteGroup && detailRouteGroup.key === groupKey && Array.isArray(detailLastFetchedArrs) && detailLastFetchedArrs.length > 0) {
+    const stops = getStopsForGroup(detailRouteGroup, detailBoardStopKey || detailTargetStopKey);
+    const stObj = stops[stopIdx];
+    detailLastFetchedArrs = detailLastFetchedArrs.map((arr) => {
+      if (typeof estimateBusSeatStatus === 'function') {
+        const updatedLoad = estimateBusSeatStatus(detailRouteGroup, stopIdx, arr, {
+          baseLoad: arr.loadEstimate || null,
+          stopKey: stObj?.stopKey || stopKey,
+          nowMs: Date.now()
+        });
+        return { ...arr, loadEstimate: updatedLoad };
+      }
+      return arr;
+    });
+    const expEl = document.getElementById(`detail-eta-expanded-${stopIdx}`);
+    if (expEl && typeof generateExpandedETAsHtml === 'function') {
+      expEl.innerHTML = generateExpandedETAsHtml(detailLastFetchedArrs, detailRouteGroup, stopKey, stopIdx);
+    }
+  }
+
+  showToast(
+    nextStatus === 'FULL'
+      ? (isZh ? '已回報易滿座（25分鐘有效）' : 'Reported Likely Full (25m)')
+      : (isZh ? '已更新為有位（25分鐘有效）' : 'Updated: Seats available (25m)')
+  );
+}
+window.toggleRiderBusLoadReport = toggleRiderBusLoadReport;
+
 function removeStopBookmark(bmId) {
   triggerHaptic(12);
-  bookmarkedStops = bookmarkedStops.filter(b => b.id !== bmId);
+  const idx = bookmarkedStops.findIndex(b => b.id === bmId);
+  if (idx < 0) return;
+  const removed = bookmarkedStops[idx];
+  window._lastDeletedBookmark = { item: { ...removed }, index: idx };
+  bookmarkedStops.splice(idx, 1);
   SafeStorage.setItem('transit_stop_bookmarks_v1', JSON.stringify(bookmarkedStops));
   renderFavList(false);
+
+  const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
+  const g = routeMapIndex.get(removed.groupKey);
+  const routeBadge = g ? (window.getDisplayRouteBadge ? window.getDisplayRouteBadge(g) : g.routeNo) : '';
+  const stLabel = stripPlatformCodeFromDisplay(isZh && removed.stopName_tc ? removed.stopName_tc : removed.stopName_e);
+  const itemSummary = routeBadge ? `${routeBadge} · ${stLabel}` : stLabel;
+  const toastMsg = isZh ? `已移除 ${itemSummary}` : `Removed ${itemSummary}`;
+  if (typeof showUndoToast === 'function') {
+    showUndoToast(toastMsg, () => undoLastBookmarkRemoval(), isZh ? '復原' : 'Undo', 5000);
+  } else {
+    showToast(toastMsg);
+  }
 }
+window.removeStopBookmark = removeStopBookmark;
+
+function undoLastBookmarkRemoval() {
+  const snap = window._lastDeletedBookmark;
+  if (!snap || !snap.item) return false;
+  window._lastDeletedBookmark = null;
+  triggerHaptic(12);
+  const exists = bookmarkedStops.some(b => b.id === snap.item.id);
+  if (!exists) {
+    const insertAt = Math.max(0, Math.min(Number(snap.index) || 0, bookmarkedStops.length));
+    bookmarkedStops.splice(insertAt, 0, snap.item);
+    SafeStorage.setItem('transit_stop_bookmarks_v1', JSON.stringify(bookmarkedStops));
+  }
+  renderFavList(false);
+  const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
+  showToast(isZh ? '已復原收藏' : 'Bookmark restored');
+  return true;
+}
+window.undoLastBookmarkRemoval = undoLastBookmarkRemoval;
+
+function reorderSavedBookmarks(fromIdx, toIdx) {
+  const from = Number(fromIdx);
+  const to = Number(toIdx);
+  if (!Number.isInteger(from) || !Number.isInteger(to)) return false;
+  if (from < 0 || from >= bookmarkedStops.length || to < 0 || to >= bookmarkedStops.length || from === to) {
+    return false;
+  }
+  triggerHaptic(10);
+  const [moved] = bookmarkedStops.splice(from, 1);
+  bookmarkedStops.splice(to, 0, moved);
+  SafeStorage.setItem('transit_stop_bookmarks_v1', JSON.stringify(bookmarkedStops));
+  renderFavList(false);
+  return true;
+}
+window.reorderSavedBookmarks = reorderSavedBookmarks;
 
 function flipFavoriteBookmarksOrder() {
   triggerHaptic(12);
@@ -2888,6 +2977,110 @@ function formatCompactBookmarkDest(destName, isZh = false) {
 }
 window.formatCompactBookmarkDest = formatCompactBookmarkDest;
 
+function attachFavDragReorderHandlers(listEl) {
+  if (!listEl) return;
+  const items = Array.from(listEl.querySelectorAll('.fav-bookmark-item'));
+  let htmlDragFromIdx = -1;
+
+  const clearIndicators = () => {
+    items.forEach((el) => el.classList.remove('fav-dragging', 'fav-drag-over-above', 'fav-drag-over-below'));
+  };
+
+  items.forEach((itemEl) => {
+    const idx = Number(itemEl.dataset.favIdx);
+
+    // HTML5 drag-and-drop (desktop browsers & automated drag)
+    itemEl.addEventListener('dragstart', (e) => {
+      htmlDragFromIdx = idx;
+      itemEl.classList.add('fav-dragging');
+      if (e.dataTransfer) {
+        e.dataTransfer.effectAllowed = 'move';
+        try { e.dataTransfer.setData('text/plain', String(idx)); } catch (err) {}
+      }
+    });
+
+    itemEl.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+      const targetIdx = Number(itemEl.dataset.favIdx);
+      items.forEach((el) => el.classList.remove('fav-drag-over-above', 'fav-drag-over-below'));
+      if (htmlDragFromIdx >= 0 && targetIdx !== htmlDragFromIdx) {
+        itemEl.classList.add(targetIdx < htmlDragFromIdx ? 'fav-drag-over-above' : 'fav-drag-over-below');
+      }
+    });
+
+    itemEl.addEventListener('drop', (e) => {
+      e.preventDefault();
+      const targetIdx = Number(itemEl.dataset.favIdx);
+      const from = htmlDragFromIdx >= 0 ? htmlDragFromIdx : Number(e.dataTransfer?.getData('text/plain'));
+      clearIndicators();
+      htmlDragFromIdx = -1;
+      if (Number.isInteger(from) && Number.isInteger(targetIdx) && from !== targetIdx) {
+        reorderSavedBookmarks(from, targetIdx);
+      }
+    });
+
+    itemEl.addEventListener('dragend', () => {
+      clearIndicators();
+      htmlDragFromIdx = -1;
+    });
+
+    // Pointer Events drag on the ⋮⋮ handle (smooth touch & mobile drag-and-drop)
+    const handle = itemEl.querySelector('.fav-drag-handle');
+    if (handle) {
+      handle.addEventListener('pointerdown', (e) => {
+        if (e.button && e.button !== 0) return;
+        if (bookmarkedStops.length < 2) return;
+        e.stopPropagation();
+        const startIdx = Number(itemEl.dataset.favIdx);
+        let currentTargetIdx = startIdx;
+        let movedEnough = false;
+        const startY = e.clientY;
+
+        try { handle.setPointerCapture(e.pointerId); } catch (err) {}
+        itemEl.classList.add('fav-dragging');
+
+        const onPointerMove = (mv) => {
+          if (Math.abs(mv.clientY - startY) > 6) movedEnough = true;
+          if (!movedEnough) return;
+          mv.preventDefault();
+          let bestIdx = startIdx;
+          const allCards = Array.from(listEl.querySelectorAll('.fav-bookmark-item'));
+          allCards.forEach((c) => c.classList.remove('fav-drag-over-above', 'fav-drag-over-below'));
+          for (let i = 0; i < allCards.length; i++) {
+            const rect = allCards[i].getBoundingClientRect();
+            const midY = rect.top + rect.height / 2;
+            if (mv.clientY >= rect.top && mv.clientY <= rect.bottom) {
+              bestIdx = i;
+              if (i !== startIdx) {
+                allCards[i].classList.add(mv.clientY < midY ? 'fav-drag-over-above' : 'fav-drag-over-below');
+              }
+              break;
+            }
+            if (mv.clientY > rect.bottom) bestIdx = i;
+            if (i === 0 && mv.clientY < rect.top) bestIdx = 0;
+          }
+          currentTargetIdx = bestIdx;
+        };
+
+        const finishDrag = () => {
+          handle.removeEventListener('pointermove', onPointerMove);
+          handle.removeEventListener('pointerup', finishDrag);
+          handle.removeEventListener('pointercancel', finishDrag);
+          clearIndicators();
+          if (movedEnough && currentTargetIdx !== startIdx) {
+            reorderSavedBookmarks(startIdx, currentTargetIdx);
+          }
+        };
+
+        handle.addEventListener('pointermove', onPointerMove);
+        handle.addEventListener('pointerup', finishDrag);
+        handle.addEventListener('pointercancel', finishDrag);
+      });
+    }
+  });
+}
+
 async function renderFavList(isSilentRefresh = false) {
   const listEl = document.getElementById('favList');
   if (!listEl) return;
@@ -2898,15 +3091,20 @@ async function renderFavList(isSilentRefresh = false) {
     return;
   }
 
+  const isZh = (currentLang === 'zh');
+
   if (!isSilentRefresh || !listEl.querySelector('.route-list-item')) {
     listEl.innerHTML = bookmarkedStops.map((bm, idx) => {
       const g = routeMapIndex.get(bm.groupKey);
       if (!g) return '';
       const dispBadge = window.getDisplayRouteBadge ? window.getDisplayRouteBadge(g) : g.routeNo;
-      const stName = stripPlatformCodeFromDisplay(currentLang === 'zh' && bm.stopName_tc ? bm.stopName_tc : bm.stopName_e);
-      const compactDest = formatCompactBookmarkDest(getRouteName(g), currentLang === 'zh');
+      const stName = stripPlatformCodeFromDisplay(isZh && bm.stopName_tc ? bm.stopName_tc : bm.stopName_e);
+      const compactDest = formatCompactBookmarkDest(getRouteName(g), isZh);
+      const dragAria = isZh ? `拖曳排序 ${dispBadge} ${stName}` : `Drag to reorder ${dispBadge} ${stName}`;
+      const delAria = isZh ? `移除收藏 ${dispBadge} ${stName}` : `Remove ${dispBadge} ${stName}`;
       return `
-        <div class="route-list-item ${g.mode === 'FERRY' ? 'ferry-card' : ''}" onclick="if(!isUserSelectingText())openRouteDetail('${escapeJsAttr(g.key)}', '${escapeJsAttr(bm.stopKey)}')">
+        <div class="route-list-item fav-bookmark-item ${g.mode === 'FERRY' ? 'ferry-card' : ''}" data-fav-idx="${idx}" data-bm-id="${escapeHtml(bm.id)}" draggable="true" onclick="if(!isUserSelectingText())openRouteDetail('${escapeJsAttr(g.key)}', '${escapeJsAttr(bm.stopKey)}')">
+          <button type="button" class="fav-drag-handle" data-fav-idx="${idx}" aria-label="${escapeHtml(dragAria)}" title="${isZh ? '拖曳排序' : 'Drag to reorder'}" onclick="event.stopPropagation()">⋮⋮</button>
           <div class="route-no-col">
             <div class="route-no-text" style="color:${g.colorHex || 'var(--text-main)'};">${escapeHtml(dispBadge)}</div>
             <div class="route-co-tag">${escapeHtml(getCompanyName(g))}</div>
@@ -2918,12 +3116,12 @@ async function renderFavList(isSilentRefresh = false) {
           <div class="route-eta-col" id="fav-eta-${idx}">
             <div class="eta-time" style="color:var(--text-sub);font-size:1.1rem;">···</div>
           </div>
-          <div style="display:flex;flex-direction:column;gap:2px;margin-left:4px;" onclick="event.stopPropagation()">
-            <button class="fav-grip-btn" onclick="cycleFavBookmarkPosition(${idx})" title="Move">⇅</button>
-            <button class="del-fav-btn" onclick="removeStopBookmark('${escapeJsAttr(bm.id)}')" title="Remove">✕</button>
+          <div class="fav-row-actions" onclick="event.stopPropagation()">
+            <button type="button" class="del-fav-btn" data-bm-id="${escapeHtml(bm.id)}" aria-label="${escapeHtml(delAria)}" onclick="event.stopPropagation(); removeStopBookmark('${escapeJsAttr(bm.id)}')" title="${isZh ? '移除收藏' : 'Remove bookmark'}">✕</button>
           </div>
         </div>`;
     }).join('');
+    attachFavDragReorderHandlers(listEl);
   }
 
   const myToken = ++favRenderToken;

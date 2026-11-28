@@ -976,11 +976,38 @@ function t(key) { return (typeof i18n !== 'undefined' && (i18n[currentLang]?.[ke
 function showToast(msg) {
   const el = document.getElementById('toastMsg');
   if (!el) return;
+  el.classList.remove('toast-interactive');
   el.innerText = msg;
   el.classList.add('show');
   clearTimeout(window._toastTimer);
   window._toastTimer = setTimeout(() => el.classList.remove('show'), 2400);
 }
+
+function showUndoToast(msg, onUndo, undoLabel = '', durationMs = 5000) {
+  const el = document.getElementById('toastMsg');
+  if (!el) return;
+  const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
+  const btnText = undoLabel || (isZh ? '復原' : 'Undo');
+  el.classList.add('toast-interactive');
+  el.setAttribute('role', 'status');
+  el.innerHTML = `<span class="toast-msg-text">${escapeHtml(msg)}</span><button type="button" class="toast-undo-btn" id="toastUndoBtn">${escapeHtml(btnText)}</button>`;
+  const undoBtn = el.querySelector('#toastUndoBtn');
+  if (undoBtn) {
+    undoBtn.onclick = (e) => {
+      e.stopPropagation();
+      clearTimeout(window._toastTimer);
+      el.classList.remove('show', 'toast-interactive');
+      if (typeof onUndo === 'function') onUndo();
+    };
+  }
+  el.classList.add('show');
+  clearTimeout(window._toastTimer);
+  window._toastTimer = setTimeout(() => {
+    el.classList.remove('show', 'toast-interactive');
+    if (window._lastDeletedBookmark) window._lastDeletedBookmark = null;
+  }, Math.max(1500, Number(durationMs) || 5000));
+}
+if (typeof window !== 'undefined') window.showUndoToast = showUndoToast;
 
 // ============================================================================
 // TELEMETRY, ETA-DRIFT TRACKERS & CONTINUOUS BUS KINEMATICS
@@ -1895,9 +1922,16 @@ async function fetchEtaRaw(group, stopKey, isExpandedDetailView = false, afterMs
         const periodBusHwSec = (typeof getPeriodHeadwaySecs === 'function')
           ? getPeriodHeadwaySecs(group, item.targetMs || now)
           : ((Number(group.headwayMins) || 12) * 60);
+        const upstreamSeg = (effStopIdx > 0 && Array.isArray(window.__DETAIL_STOP_SEGMENTS__))
+          ? window.__DETAIL_STOP_SEGMENTS__[effStopIdx - 1]
+          : null;
+        const liveEtaSpacingSec = (upstreamSeg && upstreamSeg.source === 'BUS_API' && Number.isFinite(Number(upstreamSeg.deltaSec)) && Number(upstreamSeg.deltaSec) > 0)
+          ? Number(upstreamSeg.deltaSec)
+          : (Number.isFinite(Number(item.etaSpacing)) ? Number(item.etaSpacing) : null);
         loadEstimate = LoadFactorEngine.inferBusLoad({
           group,
           stopObj: effStopObj,
+          stopKey: effStopObj?.stopKey || stopKey,
           origName: stops[0]?.stopName_e || group.orig_e || '',
           destName: stops[stops.length - 1]?.stopName_e || group.dest_e || '',
           stopIdx: effStopIdx,
@@ -1906,9 +1940,11 @@ async function fetchEtaRaw(group, stopKey, isExpandedDetailView = false, afterMs
           trailingHeadwaySec: trailingHwSec,
           schedHeadwaySec: periodBusHwSec,
           etaDriftSec: idx === 0 ? busDriftSec : 0,
+          etaSpacingSec: liveEtaSpacingSec,
           corridorStatus: corStatus,
           isSched: Boolean(item.isSched),
           dateObj: hkNow,
+          nowMs: now,
           isHoliday: isHol
         });
       }
@@ -1987,13 +2023,32 @@ function generateExpandedETAsHtml(arrs, group, stopKey, stopIdx) {
   const secMeta = (!group?.mode || group?.mode === 'BUS') && typeof getSectionalFareMeta === 'function'
     ? getSectionalFareMeta(group.company, group.routeNo)
     : null;
-  const showTwoWayBanner = Boolean(
+  const hasTwoWayAtStop = Boolean(
     secMeta?.hasSectionalFare &&
     typeof hasStopTwoWaySectionalFare === 'function' &&
     hasStopTwoWaySectionalFare(group, stops, stopIdx, isHol)
   );
+  const activeOpenToken = (typeof detailOpenToken !== 'undefined') ? detailOpenToken : 0;
+  const isSectionalAlreadyAcked = typeof hasAcknowledgedTwoWaySectionalFare === 'function'
+    ? hasAcknowledgedTwoWaySectionalFare()
+    : (SafeStorage.getItem('hk_transit_sectional_fare_ack') === '1');
+  const isCurrentFirstSectionalView = Boolean(
+    hasTwoWayAtStop &&
+    window.__SECTIONAL_FARE_FIRST_OPEN_TOKEN__ &&
+    window.__SECTIONAL_FARE_FIRST_OPEN_TOKEN__ === activeOpenToken
+  );
+  const showTwoWayBanner = Boolean(hasTwoWayAtStop && (!isSectionalAlreadyAcked || isCurrentFirstSectionalView));
+  if (showTwoWayBanner && !isSectionalAlreadyAcked) {
+    window.__SECTIONAL_FARE_FIRST_OPEN_TOKEN__ = activeOpenToken || -1;
+    if (typeof acknowledgeTwoWaySectionalFare === 'function') {
+      acknowledgeTwoWaySectionalFare();
+    } else {
+      SafeStorage.setItem('hk_transit_sectional_fare_ack', '1');
+      try { localStorage.setItem('hk_transit_sectional_fare_ack', '1'); } catch (e) {}
+    }
+  }
   let strictNoticeRes = null;
-  if (!showTwoWayBanner && secMeta?.rebateType === 'strict_boarding_only' && typeof resolveBusLegNetFare === 'function') {
+  if (!hasTwoWayAtStop && secMeta?.rebateType === 'strict_boarding_only' && typeof resolveBusLegNetFare === 'function') {
     const sampleAlight = stops[Math.min(stops.length - 1, stopIdx + 2)] || stops[stops.length - 1];
     strictNoticeRes = (stObjRaw && sampleAlight) ? resolveBusLegNetFare(group, stObjRaw, sampleAlight, isHol) : null;
   }
@@ -2328,14 +2383,32 @@ function generateExpandedETAsHtml(arrs, group, stopKey, stopIdx) {
   const sLat = parseFloat(stObj?.latitude) || 0, sLon = parseFloat(stObj?.longitude) || 0;
   const walkUrl = `https://www.google.com/maps/dir/?api=1&destination=${sLat},${sLon}&travelmode=walking`;
   const escStopName = escapeJsAttr(stObj?.stopName_e || '');
+  const escGroupKey = escapeJsAttr(group?.key || '');
   const walkBtnLabel = `↗ ${t('actWalk')}`;
+
+  const isBusModeCard = (!group?.mode || group.mode === 'BUS');
+  let riderReportBtnHtml = '';
+  if (isBusModeCard && group?.key) {
+    const activeRider = (typeof getActiveRiderLoadReport === 'function')
+      ? getActiveRiderLoadReport(group.key, stObj?.stopKey || rawStKey || '')
+      : null;
+    const isMarkedFull = activeRider?.status === 'FULL';
+    const riderBtnLabel = isMarkedFull
+      ? (isZh ? `✓ 已滿 (${activeRider.remainingMins}分)` : `✓ Full (${activeRider.remainingMins}m)`)
+      : (isZh ? '⚠️ 回報已滿' : '⚠️ Report Full');
+    const riderBtnAria = isMarkedFull
+      ? (isZh ? '切換回尚有座位' : 'Switch back to seats available')
+      : (isZh ? '回報巴士已滿座' : 'Report bus likely full');
+    riderReportBtnHtml = `<button type="button" class="stop-action-pill rider-report-btn ${isMarkedFull ? 'active-full' : ''}" data-rider-status="${isMarkedFull ? 'FULL' : (activeRider?.status || 'NONE')}" aria-pressed="${isMarkedFull ? 'true' : 'false'}" aria-label="${escapeHtml(riderBtnAria)}" onclick="toggleRiderBusLoadReport('${escGroupKey}', '${escKey}', ${stopIdx})">${escapeHtml(riderBtnLabel)}</button>`;
+  }
 
   const actionStrip = `
     <div class="stop-action-strip" onclick="event.stopPropagation()">
       <a href="${walkUrl}" target="_blank" rel="noopener" class="stop-action-pill">${escapeHtml(walkBtnLabel)}</a>
-      <button class="stop-action-pill" onclick="jumpToMainStopFromDetail('${escKey}', '${escStopName}')">≡ ${t('actAllRoutes')}</button>
-      ${showHomeBtn ? `<button class="stop-hub-pill" onclick="toggleSavedStopHub('home', ${stopIdx})" title="${isZh ? '設此站為屋企捷徑' : 'Set this stop as Home hub'}">🏠</button>` : ''}
-      ${showWorkBtn ? `<button class="stop-hub-pill" onclick="toggleSavedStopHub('work', ${stopIdx})" title="${isZh ? '設此站為公司捷徑' : 'Set this stop as Work hub'}">💼</button>` : ''}
+      <button type="button" class="stop-action-pill" onclick="jumpToMainStopFromDetail('${escKey}', '${escStopName}')">≡ ${t('actAllRoutes')}</button>
+      ${riderReportBtnHtml}
+      ${showHomeBtn ? `<button type="button" class="stop-hub-pill" onclick="toggleSavedStopHub('home', ${stopIdx})" title="${isZh ? '設此站為屋企捷徑' : 'Set this stop as Home hub'}">🏠</button>` : ''}
+      ${showWorkBtn ? `<button type="button" class="stop-hub-pill" onclick="toggleSavedStopHub('work', ${stopIdx})" title="${isZh ? '設此站為公司捷徑' : 'Set this stop as Work hub'}">💼</button>` : ''}
     </div>`;
 
   return `<div class="last60-hud-box">${tempNoticeBannerHtml}${sectionalBannerHtml}${roadTrafficBannerHtml}${loadTipBannerHtml}${rowsHtml}${ferryUpdNote}${actionStrip}</div>`;

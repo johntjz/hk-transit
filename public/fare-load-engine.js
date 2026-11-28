@@ -9,6 +9,13 @@ if (typeof MTR_STATION_DIRECTORY === 'undefined' && typeof require === 'function
   } catch (e) {}
 }
 
+if (typeof estimateGlobalBusLoadRisk === 'undefined' && typeof require === 'function') {
+  try {
+    const _bs = require('./bussurge.js');
+    if (_bs && typeof globalThis !== 'undefined') Object.assign(globalThis, _bs);
+  } catch (e) {}
+}
+
 const MTR_ENGINE = {
   STATION_DEPTH: {
     HKU: 250, SYP: 210, CAB: 180, CEN: 180, HOK: 180, LET: 160, LOW: 160, LMC: 160,
@@ -811,7 +818,7 @@ const LoadFactorEngine = {
       tipTc = '實時班距較正常寬 — 候車人數可能較多';
     }
 
-    return {
+    const baseResult = {
       ...band,
       mode: 'BUS',
       capacityPax: isGmb ? 19 : (isSingleDeck ? 65 : 130),
@@ -822,6 +829,32 @@ const LoadFactorEngine = {
       tipTc,
       firstClassWarning: false
     };
+
+    if (opts.skipGlobalSurge) {
+      return baseResult;
+    }
+
+    const etaEntry = opts.etaEntry || (
+      Number.isFinite(Number(opts.etaSpacing)) || Number.isFinite(Number(opts.etaSpacingSec))
+        ? {
+            etaSpacing: opts.etaSpacing ?? opts.etaSpacingSec,
+            isHoliday: opts.isHoliday
+          }
+        : (typeof opts.isHoliday === 'boolean' ? { isHoliday: opts.isHoliday } : null)
+    );
+    const nowMs = Number.isFinite(Number(opts.nowMs))
+      ? Number(opts.nowMs)
+      : (opts.dateObj instanceof Date && !Number.isNaN(opts.dateObj.getTime())
+        ? opts.dateObj.getTime()
+        : Date.now());
+
+    return estimateBusSeatStatus(g, stopIdx, etaEntry, {
+      baseLoad: baseResult,
+      weather: wx,
+      nowMs,
+      stopKey: opts.stopKey || opts.stopObj?.stopKey || '',
+      storage: opts.storage
+    });
   },
 
   inferMtrLoad(opts = {}) {
@@ -1280,10 +1313,174 @@ function getFerryPierBerthLabel(group, stopObj, isZh = false) {
   return rawName;
 }
 
+const SECTIONAL_FARE_ACK_KEY = 'hk_transit_sectional_fare_ack';
+
+function _resolveSectionalStorage(storageOverride) {
+  if (storageOverride && typeof storageOverride.getItem === 'function') return storageOverride;
+  if (typeof window !== 'undefined' && window.SafeStorage && typeof window.SafeStorage.getItem === 'function') {
+    return window.SafeStorage;
+  }
+  try {
+    if (typeof localStorage !== 'undefined' && localStorage) return localStorage;
+  } catch (e) {}
+  return null;
+}
+
+function hasAcknowledgedTwoWaySectionalFare(storageOverride = null) {
+  const store = _resolveSectionalStorage(storageOverride);
+  if (!store) return false;
+  try {
+    return store.getItem(SECTIONAL_FARE_ACK_KEY) === '1';
+  } catch (e) {
+    return false;
+  }
+}
+
+function acknowledgeTwoWaySectionalFare(storageOverride = null) {
+  const store = _resolveSectionalStorage(storageOverride);
+  try {
+    if (store && typeof store.setItem === 'function') {
+      store.setItem(SECTIONAL_FARE_ACK_KEY, '1');
+    }
+    if (!storageOverride && typeof localStorage !== 'undefined' && localStorage && store !== localStorage) {
+      localStorage.setItem(SECTIONAL_FARE_ACK_KEY, '1');
+    }
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+function shouldShowTwoWaySectionalFareNotice(group, stops, stopIdx, isHoliday = false, storageOverride = null) {
+  if (!hasStopTwoWaySectionalFare(group, stops, stopIdx, isHoliday)) return false;
+  return !hasAcknowledgedTwoWaySectionalFare(storageOverride);
+}
+
+/**
+ * Evaluates final bus seat/load badge status by layering:
+ * 1) Active 1-tap rider report override (25-minute decay),
+ * 2) Global weather-correlated surge & skip-stop risk (`estimateGlobalBusLoadRisk`),
+ * 3) Baseline schedule/headway LoadFactorEngine estimate.
+ */
+function estimateBusSeatStatus(routeGroup, stopIdx, etaEntry = null, opts = {}) {
+  const nowMs = Number.isFinite(Number(opts.nowMs)) ? Number(opts.nowMs) : Date.now();
+  const hkoWeather = opts.weather !== undefined
+    ? opts.weather
+    : (typeof window !== 'undefined' ? (window.__HKO_WEATHER__ || null) : null);
+
+  const baseLoad = opts.baseLoad || LoadFactorEngine.inferBusLoad({
+    ...opts,
+    group: routeGroup,
+    stopIdx,
+    weather: hkoWeather,
+    nowMs,
+    skipGlobalSurge: true
+  }) || {
+    pct: 25,
+    band: 'LOW',
+    labelEn: 'Seats',
+    labelTc: '有位',
+    cssClass: 'load-low',
+    isSkipRisk: false,
+    mode: 'BUS',
+    tipEn: '',
+    tipTc: ''
+  };
+
+  const riskFn =
+    (typeof estimateGlobalBusLoadRisk === 'function' ? estimateGlobalBusLoadRisk : null) ||
+    (typeof window !== 'undefined' && typeof window.estimateGlobalBusLoadRisk === 'function'
+      ? window.estimateGlobalBusLoadRisk
+      : null);
+
+  const surgeRisk = riskFn
+    ? riskFn(routeGroup, stopIdx, etaEntry, hkoWeather, nowMs)
+    : null;
+
+  // 1. Active 25-minute rider override takes highest precedence
+  const riderReportFn =
+    (typeof getActiveRiderLoadReport === 'function' ? getActiveRiderLoadReport : null) ||
+    (typeof window !== 'undefined' && typeof window.getActiveRiderLoadReport === 'function'
+      ? window.getActiveRiderLoadReport
+      : null);
+  const stopKey = opts.stopKey || etaEntry?.stopKey || opts.stopObj?.stopKey || '';
+  const activeRider = (riderReportFn && routeGroup?.key)
+    ? riderReportFn(routeGroup.key, stopKey, nowMs, opts.storage)
+    : null;
+
+  if (activeRider && activeRider.status === 'FULL') {
+    return {
+      ...baseLoad,
+      pct: Math.max(Number(baseLoad.pct) || 0, 92),
+      band: 'FULL',
+      labelEn: '⚠️ Likely Full',
+      labelTc: '⚠️ 易滿座',
+      cssClass: 'load-full',
+      isSkipRisk: true,
+      riderOverride: 'FULL',
+      riderRemainingMins: activeRider.remainingMins,
+      basis: 'RIDER_REPORT',
+      confidence: 'HIGH',
+      tipEn: 'Rider reported full — consider boarding upstream.',
+      tipTc: '乘客回報已滿座 — 建議改於上游站上車。',
+      surgeRisk
+    };
+  }
+
+  if (activeRider && activeRider.status === 'SEATS') {
+    return {
+      ...baseLoad,
+      pct: Math.min(Number(baseLoad.pct) || 25, 28),
+      band: 'LOW',
+      labelEn: 'Seats',
+      labelTc: '有位',
+      cssClass: 'load-low',
+      isSkipRisk: false,
+      riderOverride: 'SEATS',
+      riderRemainingMins: activeRider.remainingMins,
+      basis: 'RIDER_REPORT',
+      confidence: 'HIGH',
+      tipEn: 'Rider reported seats available.',
+      tipTc: '乘客回報仍有座位。',
+      surgeRisk
+    };
+  }
+
+  // 2. Global weather + leisure + skip-stop HIGH_LOAD downgrades green Seats pill to amber/red Likely Full
+  if (surgeRisk && surgeRisk.level === 'HIGH_LOAD') {
+    return {
+      ...baseLoad,
+      pct: Math.max(Number(baseLoad.pct) || 0, 88),
+      band: 'FULL',
+      labelEn: surgeRisk.label || '⚠️ Likely Full',
+      labelTc: surgeRisk.labelTc || '⚠️ 易滿座',
+      cssClass: 'load-full',
+      isSkipRisk: true,
+      basis: 'WEATHER_SURGE_SKIP',
+      confidence: 'HIGH',
+      tipEn: surgeRisk.tip || 'Consider boarding upstream.',
+      tipTc: surgeRisk.tipTc || '建議改於上游總站上車。',
+      surgeRisk
+    };
+  }
+
+  return {
+    ...baseLoad,
+    surgeRisk
+  };
+}
+
+LoadFactorEngine.estimateBusSeatStatus = estimateBusSeatStatus;
+
 if (typeof window !== 'undefined') {
   window.MTR_ENGINE = MTR_ENGINE;
   window.computeSharedBikeFareHkd = computeSharedBikeFareHkd;
   window.LoadFactorEngine = LoadFactorEngine;
+  window.estimateBusSeatStatus = estimateBusSeatStatus;
+  window.SECTIONAL_FARE_ACK_KEY = SECTIONAL_FARE_ACK_KEY;
+  window.hasAcknowledgedTwoWaySectionalFare = hasAcknowledgedTwoWaySectionalFare;
+  window.acknowledgeTwoWaySectionalFare = acknowledgeTwoWaySectionalFare;
+  window.shouldShowTwoWaySectionalFareNotice = shouldShowTwoWaySectionalFareNotice;
   window.getSectionalFareMeta = getSectionalFareMeta;
   window.resolveBusLegNetFare = resolveBusLegNetFare;
   window.hasStopTwoWaySectionalFare = hasStopTwoWaySectionalFare;
@@ -1295,6 +1492,11 @@ if (typeof module !== 'undefined' && module.exports) {
     MTR_ENGINE,
     computeSharedBikeFareHkd,
     LoadFactorEngine,
+    estimateBusSeatStatus,
+    SECTIONAL_FARE_ACK_KEY,
+    hasAcknowledgedTwoWaySectionalFare,
+    acknowledgeTwoWaySectionalFare,
+    shouldShowTwoWaySectionalFareNotice,
     getSectionalFareMeta,
     resolveBusLegNetFare,
     hasStopTwoWaySectionalFare,

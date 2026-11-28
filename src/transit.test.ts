@@ -6518,6 +6518,8 @@ test('Tasks 1-3 Regression: Modularized domain scripts in exact 12-script order,
   const modularAssets = [
     'public/app.css',
     'public/transit-data.js',
+    'public/weathercoorelation.js',
+    'public/bussurge.js',
     'public/fare-load-engine.js',
     'public/hardcode.js',
     'public/busspeed.js',
@@ -6537,6 +6539,8 @@ test('Tasks 1-3 Regression: Modularized domain scripts in exact 12-script order,
   assert.ok(!rawIndex.includes('<style id="transit-unified-fixed-css">'), 'index.html must not contain inline transit-unified-fixed-css block');
   const loadOrder = [
     'transit-data.js',
+    'weathercoorelation.js',
+    'bussurge.js',
     'fare-load-engine.js',
     'hardcode.js',
     'busspeed.js',
@@ -8179,6 +8183,165 @@ test('Minimal Clutter-Free Bus Card: No Banner Box, No Vertical Breakdown, No Bu
   modalCtx.window.openStopSegmentTrafficModal(10);
   assert.ok(mockEls.trafficModalBody.innerHTML.includes('Estimated from Road Flow'), 'BUS_EST modal must show Estimated from Road Flow');
   assert.ok(mockEls.trafficModalBody.innerHTML.includes('Road Flow'), 'BUS_EST modal metric box must show Road Flow source');
+});
+
+test('Weather-correlated bus load engine (weathercoorelation.js + bussurge.js), 25m rider report override, two-way sectional fare first-use auto-hide, and Saved tab drag-drop & 5s Undo snackbar', () => {
+  // 1. Load weathercoorelation.js + bussurge.js + fare-load-engine.js in a clean VM matching browser load order
+  const win: any = {
+    __HKO_WEATHER__: null,
+    __HK_PUBLIC_HOLIDAYS__: new Set(['2026-10-01']),
+  };
+  const memStore: Record<string, string> = {};
+  const mockStorage = {
+    getItem: (k: string) => (Object.prototype.hasOwnProperty.call(memStore, k) ? memStore[k] : null),
+    setItem: (k: string, v: string) => { memStore[k] = String(v); },
+    removeItem: (k: string) => { delete memStore[k]; },
+  };
+  win.SafeStorage = mockStorage;
+  const ctx: any = {
+    window: win,
+    globalThis: win,
+    localStorage: mockStorage,
+    SafeStorage: mockStorage,
+    Date, Math, Number, String, Array, Object, Set, Map, JSON, parseFloat, parseInt, isFinite,
+  };
+  vm.createContext(ctx);
+  vm.runInContext(fs.readFileSync('public/transit-data.js', 'utf8'), ctx);
+  vm.runInContext(fs.readFileSync('public/weathercoorelation.js', 'utf8'), ctx);
+  vm.runInContext(fs.readFileSync('public/bussurge.js', 'utf8'), ctx);
+  vm.runInContext(fs.readFileSync('public/fare-load-engine.js', 'utf8'), ctx);
+  vm.runInContext(fs.readFileSync('public/hardcode.js', 'utf8'), ctx);
+
+  // 2. weathercoorelation.js rules
+  const novSatMs = Date.parse('2026-11-28T07:36:00Z'); // 15:36 HKT Saturday (Nov -> Oct-Apr)
+  const julSatMs = Date.parse('2026-07-18T07:36:00Z'); // 15:36 HKT Saturday (Jul -> May-Sep)
+  assert.equal(win.getWeatherSurgeMultiplier(null, novSatMs), 1.2, 'Null HKO weather in Oct-Apr returns 1.2');
+  assert.equal(win.getWeatherSurgeMultiplier(null, julSatMs), 1.0, 'Null HKO weather in May-Sep returns 1.0');
+  assert.equal(win.getWeatherSurgeMultiplier({ warnings: ['RAIN'], temp: 22 }, novSatMs), 0.3, 'Rain warning returns 0.3');
+  assert.equal(win.getWeatherSurgeMultiplier({ warnings: ['TC3'], temp: 24 }, novSatMs), 0.3, 'TC3 warning returns 0.3');
+  assert.equal(win.getWeatherSurgeMultiplier({ warnings: ['TC8'], temp: 24 }, novSatMs), 0.3, 'TC8 warning returns 0.3');
+  assert.equal(win.getWeatherSurgeMultiplier({ heavyRain: true }, novSatMs), 0.3, 'Live worker heavyRain returns 0.3');
+  assert.equal(win.getWeatherSurgeMultiplier({ temp: 33, condition: 'Sunny' }, julSatMs), 0.5, 'Temp > 31 returns 0.5');
+  assert.equal(win.getWeatherSurgeMultiplier({ temp: 10, condition: 'Clear' }, novSatMs), 0.6, 'Temp < 12 returns 0.6');
+  assert.equal(win.getWeatherSurgeMultiplier({ temp: 22, condition: 'Clear', humidity: 60 }, novSatMs), 1.5, 'Dry clear 15-26°C returns 1.5');
+  assert.equal(win.getWeatherSurgeMultiplier({ temp: 28, condition: 'Cloudy' }, julSatMs), 1.0, 'Default mild cloudy returns 1.0');
+
+  // 3. bussurge.js leisure routing + weekend time multipliers + skip-stop HIGH_LOAD
+  const nlb3mGroup = {
+    key: 'NLB_3M_O',
+    company: 'NLB',
+    routeNo: '3M',
+    orig_en: 'Tung Chung Station Bus Terminus',
+    dest_en: 'Mui Wo Ferry Pier',
+    orig_e: 'Tung Chung Station Bus Terminus',
+    dest_e: 'Mui Wo Ferry Pier',
+  };
+  const urbanGroup = {
+    key: 'KMB_1A_O',
+    company: 'KMB',
+    routeNo: '1A',
+    orig_en: 'Sau Mau Ping',
+    dest_en: 'Star Ferry',
+  };
+
+  const clearMildWx = { temp: 22, condition: 'Clear', humidity: 58, warnings: [] };
+  const satMorningMs = Date.parse('2026-11-28T01:45:00Z'); // 09:45 HKT Sat (08:30-11:30 -> 1.6)
+  const satAfternoonMs = Date.parse('2026-11-28T07:36:00Z'); // 15:36 HKT Sat (13:30-16:00 -> 1.8)
+  const satEveningMs = Date.parse('2026-11-28T10:00:00Z'); // 18:00 HKT Sat (16:30-19:30 -> 1.9)
+  const weekdayAfternoonMs = Date.parse('2026-11-25T07:36:00Z'); // 15:36 HKT Wed
+
+  const rMorning = win.estimateGlobalBusLoadRisk(nlb3mGroup, 8, { etaSpacing: 45 }, clearMildWx, satMorningMs);
+  assert.equal(rMorning.isLeisureRoute, true);
+  assert.equal(rMorning.timeMultiplier, 1.6);
+  assert.equal(rMorning.level, 'HIGH_LOAD');
+  assert.equal(rMorning.label, '⚠️ Likely Full');
+  assert.equal(rMorning.tip, 'Consider boarding upstream.');
+
+  const rAfternoon = win.estimateGlobalBusLoadRisk(nlb3mGroup, 8, { etaSpacing: 40 }, clearMildWx, satAfternoonMs);
+  assert.equal(rAfternoon.timeMultiplier, 1.8);
+  assert.equal(rAfternoon.level, 'HIGH_LOAD');
+
+  const rEvening = win.estimateGlobalBusLoadRisk(nlb3mGroup, 8, { etaSpacing: 50 }, clearMildWx, satEveningMs);
+  assert.equal(rEvening.timeMultiplier, 1.9);
+  assert.equal(rEvening.level, 'HIGH_LOAD');
+
+  // Rainy / scorching summer suppresses HIGH_LOAD
+  const rRainy = win.estimateGlobalBusLoadRisk(nlb3mGroup, 8, { etaSpacing: 40 }, { warnings: ['RAIN'], temp: 22 }, satAfternoonMs);
+  assert.notEqual(rRainy.level, 'HIGH_LOAD', 'Rainy weather suppresses leisure surge');
+
+  const rHot = win.estimateGlobalBusLoadRisk(nlb3mGroup, 8, { etaSpacing: 40 }, { temp: 33, condition: 'Sunny' }, satAfternoonMs);
+  assert.notEqual(rHot.level, 'HIGH_LOAD', 'Scorching >31°C weather suppresses leisure surge');
+
+  // Without fast/skipped stops (etaSpacing >= 60), does not falsely fire HIGH_LOAD
+  const rNoSkip = win.estimateGlobalBusLoadRisk(nlb3mGroup, 8, { etaSpacing: 120 }, clearMildWx, satAfternoonMs);
+  assert.equal(rNoSkip.level, 'MODERATE');
+
+  // Non-leisure urban route & weekday afternoon return NORMAL
+  const rUrban = win.estimateGlobalBusLoadRisk(urbanGroup, 5, { etaSpacing: 40 }, clearMildWx, satAfternoonMs);
+  assert.equal(rUrban.isLeisureRoute, false);
+  assert.equal(rUrban.level, 'NORMAL');
+
+  const rWeekday = win.estimateGlobalBusLoadRisk(nlb3mGroup, 8, { etaSpacing: 40 }, clearMildWx, weekdayAfternoonMs);
+  assert.equal(rWeekday.timeMultiplier, 1.0);
+  assert.notEqual(rWeekday.level, 'HIGH_LOAD');
+
+  // 4. fare-load-engine.js estimateBusSeatStatus downgrade & 25-minute rider report override
+  win.__HKO_WEATHER__ = clearMildWx;
+  const downgradedSeat = win.estimateBusSeatStatus(nlb3mGroup, 8, { etaSpacing: 42 }, {
+    nowMs: satAfternoonMs,
+    stopKey: 'HA_LING_PEI',
+    baseLoad: { pct: 24, band: 'LOW', labelEn: 'Seats', labelTc: '有位', cssClass: 'load-low', isSkipRisk: false },
+  });
+  assert.equal(downgradedSeat.cssClass, 'load-full', 'HIGH_LOAD must downgrade green Seats pill to load-full');
+  assert.equal(downgradedSeat.labelEn, '⚠️ Likely Full');
+  assert.equal(downgradedSeat.tipEn, 'Consider boarding upstream.');
+
+  // 1-tap rider report override with 25-min decay
+  const t0 = weekdayAfternoonMs;
+  win.setRiderLoadReport('NLB_3M_O', 'HA_LING_PEI', 'FULL', t0, mockStorage);
+  const riderFull = win.estimateBusSeatStatus(nlb3mGroup, 8, { etaSpacing: 120 }, {
+    nowMs: t0 + 10 * 60 * 1000, // 10 min later -> still active
+    stopKey: 'HA_LING_PEI',
+    storage: mockStorage,
+    baseLoad: { pct: 20, band: 'LOW', labelEn: 'Seats', labelTc: '有位', cssClass: 'load-low', isSkipRisk: false },
+  });
+  assert.equal(riderFull.cssClass, 'load-full');
+  assert.equal(riderFull.riderOverride, 'FULL');
+
+  // Expires cleanly after 25 minutes
+  const afterExpiry = win.estimateBusSeatStatus(nlb3mGroup, 8, { etaSpacing: 120 }, {
+    nowMs: t0 + 26 * 60 * 1000, // 26 min later -> decayed
+    stopKey: 'HA_LING_PEI',
+    storage: mockStorage,
+    baseLoad: { pct: 20, band: 'LOW', labelEn: 'Seats', labelTc: '有位', cssClass: 'load-low', isSkipRisk: false },
+  });
+  assert.equal(afterExpiry.cssClass, 'load-low', 'Rider report must decay after 25 minutes');
+  assert.equal(afterExpiry.riderOverride, undefined);
+
+  // 5. Auto-hide two-way sectional fare notice after first use while keeping 2-Way Section badge
+  const nlb1Group = { key: 'NLB_1_O', company: 'NLB', routeNo: '1', dest_e: 'Tai O', orig_e: 'Mui Wo Ferry Pier', mode: 'BUS' };
+  const nlb1Stops = [
+    { seq: 1, stopName_e: 'Mui Wo Ferry Pier', lat: 22.2647, lon: 114.0014, fare: '12.7' },
+    { seq: 2, stopName_e: 'Mui Wo Cooked Food Market', lat: 22.2652, lon: 114.0005, fare: '12.7' },
+    { seq: 3, stopName_e: 'Tai O', lat: 22.2535, lon: 113.8622, fare: '12.7' },
+  ];
+  assert.equal(win.hasAcknowledgedTwoWaySectionalFare(mockStorage), false);
+  assert.equal(win.shouldShowTwoWaySectionalFareNotice(nlb1Group, nlb1Stops, 0, false, mockStorage), true, 'First visit shows two-way sectional fare notice');
+  win.acknowledgeTwoWaySectionalFare(mockStorage);
+  assert.equal(memStore['hk_transit_sectional_fare_ack'], '1', 'Acknowledgement persisted to hk_transit_sectional_fare_ack');
+  assert.equal(win.shouldShowTwoWaySectionalFareNotice(nlb1Group, nlb1Stops, 0, false, mockStorage), false, 'Subsequent visits hide yellow sectional notice');
+  assert.equal(win.hasStopTwoWaySectionalFare(nlb1Group, nlb1Stops, 0, false), true, 'Compact 2-Way Section badge logic still returns true');
+
+  // 6. Verify eta-engine.js & app-ui.js wire up rider report button, sectional ack, Fav drag handles, and 5s Undo snackbar
+  const etaSrc = fs.readFileSync('public/eta-engine.js', 'utf8');
+  const uiSrc = fs.readFileSync('public/app-ui.js', 'utf8');
+  assert.ok(etaSrc.includes('showUndoToast'), 'eta-engine.js must define showUndoToast');
+  assert.ok(etaSrc.includes('rider-report-btn'), 'eta-engine.js must render 1-tap rider-report-btn on bus cards');
+  assert.ok(etaSrc.includes('hk_transit_sectional_fare_ack'), 'eta-engine.js must check/persist hk_transit_sectional_fare_ack');
+  assert.ok(uiSrc.includes('fav-drag-handle'), 'app-ui.js must render ⋮⋮ fav-drag-handle on Saved bookmarks');
+  assert.ok(uiSrc.includes('reorderSavedBookmarks'), 'app-ui.js must implement reorderSavedBookmarks');
+  assert.ok(uiSrc.includes('undoLastBookmarkRemoval'), 'app-ui.js must implement undoLastBookmarkRemoval');
+  assert.ok(uiSrc.includes('showUndoToast') && uiSrc.includes('5000'), 'app-ui.js must trigger 5-second Undo snackbar on bookmark removal');
 });
 
 

@@ -9,8 +9,8 @@
 // ============================================================================
 // PART 1: EXECUTION ENGINE (Modularized across domain scripts)
 // ============================================================================
-window.__FIXED_JS_BUILD_TS__ = '2026-11-28 19:06 HKT';
-const APP_VERSION = '2026-11-28 19:06 HKT';
+window.__FIXED_JS_BUILD_TS__ = '2026-11-28 20:14 HKT';
+const APP_VERSION = '2026-11-28 20:14 HKT';
 const HK_UNIFIED_API_BASE = '/api/worker';
 let isHydratingInitialData = true;
 window.isHydratingInitialData = true;

@@ -1,10 +1,32 @@
 /* Transit HK — Hong Kong Monthly Seasonal & Structural Micro-Surge Matrix (monthly_activity.js)
  * Dual Browser Global + CommonJS module.
- * Strictly feeds bus crowding/load inference (bussurge.js / fare-load-engine.js),
+ * Pure citywide seasonal profile & EDB school-break reference consumed by hk-people-flow.js.
  * NEVER alters map road-speed telemetry.
  */
 (function (root) {
   'use strict';
+
+  // Official 2026/27 EDB Local School Breaks (disables Mon–Fri school-term rush waves)
+  const HK_SCHOOL_HOLIDAY_RANGES = Object.freeze([
+    Object.freeze({ name: 'Summer 2026', start: '2026-07-09', end: '2026-08-31' }),
+    Object.freeze({ name: 'Christmas & New Year 2026/27', start: '2026-12-24', end: '2027-01-02' }),
+    Object.freeze({ name: 'Lunar New Year 2027', start: '2027-02-04', end: '2027-02-13' }),
+    Object.freeze({ name: 'Easter 2027', start: '2027-03-24', end: '2027-03-31' }),
+    Object.freeze({ name: 'Summer 2027', start: '2027-07-09', end: '2027-08-31' })
+  ]);
+
+  function isSchoolHolidayDate(dateStr) {
+    const s = String(dateStr || '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+    for (let i = 0; i < HK_SCHOOL_HOLIDAY_RANGES.length; i++) {
+      const r = HK_SCHOOL_HOLIDAY_RANGES[i];
+      if (s >= r.start && s <= r.end) return true;
+    }
+    // Generic multi-year summer break fallback (Jul 9 – Aug 31)
+    const md = s.slice(5);
+    if (md >= '07-09' && md <= '08-31') return true;
+    return false;
+  }
 
   const MONTHLY_ACTIVITY_PROFILES = Object.freeze({
     0: {
@@ -12,18 +34,18 @@
       name: 'January',
       season: 'COOL_DRY',
       trailWeight: 1.5,
-      beachWeight: 0.75,
+      beachWeight: 0.35,
       earlyHikeBoost: 1.2,
       eveningDiningBoost: 1.05,
       schoolBreak: false,
-      events: ['New Year', 'AIA Carnival', 'Lunar New Year Prep']
+      events: ['New Year', 'AIA Carnival', 'HK Marathon', 'Lunar New Year Prep']
     },
     1: {
       month: 1,
       name: 'February',
       season: 'COOL_DRY',
       trailWeight: 1.5,
-      beachWeight: 0.75,
+      beachWeight: 0.35,
       earlyHikeBoost: 1.2,
       eveningDiningBoost: 1.1,
       schoolBreak: false,
@@ -34,7 +56,7 @@
       name: 'March',
       season: 'SPRING',
       trailWeight: 1.4,
-      beachWeight: 0.9,
+      beachWeight: 0.5,
       earlyHikeBoost: 1.15,
       eveningDiningBoost: 1.05,
       schoolBreak: false,
@@ -45,7 +67,7 @@
       name: 'April',
       season: 'SPRING',
       trailWeight: 1.35,
-      beachWeight: 1.05,
+      beachWeight: 0.85,
       earlyHikeBoost: 1.15,
       eveningDiningBoost: 1.0,
       schoolBreak: false,
@@ -60,7 +82,7 @@
       earlyHikeBoost: 1.25,
       eveningDiningBoost: 1.0,
       schoolBreak: false,
-      events: ['Labour Day', 'Buddha Birthday', 'Early Beach Shift']
+      events: ['Labour Day', 'Buddha Birthday', 'Cheung Chau Bun Festival', 'Early Beach Shift']
     },
     5: {
       month: 5,
@@ -104,14 +126,14 @@
       earlyHikeBoost: 1.2,
       eveningDiningBoost: 1.05,
       schoolBreak: false,
-      events: ['Mid-Autumn Festival', 'Tai Hang Fire Dragon']
+      events: ['School Term Resumes', 'Mid-Autumn Festival', 'Tai Hang Fire Dragon']
     },
     9: {
       month: 9,
       name: 'October',
       season: 'COOL_DRY',
       trailWeight: 1.5,
-      beachWeight: 1.15,
+      beachWeight: 1.2,
       earlyHikeBoost: 1.2,
       eveningDiningBoost: 1.1,
       schoolBreak: false,
@@ -122,18 +144,18 @@
       name: 'November',
       season: 'COOL_DRY',
       trailWeight: 1.65,
-      beachWeight: 0.9,
+      beachWeight: 0.45,
       earlyHikeBoost: 1.25,
       eveningDiningBoost: 1.15,
       schoolBreak: false,
-      events: ['Sunset Peak Silvergrass', 'Oxfam Trailwalker', 'TransLantau', 'Hairy Crab Season']
+      events: ['Sunset Peak Silvergrass', 'Oxfam Trailwalker', 'TransLantau']
     },
     11: {
       month: 11,
       name: 'December',
       season: 'COOL_DRY',
       trailWeight: 1.55,
-      beachWeight: 0.75,
+      beachWeight: 0.35,
       earlyHikeBoost: 1.2,
       eveningDiningBoost: 1.15,
       schoolBreak: false,
@@ -182,16 +204,17 @@
   }
 
   /**
-   * Computes a seasonal & structural corridor demand multiplier for Hong Kong bus load inference.
+   * Computes a seasonal & structural corridor demand multiplier for Hong Kong movement simulation.
    *
    * @param {Object} params
    * @param {number} params.month - 0 (Jan) through 11 (Dec)
    * @param {'weekday'|'saturday'|'sunday'|'holiday'|'weekend'} params.dayType
    * @param {number} params.hourFloat - Local HK hour as float (e.g. 15.5 = 15:30)
    * @param {string} [params.corridorText] - Combined origin/destination/stop/route text
-   * @param {string} [params.routeNo] - Optional route number (e.g. '3M', 'E36', 'A33', 'B1', '103')
+   * @param {string} [params.routeNo] - Optional route number
+   * @param {string} [params.dateStr] - Optional HK YYYY-MM-DD date string for EDB school-break check
    * @param {boolean} [params.isEveOfHoliday] - True when tomorrow is an HK public holiday
-   * @param {boolean} [params.isSchoolHoliday] - True during non-summer school breaks (e.g. Easter/Christmas/LNY)
+   * @param {boolean} [params.isSchoolHoliday] - True during school breaks
    * @returns {number}
    */
   function getSeasonalCorridorMultiplier(params) {
@@ -204,8 +227,9 @@
     const hourFloat = Number.isFinite(Number(p.hourFloat)) ? Number(p.hourFloat) : 12;
     const corridorText = String(p.corridorText || '').toLowerCase();
     const routeNo = String(p.routeNo || '').trim().toUpperCase();
+    const dateStr = String(p.dateStr || '').trim();
     const isEveOfHoliday = Boolean(p.isEveOfHoliday);
-    const isSchoolHoliday = Boolean(p.isSchoolHoliday);
+    const isSchoolHoliday = Boolean(p.isSchoolHoliday) || (dateStr ? isSchoolHolidayDate(dateStr) : false);
 
     const isWeekendOrHoliday =
       dayType === 'saturday' ||
@@ -237,10 +261,8 @@
           multiplier = Math.max(multiplier, profile.beachWeight);
         } else if (isTrailCorridor) {
           if (hourFloat >= 5.5 && hourFloat < 8.5) {
-            // Summer dawn hikers start early to avoid midday heat
             multiplier = Math.max(multiplier, profile.earlyHikeBoost || 1.25);
           } else if (hourFloat >= 10.0 && hourFloat <= 18.0) {
-            // Exposed ridges dampen sharply during hot summer afternoons
             multiplier = Math.min(multiplier, profile.trailWeight);
           }
         }
@@ -257,14 +279,14 @@
       multiplier = Math.max(multiplier, 1.8);
     }
 
-    // 4. Weekday school dismissal micro-rush (14:30–16:00, excluding Jul–Aug & school holidays)
+    // 4. Weekday school-term morning drop-off (07:15–08:30) & dismissal micro-rush (14:30–16:15)
     const isSummerSchoolBreak = month === 6 || month === 7 || profile.schoolBreak;
+    const isSchoolWindow = (hourFloat >= 7.25 && hourFloat <= 8.5) || (hourFloat >= 14.5 && hourFloat <= 16.25);
     if (
       dayType === 'weekday' &&
       !isSummerSchoolBreak &&
       !isSchoolHoliday &&
-      hourFloat >= 14.5 &&
-      hourFloat <= 16.0 &&
+      isSchoolWindow &&
       isSchoolCorridor
     ) {
       multiplier = Math.max(multiplier, 1.55);
@@ -274,6 +296,8 @@
   }
 
   const MonthlyActivityEngine = {
+    HK_SCHOOL_HOLIDAY_RANGES,
+    isSchoolHolidayDate,
     MONTHLY_ACTIVITY_PROFILES,
     HIKING_TRAIL_KEYWORDS,
     BEACH_WATERFALL_KEYWORDS,
@@ -284,6 +308,8 @@
   };
 
   if (root) {
+    root.HK_SCHOOL_HOLIDAY_RANGES = HK_SCHOOL_HOLIDAY_RANGES;
+    root.isSchoolHolidayDate = isSchoolHolidayDate;
     root.MONTHLY_ACTIVITY_PROFILES = MONTHLY_ACTIVITY_PROFILES;
     root.getSeasonalCorridorMultiplier = getSeasonalCorridorMultiplier;
     root.MonthlyActivityEngine = MonthlyActivityEngine;
@@ -291,6 +317,8 @@
 
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
+      HK_SCHOOL_HOLIDAY_RANGES,
+      isSchoolHolidayDate,
       MONTHLY_ACTIVITY_PROFILES,
       HIKING_TRAIL_KEYWORDS,
       BEACH_WATERFALL_KEYWORDS,

@@ -16,6 +16,13 @@ if (typeof getSeasonalCorridorMultiplier === 'undefined' && typeof require === '
   } catch (e) {}
 }
 
+if (typeof simulateCityPeopleFlow === 'undefined' && typeof require === 'function') {
+  try {
+    const _pf = require('./hk-people-flow.js');
+    if (_pf && typeof globalThis !== 'undefined') Object.assign(globalThis, _pf);
+  } catch (e) {}
+}
+
 if (typeof estimateGlobalBusLoadRisk === 'undefined' && typeof require === 'function') {
   try {
     const _bs = require('./bussurge.js');
@@ -859,6 +866,24 @@ const LoadFactorEngine = {
     if (!baseEtaEntry.name_tc && opts.stopObj?.name_tc) {
       baseEtaEntry.name_tc = opts.stopObj.name_tc;
     }
+    if (baseEtaEntry.totalStops === undefined && Number.isFinite(Number(opts.totalStops))) {
+      baseEtaEntry.totalStops = Number(opts.totalStops);
+    }
+    if (baseEtaEntry.obsHeadwaySec === undefined && Number.isFinite(Number(opts.obsHeadwaySec)) && Number(opts.obsHeadwaySec) > 0) {
+      baseEtaEntry.obsHeadwaySec = Number(opts.obsHeadwaySec);
+    }
+    if (baseEtaEntry.schedHeadwaySec === undefined && Number.isFinite(Number(opts.schedHeadwaySec)) && Number(opts.schedHeadwaySec) > 0) {
+      baseEtaEntry.schedHeadwaySec = Number(opts.schedHeadwaySec);
+    }
+    if (baseEtaEntry.etaIdx === undefined && Number.isFinite(Number(opts.etaIdx))) {
+      baseEtaEntry.etaIdx = Number(opts.etaIdx);
+    }
+    if (baseEtaEntry.prevBusGapSec === undefined && Number.isFinite(Number(opts.prevBusGapSec))) {
+      baseEtaEntry.prevBusGapSec = Number(opts.prevBusGapSec);
+    }
+    if (baseEtaEntry.nextBusGapSec === undefined && Number.isFinite(Number(opts.nextBusGapSec))) {
+      baseEtaEntry.nextBusGapSec = Number(opts.nextBusGapSec);
+    }
     const etaEntry = Object.keys(baseEtaEntry).length > 0 ? baseEtaEntry : null;
     const nowMs = Number.isFinite(Number(opts.nowMs))
       ? Number(opts.nowMs)
@@ -871,8 +896,7 @@ const LoadFactorEngine = {
       weather: wx,
       nowMs,
       stopKey: opts.stopKey || opts.stopObj?.stopKey || '',
-      stopObj: opts.stopObj,
-      storage: opts.storage
+      stopObj: opts.stopObj
     });
   },
 
@@ -1376,10 +1400,10 @@ function shouldShowTwoWaySectionalFareNotice(group, stops, stopIdx, isHoliday = 
 }
 
 /**
- * Evaluates final bus seat/load badge status by layering:
- * 1) Active 1-tap rider report override (25-minute decay),
- * 2) Global weather-correlated surge & skip-stop risk (`estimateGlobalBusLoadRisk`),
- * 3) Baseline schedule/headway LoadFactorEngine estimate.
+ * Evaluates final bus seat/load badge status by fusing:
+ * 1) Citywide People Flow Simulator + Bus Kinematics (`estimateGlobalBusLoadRisk`),
+ * 2) Baseline schedule/headway LoadFactorEngine estimate.
+ * 100% simulation- and telemetry-driven (no manual user-reporting overrides).
  */
 function estimateBusSeatStatus(routeGroup, stopIdx, etaEntry = null, opts = {}) {
   const nowMs = Number.isFinite(Number(opts.nowMs)) ? Number(opts.nowMs) : Date.now();
@@ -1426,56 +1450,25 @@ function estimateBusSeatStatus(routeGroup, stopIdx, etaEntry = null, opts = {}) 
     ? riskFn(routeGroup, stopIdx, enrichedEtaEntry, hkoWeather, nowMs)
     : null;
 
-  // 1. Active 25-minute rider override takes highest precedence
-  const riderReportFn =
-    (typeof getActiveRiderLoadReport === 'function' ? getActiveRiderLoadReport : null) ||
-    (typeof window !== 'undefined' && typeof window.getActiveRiderLoadReport === 'function'
-      ? window.getActiveRiderLoadReport
-      : null);
-  const stopKey = opts.stopKey || etaEntry?.stopKey || opts.stopObj?.stopKey || '';
-  const activeRider = (riderReportFn && routeGroup?.key)
-    ? riderReportFn(routeGroup.key, stopKey, nowMs, opts.storage)
-    : null;
-
-  if (activeRider && activeRider.status === 'FULL') {
+  // 1. Bunched trailing bus relief overrides crowded lead-bus bias downward
+  if (surgeRisk && surgeRisk.isBunchedTrailing && surgeRisk.level === 'NORMAL') {
     return {
       ...baseLoad,
-      pct: Math.max(Number(baseLoad.pct) || 0, 92),
-      band: 'FULL',
-      labelEn: '⚠️ Likely Full',
-      labelTc: '⚠️ 易滿座',
-      cssClass: 'load-full',
-      isSkipRisk: true,
-      riderOverride: 'FULL',
-      riderRemainingMins: activeRider.remainingMins,
-      basis: 'RIDER_REPORT',
-      confidence: 'HIGH',
-      tipEn: 'Rider reported full — consider boarding upstream.',
-      tipTc: '乘客回報已滿座 — 建議改於上游站上車。',
-      surgeRisk
-    };
-  }
-
-  if (activeRider && activeRider.status === 'SEATS') {
-    return {
-      ...baseLoad,
-      pct: Math.min(Number(baseLoad.pct) || 25, 28),
+      pct: Math.min(Number(baseLoad.pct) || 30, 32),
       band: 'LOW',
       labelEn: 'Seats',
       labelTc: '有位',
       cssClass: 'load-low',
       isSkipRisk: false,
-      riderOverride: 'SEATS',
-      riderRemainingMins: activeRider.remainingMins,
-      basis: 'RIDER_REPORT',
+      basis: 'PEOPLE_FLOW_BUNCH_RELIEF',
       confidence: 'HIGH',
-      tipEn: 'Rider reported seats available.',
-      tipTc: '乘客回報仍有座位。',
+      tipEn: baseLoad.tipEn || '',
+      tipTc: baseLoad.tipTc || '',
       surgeRisk
     };
   }
 
-  // 2. Global weather + leisure + skip-stop HIGH_LOAD downgrades green Seats pill to amber/red Likely Full
+  // 2. High people-flow + kinematic surge (skip-stop / wide gap) flags Likely Full
   if (surgeRisk && surgeRisk.level === 'HIGH_LOAD') {
     return {
       ...baseLoad,
@@ -1485,10 +1478,26 @@ function estimateBusSeatStatus(routeGroup, stopIdx, etaEntry = null, opts = {}) 
       labelTc: surgeRisk.labelTc || '⚠️ 易滿座',
       cssClass: 'load-full',
       isSkipRisk: true,
-      basis: 'WEATHER_SURGE_SKIP',
+      basis: 'PEOPLE_FLOW_KINEMATICS',
       confidence: 'HIGH',
       tipEn: surgeRisk.tip || 'Consider boarding upstream.',
       tipTc: surgeRisk.tipTc || '建議改於上游總站上車。',
+      surgeRisk
+    };
+  }
+
+  // 3. Moderate pressure with actionable bunching/corridor decision tip
+  if (surgeRisk && surgeRisk.level === 'MODERATE') {
+    const nextPct = Math.max(Number(baseLoad.pct) || 0, surgeRisk.isWideGap ? 68 : 60);
+    return {
+      ...baseLoad,
+      pct: nextPct,
+      band: baseLoad.band === 'LOW' ? 'MED' : baseLoad.band,
+      labelEn: baseLoad.band === 'LOW' ? 'Standing' : baseLoad.labelEn,
+      labelTc: baseLoad.band === 'LOW' ? '企位' : baseLoad.labelTc,
+      cssClass: baseLoad.band === 'LOW' ? 'load-med' : baseLoad.cssClass,
+      tipEn: surgeRisk.tip || baseLoad.tipEn || '',
+      tipTc: surgeRisk.tipTc || baseLoad.tipTc || '',
       surgeRisk
     };
   }

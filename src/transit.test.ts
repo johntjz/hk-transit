@@ -6520,6 +6520,9 @@ test('Tasks 1-3 Regression: Modularized domain scripts in exact 12-script order,
     'public/transit-data.js',
     'public/weathercoorelation.js',
     'public/monthly_activity.js',
+    'public/hk-people-flow.js',
+    'public/mtrsurge.js',
+    'public/ferrysurge.js',
     'public/bussurge.js',
     'public/fare-load-engine.js',
     'public/hardcode.js',
@@ -6542,6 +6545,9 @@ test('Tasks 1-3 Regression: Modularized domain scripts in exact 12-script order,
     'transit-data.js',
     'weathercoorelation.js',
     'monthly_activity.js',
+    'hk-people-flow.js',
+    'mtrsurge.js',
+    'ferrysurge.js',
     'bussurge.js',
     'fare-load-engine.js',
     'hardcode.js',
@@ -8211,6 +8217,7 @@ test('Weather-correlated bus load engine (weathercoorelation.js + bussurge.js), 
   vm.runInContext(fs.readFileSync('public/transit-data.js', 'utf8'), ctx);
   vm.runInContext(fs.readFileSync('public/weathercoorelation.js', 'utf8'), ctx);
   vm.runInContext(fs.readFileSync('public/monthly_activity.js', 'utf8'), ctx);
+  vm.runInContext(fs.readFileSync('public/hk-people-flow.js', 'utf8'), ctx);
   vm.runInContext(fs.readFileSync('public/bussurge.js', 'utf8'), ctx);
   vm.runInContext(fs.readFileSync('public/fare-load-engine.js', 'utf8'), ctx);
   vm.runInContext(fs.readFileSync('public/hardcode.js', 'utf8'), ctx);
@@ -8288,7 +8295,7 @@ test('Weather-correlated bus load engine (weathercoorelation.js + bussurge.js), 
   assert.equal(rWeekday.timeMultiplier, 1.0);
   assert.notEqual(rWeekday.level, 'HIGH_LOAD');
 
-  // 4. fare-load-engine.js estimateBusSeatStatus downgrade & 25-minute rider report override
+  // 4. fare-load-engine.js estimateBusSeatStatus downgrade via simulation-driven surge
   win.__HKO_WEATHER__ = clearMildWx;
   const downgradedSeat = win.estimateBusSeatStatus(nlb3mGroup, 8, { etaSpacing: 42 }, {
     nowMs: satAfternoonMs,
@@ -8298,28 +8305,8 @@ test('Weather-correlated bus load engine (weathercoorelation.js + bussurge.js), 
   assert.equal(downgradedSeat.cssClass, 'load-full', 'HIGH_LOAD must downgrade green Seats pill to load-full');
   assert.equal(downgradedSeat.labelEn, '⚠️ Likely Full');
   assert.equal(downgradedSeat.tipEn, 'Consider boarding upstream.');
-
-  // 1-tap rider report override with 25-min decay
-  const t0 = weekdayAfternoonMs;
-  win.setRiderLoadReport('NLB_3M_O', 'HA_LING_PEI', 'FULL', t0, mockStorage);
-  const riderFull = win.estimateBusSeatStatus(nlb3mGroup, 8, { etaSpacing: 120 }, {
-    nowMs: t0 + 10 * 60 * 1000, // 10 min later -> still active
-    stopKey: 'HA_LING_PEI',
-    storage: mockStorage,
-    baseLoad: { pct: 20, band: 'LOW', labelEn: 'Seats', labelTc: '有位', cssClass: 'load-low', isSkipRisk: false },
-  });
-  assert.equal(riderFull.cssClass, 'load-full');
-  assert.equal(riderFull.riderOverride, 'FULL');
-
-  // Expires cleanly after 25 minutes
-  const afterExpiry = win.estimateBusSeatStatus(nlb3mGroup, 8, { etaSpacing: 120 }, {
-    nowMs: t0 + 26 * 60 * 1000, // 26 min later -> decayed
-    stopKey: 'HA_LING_PEI',
-    storage: mockStorage,
-    baseLoad: { pct: 20, band: 'LOW', labelEn: 'Seats', labelTc: '有位', cssClass: 'load-low', isSkipRisk: false },
-  });
-  assert.equal(afterExpiry.cssClass, 'load-low', 'Rider report must decay after 25 minutes');
-  assert.equal(afterExpiry.riderOverride, undefined);
+  assert.equal(typeof win.setRiderLoadReport, 'undefined', 'Manual rider-report state must be removed');
+  assert.equal(typeof win.getActiveRiderLoadReport, 'undefined', 'Manual rider-report lookup must be removed');
 
   // 5. Auto-hide two-way sectional fare notice after first use while keeping 2-Way Section badge
   const nlb1Group = { key: 'NLB_1_O', company: 'NLB', routeNo: '1', dest_e: 'Tai O', orig_e: 'Mui Wo Ferry Pier', mode: 'BUS' };
@@ -8335,11 +8322,11 @@ test('Weather-correlated bus load engine (weathercoorelation.js + bussurge.js), 
   assert.equal(win.shouldShowTwoWaySectionalFareNotice(nlb1Group, nlb1Stops, 0, false, mockStorage), false, 'Subsequent visits hide yellow sectional notice');
   assert.equal(win.hasStopTwoWaySectionalFare(nlb1Group, nlb1Stops, 0, false), true, 'Compact 2-Way Section badge logic still returns true');
 
-  // 6. Verify eta-engine.js & app-ui.js wire up rider report button, sectional ack, Fav drag handles, and 5s Undo snackbar
+  // 6. Verify eta-engine.js & app-ui.js wire up sectional ack, Fav drag handles, 5s Undo snackbar & remove rider-report-btn
   const etaSrc = fs.readFileSync('public/eta-engine.js', 'utf8');
   const uiSrc = fs.readFileSync('public/app-ui.js', 'utf8');
   assert.ok(etaSrc.includes('showUndoToast'), 'eta-engine.js must define showUndoToast');
-  assert.ok(etaSrc.includes('rider-report-btn'), 'eta-engine.js must render 1-tap rider-report-btn on bus cards');
+  assert.ok(!etaSrc.includes('rider-report-btn'), 'eta-engine.js must not render manual rider-report-btn');
   assert.ok(etaSrc.includes('hk_transit_sectional_fare_ack'), 'eta-engine.js must check/persist hk_transit_sectional_fare_ack');
   assert.ok(uiSrc.includes('fav-drag-handle'), 'app-ui.js must render ⋮⋮ fav-drag-handle on Saved bookmarks');
   assert.ok(uiSrc.includes('reorderSavedBookmarks'), 'app-ui.js must implement reorderSavedBookmarks');
@@ -8371,6 +8358,7 @@ test('Expanded 7-Day Seasonal, Public Holiday, Eve-of-Holiday, Sunday Urban, Sch
   vm.runInContext(fs.readFileSync('public/transit-data.js', 'utf8'), ctx);
   vm.runInContext(fs.readFileSync('public/weathercoorelation.js', 'utf8'), ctx);
   vm.runInContext(fs.readFileSync('public/monthly_activity.js', 'utf8'), ctx);
+  vm.runInContext(fs.readFileSync('public/hk-people-flow.js', 'utf8'), ctx);
   vm.runInContext(fs.readFileSync('public/bussurge.js', 'utf8'), ctx);
   vm.runInContext(fs.readFileSync('public/fare-load-engine.js', 'utf8'), ctx);
   vm.runInContext(fs.readFileSync('public/hardcode.js', 'utf8'), ctx);
@@ -8568,11 +8556,506 @@ test('Expanded 7-Day Seasonal, Public Holiday, Eve-of-Holiday, Sunday Urban, Sch
   // 8. Map road-speed telemetry purity: busspeed.js and map.js must NEVER import or couple to seasonal/crowding load engines
   const busSpeedSrc = fs.readFileSync('public/busspeed.js', 'utf8');
   const mapSrc = fs.readFileSync('public/map.js', 'utf8');
-  assert.ok(!/monthly_activity|getSeasonalCorridorMultiplier|estimateGlobalBusLoadRisk|bussurge/i.test(busSpeedSrc),
+  assert.ok(!/monthly_activity|getSeasonalCorridorMultiplier|estimateGlobalBusLoadRisk|bussurge|hk-people-flow|simulateCityPeopleFlow/i.test(busSpeedSrc),
     'public/busspeed.js must remain strictly data-driven road speed telemetry');
-  assert.ok(!/monthly_activity|getSeasonalCorridorMultiplier|estimateGlobalBusLoadRisk|bussurge/i.test(mapSrc),
+  assert.ok(!/monthly_activity|getSeasonalCorridorMultiplier|estimateGlobalBusLoadRisk|bussurge|hk-people-flow|simulateCityPeopleFlow/i.test(mapSrc),
     'public/map.js must remain strictly data-driven road speed telemetry');
 });
+
+test('Standalone HK People Flow Simulator (52-week, EDB school breaks, 2026/27 holidays, weather inversion) & Bus Network Kinematics Adapter', () => {
+  // 1. Load standalone People Flow Simulator + Bus Adapter in clean VM
+  const win: any = {
+    __HKO_WEATHER__: null,
+    __HK_PUBLIC_HOLIDAYS__: new Set(),
+  };
+  const ctx: any = {
+    window: win,
+    globalThis: win,
+    Date, Math, Number, String, Array, Object, Set, Map, JSON, parseFloat, parseInt, isFinite, Promise,
+  };
+  vm.createContext(ctx);
+  vm.runInContext(fs.readFileSync('public/transit-data.js', 'utf8'), ctx);
+  vm.runInContext(fs.readFileSync('public/weathercoorelation.js', 'utf8'), ctx);
+  vm.runInContext(fs.readFileSync('public/monthly_activity.js', 'utf8'), ctx);
+  vm.runInContext(fs.readFileSync('public/hk-people-flow.js', 'utf8'), ctx);
+  vm.runInContext(fs.readFileSync('public/bussurge.js', 'utf8'), ctx);
+  vm.runInContext(fs.readFileSync('public/fare-load-engine.js', 'utf8'), ctx);
+
+  // Confirm hk-people-flow.js is 100% mode-agnostic (no DOM / bus-card UI code)
+  const flowSrc = fs.readFileSync('public/hk-people-flow.js', 'utf8');
+  assert.ok(!/document\.|innerHTML|classList|querySelector/i.test(flowSrc),
+    'public/hk-people-flow.js must contain zero DOM/UI code');
+
+  const clearMildWx = { temp: 22, condition: 'Clear', humidity: 58, warnings: [] };
+  const summerSunnyWx = { temp: 29, condition: 'Sunny', humidity: 75, warnings: [] };
+  const rainWx = { temp: 22, condition: 'Rain', warnings: ['RAIN'] };
+  const hotWx = { temp: 33, condition: 'Sunny', warnings: [] };
+
+  // 2. 52-week seasonal flip: Nov W48 (hiking peak > beach) vs Jul W29 (beach peak > afternoon exposed trail; summer dawn hike > summer PM)
+  const novSatPm = Date.parse('2026-11-28T07:00:00Z'); // Sat 15:00 HKT, W48
+  const julSatPm = Date.parse('2026-07-18T06:00:00Z'); // Sat 14:00 HKT, W29
+  const julSatDawn = Date.parse('2026-07-17T22:30:00Z'); // Sat 06:30 HKT, W29
+
+  const flowNov = win.simulateCityPeopleFlow(novSatPm, clearMildWx);
+  const flowJulPm = win.simulateCityPeopleFlow(julSatPm, summerSunnyWx);
+  const flowJulDawn = win.simulateCityPeopleFlow(julSatDawn, clearMildWx);
+
+  assert.equal(flowNov.calendar.isoWeek, 48);
+  assert.equal(flowJulPm.calendar.isoWeek, 29);
+  assert.ok(flowNov.vectors.TO_TRAIL_EXPOSED > flowNov.vectors.TO_BEACH_WATER,
+    `Nov W48 must favor trails (${flowNov.vectors.TO_TRAIL_EXPOSED}) over beaches (${flowNov.vectors.TO_BEACH_WATER})`);
+  assert.ok(flowJulPm.vectors.TO_BEACH_WATER > flowJulPm.vectors.TO_TRAIL_EXPOSED,
+    `Jul W29 afternoon must favor beaches (${flowJulPm.vectors.TO_BEACH_WATER}) over exposed trails (${flowJulPm.vectors.TO_TRAIL_EXPOSED})`);
+  assert.ok(flowJulDawn.vectors.TO_TRAIL_EXPOSED > flowJulPm.vectors.TO_TRAIL_EXPOSED,
+    'Jul dawn hiking window (06:30) must exceed Jul afternoon exposed trail pressure');
+
+  // Verify all 15 normalized vectors exist in [0.0, 2.0]
+  assert.equal(win.FLOW_VECTOR_KEYS.length, 15);
+  for (const k of win.FLOW_VECTOR_KEYS) {
+    const v = flowNov.vectors[k];
+    assert.ok(Number.isFinite(v) && v >= 0.0 && v <= 2.0, `Vector ${k} out of range [0,2]: ${v}`);
+  }
+
+  // 3. Mon–Fri school-term vs. EDB school breaks (Christmas, LNY, Easter, Summer)
+  const termThuAm = Date.parse('2026-11-25T23:45:00Z'); // Thu 2026-11-26 07:45 HKT
+  const termWedPm = Date.parse('2026-11-25T07:15:00Z'); // Wed 2026-11-25 15:15 HKT
+  const xmasBreak = Date.parse('2026-12-28T07:15:00Z'); // Mon 2026-12-28 15:15 HKT (EDB Xmas break)
+  const lnyBreak = Date.parse('2027-02-11T07:15:00Z');  // Thu 2027-02-11 15:15 HKT (EDB LNY break)
+  const easterBreak = Date.parse('2027-03-25T07:15:00Z'); // Thu 2027-03-25 15:15 HKT (EDB Easter break)
+  const summerBreak = Date.parse('2027-07-15T07:15:00Z'); // Thu 2027-07-15 15:15 HKT (EDB Summer break)
+
+  const flowTermAm = win.simulateCityPeopleFlow(termThuAm, clearMildWx);
+  const flowTermPm = win.simulateCityPeopleFlow(termWedPm, clearMildWx);
+  assert.equal(flowTermAm.calendar.isSchoolDay, true);
+  assert.ok(flowTermAm.vectors.SCHOOL_ZONE >= 1.5, `School AM rush expected >= 1.5, got ${flowTermAm.vectors.SCHOOL_ZONE}`);
+  assert.equal(flowTermPm.calendar.isSchoolDay, true);
+  assert.ok(flowTermPm.vectors.SCHOOL_ZONE >= 1.5, `School PM dismissal expected >= 1.5, got ${flowTermPm.vectors.SCHOOL_ZONE}`);
+
+  for (const [label, ts] of [['Xmas', xmasBreak], ['LNY', lnyBreak], ['Easter', easterBreak], ['Summer', summerBreak]] as const) {
+    const f = win.simulateCityPeopleFlow(ts, clearMildWx);
+    assert.equal(f.calendar.isSchoolDay, false, `${label} break must set isSchoolDay=false`);
+    assert.equal(f.vectors.SCHOOL_ZONE, 0, `${label} break must zero out SCHOOL_ZONE`);
+  }
+
+  // 4. Sat northbound + sunset hike vs. Sun urban hub + southbound return
+  const satAm = Date.parse('2026-11-28T01:30:00Z'); // Sat 09:30 HKT
+  const sunMid = Date.parse('2026-11-29T05:30:00Z'); // Sun 13:30 HKT
+  const sunPm = Date.parse('2026-11-29T10:00:00Z');  // Sun 18:00 HKT
+
+  const flowSatAm = win.simulateCityPeopleFlow(satAm, clearMildWx);
+  const flowSunMid = win.simulateCityPeopleFlow(sunMid, clearMildWx);
+  const flowSunPm = win.simulateCityPeopleFlow(sunPm, clearMildWx);
+
+  assert.ok(flowSatAm.vectors.TO_BORDER_NORTH >= 1.6, `Sat AM northbound expected >= 1.6, got ${flowSatAm.vectors.TO_BORDER_NORTH}`);
+  assert.equal(flowSatAm.vectors.SUNDAY_URBAN_HUB, 0, 'Saturday must not trigger SUNDAY_URBAN_HUB');
+  assert.ok(flowSunMid.vectors.SUNDAY_URBAN_HUB >= 1.4, `Sun midday urban hub expected >= 1.4, got ${flowSunMid.vectors.SUNDAY_URBAN_HUB}`);
+  assert.ok(flowSunPm.vectors.FROM_BORDER_NORTH >= 1.7, `Sun PM southbound return expected >= 1.7, got ${flowSunPm.vectors.FROM_BORDER_NORTH}`);
+
+  // 5. Gazetted 2026 & 2027 public holidays, eve-of-holiday, and Ching Ming cemetery festival
+  assert.equal(win.isHongKongPublicHoliday(Date.parse('2027-05-13T04:00:00Z')), true, '2027-05-13 Buddha Birthday gazetted holiday');
+  assert.equal(win.isHongKongPublicHoliday(Date.parse('2027-10-08T04:00:00Z')), true, '2027-10-08 Chung Yeung gazetted holiday');
+  assert.equal(win.isHongKongPublicHoliday(Date.parse('2027-12-27T04:00:00Z')), true, '2027-12-27 Christmas holiday');
+
+  const eveNatDay = Date.parse('2026-09-30T10:30:00Z'); // Wed 18:30 HKT
+  const flowEve = win.simulateCityPeopleFlow(eveNatDay, clearMildWx);
+  assert.equal(flowEve.calendar.isEveOfHoliday, true);
+  assert.ok(flowEve.vectors.TO_AIRPORT_AWE >= 1.7, 'Eve-of-holiday must spike TO_AIRPORT_AWE');
+  assert.ok(flowEve.vectors.TO_BORDER_NORTH >= 1.7, 'Eve-of-holiday must spike TO_BORDER_NORTH');
+
+  const chingMing = Date.parse('2026-04-06T03:00:00Z'); // Mon 2026-04-06 11:00 HKT (Holiday)
+  const flowChingMing = win.simulateCityPeopleFlow(chingMing, clearMildWx);
+  assert.ok(flowChingMing.vectors.CEMETERY_FESTIVAL >= 1.4, 'Ching Ming holiday must elevate CEMETERY_FESTIVAL');
+
+  // 6. Weather inversion (Rain & Heat crush outdoor trails while boosting urban/indoor; pre-T8 evac spikes CBD_OUTBOUND)
+  const flowNovRain = win.simulateCityPeopleFlow(novSatPm, rainWx);
+  const flowNovHot = win.simulateCityPeopleFlow(novSatPm, hotWx);
+  assert.ok(flowNovRain.vectors.TO_TRAIL_EXPOSED < 0.7 && flowNovRain.weather.outdoorMod <= 0.35,
+    'Rain must crush outdoor trail flow');
+  assert.ok(flowNovRain.weather.urbanIndoorMod > 1.15 && flowNovRain.vectors.CBD_INBOUND > flowNov.vectors.CBD_INBOUND,
+    'Rain must invert demand upward onto urban/indoor vectors');
+  assert.ok(flowNovHot.weather.outdoorMod <= 0.55 && flowNovHot.weather.urbanIndoorMod > 1.05,
+    'Heat >31°C must dampen outdoor while lifting urban/indoor');
+
+  const wedAfternoon = Date.parse('2026-11-25T06:00:00Z'); // Wed 14:00 HKT
+  const flowNormalPm = win.simulateCityPeopleFlow(wedAfternoon, clearMildWx);
+  const flowPreT8 = win.simulateCityPeopleFlow(wedAfternoon, { preTyphoonEvac: true, warnings: ['TC3'] });
+  assert.ok(flowPreT8.vectors.CBD_OUTBOUND > flowNormalPm.vectors.CBD_OUTBOUND * 1.4,
+    'Pre-T8 evacuation must spike CBD_OUTBOUND exodus');
+
+  // 7. Mode-agnostic mapCorridorToFlowVectors works across Bus, MTR, and Ferry
+  const mtrBorder = win.mapCorridorToFlowVectors({ originText: 'Admiralty', destText: 'Lo Wu', routeCode: 'EAL', mode: 'MTR' });
+  assert.ok(mtrBorder.vectorKeys.includes('TO_BORDER_NORTH'), 'MTR East Rail to Lo Wu maps to TO_BORDER_NORTH');
+  const ferryIsland = win.mapCorridorToFlowVectors({ originText: 'Central Pier 5', destText: 'Cheung Chau', mode: 'FERRY' });
+  assert.ok(ferryIsland.vectorKeys.includes('ISLAND_OUTBOUND'), 'Central -> Cheung Chau ferry maps to ISLAND_OUTBOUND');
+  const busTrail = win.mapCorridorToFlowVectors({ originText: 'Tung Chung', destText: 'Mui Wo', stopText: 'Pak Kung Au', routeCode: '3M', mode: 'BUS' });
+  assert.ok(busTrail.vectorKeys.includes('TO_TRAIL_EXPOSED'), 'Bus 3M via Pak Kung Au maps to TO_TRAIL_EXPOSED');
+
+  // 8. Bus Adapter Kinematics: headway-gap amplification, bunched trailing-bus relief, and stop-position progress curve
+  const kmbCommute = {
+    key: 'KMB_968_O',
+    company: 'KMB',
+    routeNo: '968',
+    orig_en: 'Yuen Long West',
+    dest_en: 'Causeway Bay (Tin Hau)',
+    headwayMins: 10
+  };
+  const wedAmPeak = Date.parse('2026-11-25T00:20:00Z'); // Wed 08:20 HKT AM rush
+
+  // 8a. Headway-gap amplification: 22-min live gap on 10-min route amplifies lead bus into HIGH_LOAD
+  const normalHw = win.estimateGlobalBusLoadRisk(kmbCommute, 10, {
+    totalStops: 24,
+    obsHeadwaySec: 600,
+    schedHeadwaySec: 600,
+    etaIdx: 0
+  }, clearMildWx, wedAmPeak);
+  const wideGapHw = win.estimateGlobalBusLoadRisk(kmbCommute, 10, {
+    totalStops: 24,
+    obsHeadwaySec: 1320, // 22 min gap
+    schedHeadwaySec: 600,
+    etaIdx: 0,
+    nextBusGapSec: 180 // trailing bus 3m behind
+  }, clearMildWx, wedAmPeak);
+  assert.equal(wideGapHw.isWideGap, true, '22-min gap on 10-min route must flag isWideGap');
+  assert.ok(wideGapHw.headwayMod > 1.3 && wideGapHw.score > normalHw.score,
+    `Wide headway gap must amplify headwayMod (${wideGapHw.headwayMod}) & score (${wideGapHw.score} > ${normalHw.score})`);
+  assert.equal(wideGapHw.level, 'HIGH_LOAD', 'Severe headway gap during CBD AM peak must escalate to HIGH_LOAD');
+  assert.equal(wideGapHw.tip, 'Next bus 3m behind likely has space',
+    'Lead bus with 3m bunched follower must surface concise next-bus decision tip');
+
+  // 8b. Bunched trailing-bus relief: trailing bus 3 min behind lead bus gets load relief (headwayMod < 0.75)
+  const trailingBunched = win.estimateGlobalBusLoadRisk(kmbCommute, 10, {
+    totalStops: 24,
+    schedHeadwaySec: 600,
+    etaIdx: 1,
+    prevBusGapSec: 180 // 3 min behind lead bus
+  }, clearMildWx, wedAmPeak);
+  assert.equal(trailingBunched.isBunchedTrailing, true);
+  assert.ok(trailingBunched.headwayMod < 0.75, `Bunched trailing bus headwayMod must be < 0.75, got ${trailingBunched.headwayMod}`);
+  assert.equal(trailingBunched.level, 'NORMAL', 'Bunched trailing bus must receive load relief to NORMAL');
+
+  const seatBunched = win.estimateBusSeatStatus(kmbCommute, 10, {
+    totalStops: 24,
+    schedHeadwaySec: 600,
+    etaIdx: 1,
+    prevBusGapSec: 180
+  }, {
+    nowMs: wedAmPeak,
+    weather: clearMildWx,
+    baseLoad: { pct: 78, band: 'HIGH', labelEn: 'Crowded', labelTc: '較擠迫', cssClass: 'load-high', isSkipRisk: false }
+  });
+  assert.equal(seatBunched.band, 'LOW', 'estimateBusSeatStatus must relieve bunched trailing bus to Seats/LOW');
+  assert.equal(seatBunched.cssClass, 'load-low');
+
+  // 8c. Stop-position progress curve: origin stop (<15%) stays easier to board than mid-corridor (25%–75%)
+  const originRisk = win.estimateGlobalBusLoadRisk(kmbCommute, 0, {
+    totalStops: 34,
+    etaSpacing: 45
+  }, clearMildWx, wedAmPeak);
+  const midRisk = win.estimateGlobalBusLoadRisk(kmbCommute, 16, {
+    totalStops: 34,
+    etaSpacing: 45
+  }, clearMildWx, wedAmPeak);
+  const tailRisk = win.estimateGlobalBusLoadRisk(kmbCommute, 32, {
+    totalStops: 34,
+    etaSpacing: 45
+  }, clearMildWx, wedAmPeak);
+  assert.ok(originRisk.stopPositionMod < 0.75, `Origin stopPositionMod must be < 0.75, got ${originRisk.stopPositionMod}`);
+  assert.ok(midRisk.stopPositionMod > 1.1, `Mid-corridor stopPositionMod must be > 1.1, got ${midRisk.stopPositionMod}`);
+  assert.ok(tailRisk.stopPositionMod < 0.85, `Post-dropoff stopPositionMod must decay < 0.85, got ${tailRisk.stopPositionMod}`);
+  assert.ok(midRisk.score > originRisk.score && midRisk.score > tailRisk.score,
+    'Mid-corridor stop must carry higher accumulated load score than origin or final drop-off stops');
+  assert.notEqual(originRisk.level, 'HIGH_LOAD', 'Origin stop (0/34) stays easier to board than mid-corridor');
+  assert.equal(midRisk.level, 'HIGH_LOAD', 'Mid-corridor stop (16/34) under AM CBD peak + skip-stop flags HIGH_LOAD');
+
+  // 9. Complete removal of manual user-reporting UI/state across entire frontend
+  const filesToCheckNoRiderReport = [
+    'index.html',
+    'public/app-ui.js',
+    'public/eta-engine.js',
+    'public/app.css',
+    'public/bussurge.js',
+    'public/fare-load-engine.js'
+  ];
+  for (const rel of filesToCheckNoRiderReport) {
+    const src = fs.readFileSync(rel, 'utf8');
+    assert.ok(!/toggleRiderBusLoadReport|setRiderLoadReport|getActiveRiderLoadReport|rider-report-btn|RIDER_LOAD_STORAGE_KEY/i.test(src),
+      `${rel} must not contain any manual rider-reporting UI or localStorage override logic`);
+  }
+  const mapOverlaySrc = fs.readFileSync('public/map-traffic-overlay.js', 'utf8');
+  assert.ok(!/hk-people-flow|simulateCityPeopleFlow|bussurge|estimateGlobalBusLoadRisk/i.test(mapOverlaySrc),
+    'public/map-traffic-overlay.js must remain strictly data-driven road traffic telemetry');
+});
+
+test('Multi-Modal MTR & Ferry Load Adapters (mtrsurge.js, ferrysurge.js) + Mui Wo Ferry-to-Bus Cross-Modal Pulse', () => {
+  const win: any = {};
+  const ctx: any = {
+    window: win,
+    globalThis: win,
+    Math, Date, Number, String, Array, Map, Set, Object, RegExp, JSON, Promise, console, isFinite, parseInt, parseFloat
+  };
+  vm.createContext(ctx);
+  vm.runInContext(fs.readFileSync('public/weathercoorelation.js', 'utf8'), ctx);
+  vm.runInContext(fs.readFileSync('public/monthly_activity.js', 'utf8'), ctx);
+  vm.runInContext(fs.readFileSync('public/hk-people-flow.js', 'utf8'), ctx);
+  vm.runInContext(fs.readFileSync('public/mtrsurge.js', 'utf8'), ctx);
+  vm.runInContext(fs.readFileSync('public/ferrysurge.js', 'utf8'), ctx);
+  vm.runInContext(fs.readFileSync('public/bussurge.js', 'utf8'), ctx);
+
+  assert.equal(typeof win.estimateMtrLoadStatus, 'function', 'mtrsurge.js must export estimateMtrLoadStatus');
+  assert.equal(typeof win.estimateFerryLoadStatus, 'function', 'ferrysurge.js must export estimateFerryLoadStatus');
+  assert.equal(typeof win.getRecentFerryArrivalPulse, 'function', 'ferrysurge.js must export getRecentFerryArrivalPulse');
+
+  const clearMildWx = { temperature: 22, rainfall: 0, warningCodes: [] };
+  const rainstormWx = { temperature: 24, rainfall: 38, warningCodes: ['WRAINR'] };
+  const preT8Wx = { temperature: 27, rainfall: 15, warningCodes: ['PRE8'] };
+
+  // 1. MTR Directional Choke Links: TWL AM southbound vs PM northbound, KTL core, TKL Yau Tong-Quarry Bay
+  const wedAm0820 = Date.UTC(2026, 10, 18, 0, 20, 0); // Wed 08:20 HKT
+  const wedPm1815 = Date.UTC(2026, 10, 18, 10, 15, 0); // Wed 18:15 HKT
+  const wedMid1130 = Date.UTC(2026, 10, 18, 3, 30, 0); // Wed 11:30 HKT
+
+  const twlAmSb = win.estimateMtrLoadStatus({
+    lineCode: 'TWL', stationCode: 'TST', direction: 'DOWN', destCode: 'CEN',
+    nextTrains: [wedAm0820 + 60000, wedAm0820 + 210000], hkoWeather: clearMildWx, nowMs: wedAm0820
+  });
+  const twlAmNb = win.estimateMtrLoadStatus({
+    lineCode: 'TWL', stationCode: 'TST', direction: 'UP', destCode: 'TSW',
+    nextTrains: [wedAm0820 + 60000, wedAm0820 + 210000], hkoWeather: clearMildWx, nowMs: wedAm0820
+  });
+  assert.ok(twlAmSb.score > twlAmNb.score * 1.6,
+    `TWL AM southbound (${twlAmSb.score}) must strongly exceed counter-peak northbound (${twlAmNb.score})`);
+  assert.equal(twlAmSb.state, 'CRUSH', 'TWL AM southbound at TST must flag CRUSH');
+  assert.equal(twlAmSb.labelEn, 'Crowded');
+  assert.equal(twlAmSb.labelTc, '擠迫');
+
+  const twlPmNb = win.estimateMtrLoadStatus({
+    lineCode: 'TWL', stationCode: 'ADM', direction: 'UP', destCode: 'TSW',
+    nextTrains: [wedPm1815 + 60000, wedPm1815 + 210000], hkoWeather: clearMildWx, nowMs: wedPm1815
+  });
+  const twlPmSb = win.estimateMtrLoadStatus({
+    lineCode: 'TWL', stationCode: 'ADM', direction: 'DOWN', destCode: 'CEN',
+    nextTrains: [wedPm1815 + 60000, wedPm1815 + 210000], hkoWeather: clearMildWx, nowMs: wedPm1815
+  });
+  assert.ok(twlPmNb.score > twlPmSb.score * 1.6,
+    `TWL PM northbound (${twlPmNb.score}) must strongly exceed counter-peak southbound (${twlPmSb.score})`);
+  assert.equal(twlPmNb.state, 'CRUSH');
+
+  const tklAmChoke = win.estimateMtrLoadStatus({
+    lineCode: 'TKL', stationCode: 'YAT', direction: 'DOWN', destCode: 'NOP',
+    nextTrains: [wedAm0820 + 60000, wedAm0820 + 210000], hkoWeather: clearMildWx, nowMs: wedAm0820
+  });
+  const ktlAmCore = win.estimateMtrLoadStatus({
+    lineCode: 'KTL', stationCode: 'KOT', direction: 'DOWN', destCode: 'WHA',
+    nextTrains: [wedAm0820 + 60000, wedAm0820 + 210000], hkoWeather: clearMildWx, nowMs: wedAm0820
+  });
+  assert.ok(tklAmChoke.chokeBoost >= 1.30 && tklAmChoke.state === 'CRUSH',
+    `TKL Yau Tong-Quarry Bay AM harbour choke must flag CRUSH, got ${tklAmChoke.state} (${tklAmChoke.score})`);
+  assert.ok(ktlAmCore.chokeBoost >= 1.20 && ktlAmCore.state === 'CRUSH',
+    `KTL Kowloon core AM peak must flag CRUSH, got ${ktlAmCore.state} (${ktlAmCore.score})`);
+
+  // 2. EAL Border Waves: Fri PM & Sat AM northbound vs Sun PM southbound + TCL/AEL weekend airport/Lantau
+  const friPm1830 = Date.UTC(2026, 10, 20, 10, 30, 0); // Fri 18:30 HKT
+  const satAm0930 = Date.UTC(2026, 10, 21, 1, 30, 0);  // Sat 09:30 HKT
+  const sunPm1830 = Date.UTC(2026, 10, 22, 10, 30, 0); // Sun 18:30 HKT
+
+  const ealSatNb = win.estimateMtrLoadStatus({
+    lineCode: 'EAL', stationCode: 'SHT', direction: 'UP', destCode: 'LOW',
+    nextTrains: [satAm0930 + 60000, satAm0930 + 240000], hkoWeather: clearMildWx, nowMs: satAm0930
+  });
+  const ealSatSb = win.estimateMtrLoadStatus({
+    lineCode: 'EAL', stationCode: 'SHT', direction: 'DOWN', destCode: 'ADM',
+    nextTrains: [satAm0930 + 60000, satAm0930 + 240000], hkoWeather: clearMildWx, nowMs: satAm0930
+  });
+  assert.ok(ealSatNb.score > ealSatSb.score * 1.8 && ealSatNb.state === 'CRUSH',
+    `EAL Sat AM northbound (${ealSatNb.score}/${ealSatNb.state}) must surge over southbound (${ealSatSb.score})`);
+
+  const ealSunSb = win.estimateMtrLoadStatus({
+    lineCode: 'EAL', stationCode: 'SHT', direction: 'DOWN', destCode: 'ADM',
+    nextTrains: [sunPm1830 + 60000, sunPm1830 + 240000], hkoWeather: clearMildWx, nowMs: sunPm1830
+  });
+  const ealSunNb = win.estimateMtrLoadStatus({
+    lineCode: 'EAL', stationCode: 'SHT', direction: 'UP', destCode: 'LOW',
+    nextTrains: [sunPm1830 + 60000, sunPm1830 + 240000], hkoWeather: clearMildWx, nowMs: sunPm1830
+  });
+  assert.ok(ealSunSb.score > ealSunNb.score * 1.5 && ealSunSb.state === 'CRUSH',
+    `EAL Sun PM southbound return (${ealSunSb.score}/${ealSunSb.state}) must surge over northbound (${ealSunNb.score})`);
+
+  const ealFriNb = win.estimateMtrLoadStatus({
+    lineCode: 'EAL', stationCode: 'TAW', direction: 'UP', destCode: 'LOW',
+    nextTrains: [friPm1830 + 60000, friPm1830 + 240000], hkoWeather: clearMildWx, nowMs: friPm1830
+  });
+  assert.equal(ealFriNb.state, 'CRUSH', 'EAL Fri PM northbound border exodus must flag CRUSH');
+
+  const tclSatOut = win.estimateMtrLoadStatus({
+    lineCode: 'TCL', stationCode: 'TSY', direction: 'DOWN', destCode: 'TUC',
+    nextTrains: [satAm0930 + 120000, satAm0930 + 480000], hkoWeather: clearMildWx, nowMs: satAm0930
+  });
+  assert.ok(tclSatOut.state === 'BUSY' || tclSatOut.state === 'CRUSH',
+    `TCL Saturday AM Lantau/Airport outbound must be elevated, got ${tclSatOut.state} (${tclSatOut.score})`);
+
+  // 3. Live Headway Spacing Stretch (>= 5m gap amplifies platform crush) + Rain & Pre-T8 Weather Fusion
+  const normalMidTwl = win.estimateMtrLoadStatus({
+    lineCode: 'TWL', stationCode: 'MOK', direction: 'DOWN', destCode: 'CEN',
+    nextTrains: [wedMid1130 + 60000, wedMid1130 + 210000], hkoWeather: clearMildWx, nowMs: wedMid1130
+  });
+  assert.equal(normalMidTwl.state, 'COMFORTABLE', `Quiet midday TWL must be COMFORTABLE, got ${normalMidTwl.state}`);
+  assert.equal(normalMidTwl.labelEn, 'Space');
+  assert.equal(normalMidTwl.labelTc, '寬敞');
+
+  const wedAmShoulder = Date.UTC(2026, 10, 18, 1, 35, 0); // Wed 09:35 HKT (AM peak shoulder)
+  const shoulderTight = win.estimateMtrLoadStatus({
+    lineCode: 'TWL', stationCode: 'SSP', direction: 'DOWN', destCode: 'CEN',
+    nextTrains: [wedAmShoulder + 60000, wedAmShoulder + 210000], hkoWeather: clearMildWx, nowMs: wedAmShoulder
+  });
+  const shoulderStretched = win.estimateMtrLoadStatus({
+    lineCode: 'TWL', stationCode: 'SSP', direction: 'DOWN', destCode: 'CEN',
+    nextTrains: [wedAmShoulder + 60000, wedAmShoulder + 420000], // 6m gap (>= 5m)
+    hkoWeather: clearMildWx, nowMs: wedAmShoulder
+  });
+  assert.equal(shoulderStretched.isHeadwayStretched, true, '6m live train gap on TWL must flag isHeadwayStretched');
+  assert.ok(shoulderStretched.score > shoulderTight.score * 1.25,
+    `6m gap (${shoulderStretched.score}) must amplify platform crush vs 2.5m gap (${shoulderTight.score})`);
+  assert.equal(shoulderStretched.state, 'CRUSH', '6m gap during high-pressure shoulder must push to CRUSH');
+
+  const rainMidTwl = win.estimateMtrLoadStatus({
+    lineCode: 'TWL', stationCode: 'MOK', direction: 'DOWN', destCode: 'CEN',
+    nextTrains: [wedMid1130 + 60000, wedMid1130 + 210000], hkoWeather: rainstormWx, nowMs: wedMid1130
+  });
+  assert.ok(rainMidTwl.score > normalMidTwl.score * 1.2,
+    `Rainstorm urbanIndoorMod must push underground MTR demand up (${rainMidTwl.score} > ${normalMidTwl.score})`);
+
+  const preT8Homebound = win.estimateMtrLoadStatus({
+    lineCode: 'TWL', stationCode: 'CEN', direction: 'UP', destCode: 'TSW',
+    nextTrains: [wedMid1130 + 60000, wedMid1130 + 210000], hkoWeather: preT8Wx, nowMs: wedMid1130
+  });
+  assert.ok(preT8Homebound.score > normalMidTwl.score * 1.7,
+    `Pre-T8 warning must spike homebound MTR line (${preT8Homebound.score} vs ${normalMidTwl.score})`);
+
+  // 4. Hybrid Ferry Load Adapter: FAST vs ORD, Sailing Interval (>= 45m vs <= 15m), Sensor-Fused vs Timetable-Only
+  const sunAm1000 = Date.UTC(2026, 10, 22, 2, 0, 0); // Sun 10:00 HKT (Nov cool & clear)
+  const fastCcOut = win.estimateFerryLoadStatus({
+    operator: 'Sun Ferry', routeName: 'Central - Cheung Chau',
+    pierOrigin: 'Central Pier 5', pierDest: 'Cheung Chau',
+    vesselType: 'FAST', sailingIntervalMins: 45, liveDelayMins: 0, hasLiveApi: true,
+    hkoWeather: clearMildWx, nowMs: sunAm1000
+  });
+  const ordCcOut = win.estimateFerryLoadStatus({
+    operator: 'Sun Ferry', routeName: 'Central - Cheung Chau',
+    pierOrigin: 'Central Pier 5', pierDest: 'Cheung Chau',
+    vesselType: 'ORD', sailingIntervalMins: 45, liveDelayMins: 0, hasLiveApi: true,
+    hkoWeather: clearMildWx, nowMs: sunAm1000
+  });
+  assert.equal(fastCcOut.fusionMode, 'SENSOR_FUSED');
+  assert.ok(fastCcOut.score > ordCcOut.score * 1.7,
+    `Fast Ferry (${fastCcOut.score}) must load much faster than Ordinary 3-deck (${ordCcOut.score})`);
+  assert.equal(fastCcOut.state, 'QUEUE_EARLY', 'Weekend AM Fast Ferry to Cheung Chau must flag QUEUE_EARLY');
+  assert.equal(fastCcOut.labelEn, 'Queue Early');
+  assert.equal(fastCcOut.labelTc, '建議早到');
+
+  // Sailing interval concentration (>= 45m vs <= 15m shuttle)
+  const longGapDb = win.estimateFerryLoadStatus({
+    operator: 'Discovery Bay', routeName: 'Central - Discovery Bay',
+    pierOrigin: 'Central Pier 3', pierDest: 'Discovery Bay',
+    vesselType: 'FAST', sailingIntervalMins: 50, hasLiveApi: false,
+    hkoWeather: clearMildWx, nowMs: sunAm1000
+  });
+  const shuttleDb = win.estimateFerryLoadStatus({
+    operator: 'Discovery Bay', routeName: 'Central - Discovery Bay',
+    pierOrigin: 'Central Pier 3', pierDest: 'Discovery Bay',
+    vesselType: 'FAST', sailingIntervalMins: 15, hasLiveApi: false,
+    hkoWeather: clearMildWx, nowMs: sunAm1000
+  });
+  assert.equal(longGapDb.fusionMode, 'TIMETABLE_ONLY', 'Discovery Bay must use TIMETABLE_ONLY fusion mode');
+  assert.ok(longGapDb.score > shuttleDb.score * 1.45,
+    `50m sailing interval (${longGapDb.score}) must concentrate arrivals harder than 15m shuttle (${shuttleDb.score})`);
+
+  // Star Ferry timetable-only quiet midday -> SPACE
+  const starQuiet = win.estimateFerryLoadStatus({
+    operator: 'Star Ferry', routeName: 'Central - Tsim Sha Tsui',
+    pierOrigin: 'Central Pier 7', pierDest: 'Tsim Sha Tsui',
+    vesselType: 'STAR', sailingIntervalMins: 10, hasLiveApi: false,
+    hkoWeather: clearMildWx, nowMs: wedMid1130
+  });
+  assert.equal(starQuiet.fusionMode, 'TIMETABLE_ONLY');
+  assert.equal(starQuiet.state, 'SPACE');
+  assert.equal(starQuiet.labelEn, 'Space');
+  assert.equal(starQuiet.labelTc, '充裕');
+
+  // Sensor-fused live departure lag (>= 4m amplifies boarding queue load)
+  const satPm1500 = Date.UTC(2026, 10, 21, 7, 0, 0); // Sat 15:00 HKT
+  const mwOnTime = win.estimateFerryLoadStatus({
+    operator: 'Sun Ferry', routeName: 'Central - Mui Wo',
+    pierOrigin: 'Central Pier 6', pierDest: 'Mui Wo',
+    vesselType: 'ORD', sailingIntervalMins: 35, liveDelayMins: 0, hasLiveApi: true,
+    hkoWeather: clearMildWx, nowMs: satPm1500
+  });
+  const mwDelayed = win.estimateFerryLoadStatus({
+    operator: 'Sun Ferry', routeName: 'Central - Mui Wo',
+    pierOrigin: 'Central Pier 6', pierDest: 'Mui Wo',
+    vesselType: 'ORD', sailingIntervalMins: 35, liveDelayMins: 6, hasLiveApi: true,
+    hkoWeather: clearMildWx, nowMs: satPm1500
+  });
+  assert.equal(mwDelayed.isLiveDelayAmplified, true, '6m live delay on Sun Ferry must amplify boarding queue');
+  assert.ok(mwDelayed.score > mwOnTime.score * 1.3,
+    `Delayed ferry (${mwDelayed.score}) must strongly exceed on-time sailing (${mwOnTime.score})`);
+
+  // 5. Cross-Modal Mui Wo Ferry-to-Bus Pulse (Central -> Mui Wo ferry docked 8m ago boosts NLB 1, 2, 3M origin departures)
+  const sun0943 = Date.UTC(2026, 10, 22, 1, 43, 0); // Sun 09:43 HKT (09:00 ferry + 35m crossing = 09:35 dock -> 8m ago!)
+  const sun0958 = Date.UTC(2026, 10, 22, 1, 58, 0); // Sun 09:58 HKT (23m after 09:35 dock; next ferry docks 10:15 -> quiet gap)
+
+  const pulseActive = win.getRecentFerryArrivalPulse({
+    pierName: 'Mui Wo Ferry Pier',
+    nowMs: sun0943,
+    hkoWeather: clearMildWx
+  });
+  const pulseQuiet = win.getRecentFerryArrivalPulse({
+    pierName: 'Mui Wo Ferry Pier',
+    nowMs: sun0958,
+    hkoWeather: clearMildWx
+  });
+  assert.equal(pulseActive.active, true, `09:43 HKT (8m after 09:35 Central->Mui Wo dock) must activate pulse`);
+  assert.ok(pulseActive.minsSinceDock >= 5 && pulseActive.minsSinceDock <= 15,
+    `Expected minsSinceDock in 5..15, got ${pulseActive.minsSinceDock}`);
+  assert.ok(pulseActive.pulseMultiplier >= 1.35, `Expected pulseMultiplier >= 1.35, got ${pulseActive.pulseMultiplier}`);
+  assert.equal(pulseQuiet.active, false, '23m after docking must NOT trigger ferry arrival pulse');
+
+  const nlb3mFromMuiWo = {
+    routeNo: '3M',
+    orig_en: 'Mui Wo Ferry Pier',
+    dest_en: 'Tung Chung Station Bus Terminus',
+    totalStops: 34
+  };
+  const busWithPulse = win.estimateGlobalBusLoadRisk(nlb3mFromMuiWo, 0, {
+    stopName: 'Mui Wo Ferry Pier',
+    totalStops: 34
+  }, clearMildWx, sun0943);
+  const busWithoutPulse = win.estimateGlobalBusLoadRisk(nlb3mFromMuiWo, 0, {
+    stopName: 'Mui Wo Ferry Pier',
+    totalStops: 34
+  }, clearMildWx, sun0958);
+  assert.equal(busWithPulse.ferryPulse.active, true, 'NLB 3M Mui Wo origin must ingest active ferry pulse');
+  assert.equal(busWithoutPulse.ferryPulse.active, false, 'NLB 3M outside docking window must have inactive ferry pulse');
+  assert.ok(busWithPulse.score > busWithoutPulse.score * 1.8,
+    `Mui Wo ferry pulse (${busWithPulse.score}) must sharply elevate stop #0 load vs quiet window (${busWithoutPulse.score})`);
+  assert.ok(busWithPulse.level === 'HIGH_LOAD' || busWithPulse.level === 'MODERATE',
+    `NLB 3M Mui Wo origin after ferry dock must elevate above NORMAL, got ${busWithPulse.level}`);
+  assert.ok(/ferry/i.test(busWithPulse.tip), `Expected ferry arrival tip on Mui Wo bus card, got: "${busWithPulse.tip}"`);
+
+  // Non-Mui-Wo stop (e.g. mid-route stop 12) must not trigger Mui Wo pier origin pulse
+  const busMidRoute = win.estimateGlobalBusLoadRisk(nlb3mFromMuiWo, 12, {
+    stopName: 'Pui O',
+    totalStops: 34
+  }, clearMildWx, sun0943);
+  assert.equal(busMidRoute.ferryPulse.active, false, 'Mid-route stop #12 must not inherit Mui Wo pier origin pulse');
+
+  // 6. Strict decoupling: road-speed telemetry modules must remain untouched by MTR/Ferry/People-Flow adapters
+  for (const rel of ['public/busspeed.js', 'public/map.js', 'public/map-traffic-overlay.js']) {
+    const src = fs.readFileSync(rel, 'utf8');
+    assert.ok(!/mtrsurge|ferrysurge|estimateMtrLoadStatus|estimateFerryLoadStatus|getRecentFerryArrivalPulse/i.test(src),
+      `${rel} must remain strictly decoupled from mtrsurge.js and ferrysurge.js`);
+  }
+});
+
 
 
 

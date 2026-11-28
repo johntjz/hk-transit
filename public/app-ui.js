@@ -2488,42 +2488,6 @@ function toggleStopBookmark(idx) {
 
 window._lastDeletedBookmark = null;
 
-function toggleRiderBusLoadReport(groupKey, stopKey, stopIdx) {
-  triggerHaptic(14);
-  if (typeof setRiderLoadReport !== 'function' || typeof getActiveRiderLoadReport !== 'function') return;
-  const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
-  const existing = getActiveRiderLoadReport(groupKey, stopKey);
-  const nextStatus = existing?.status === 'FULL' ? 'SEATS' : 'FULL';
-  setRiderLoadReport(groupKey, stopKey, nextStatus);
-
-  if (detailRouteGroup && detailRouteGroup.key === groupKey && Array.isArray(detailLastFetchedArrs) && detailLastFetchedArrs.length > 0) {
-    const stops = getStopsForGroup(detailRouteGroup, detailBoardStopKey || detailTargetStopKey);
-    const stObj = stops[stopIdx];
-    detailLastFetchedArrs = detailLastFetchedArrs.map((arr) => {
-      if (typeof estimateBusSeatStatus === 'function') {
-        const updatedLoad = estimateBusSeatStatus(detailRouteGroup, stopIdx, arr, {
-          baseLoad: arr.loadEstimate || null,
-          stopKey: stObj?.stopKey || stopKey,
-          nowMs: Date.now()
-        });
-        return { ...arr, loadEstimate: updatedLoad };
-      }
-      return arr;
-    });
-    const expEl = document.getElementById(`detail-eta-expanded-${stopIdx}`);
-    if (expEl && typeof generateExpandedETAsHtml === 'function') {
-      expEl.innerHTML = generateExpandedETAsHtml(detailLastFetchedArrs, detailRouteGroup, stopKey, stopIdx);
-    }
-  }
-
-  showToast(
-    nextStatus === 'FULL'
-      ? (isZh ? '已回報易滿座（25分鐘有效）' : 'Reported Likely Full (25m)')
-      : (isZh ? '已更新為有位（25分鐘有效）' : 'Updated: Seats available (25m)')
-  );
-}
-window.toggleRiderBusLoadReport = toggleRiderBusLoadReport;
-
 function removeStopBookmark(bmId) {
   triggerHaptic(12);
   const idx = bookmarkedStops.findIndex(b => b.id === bmId);

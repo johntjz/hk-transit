@@ -579,7 +579,7 @@
     .route-list-item.ferry-card .route-dest { font-size: 0.78rem; font-weight: 500; color: var(--text-sub); }
     .route-list-item.ferry-card .route-eta-col { grid-area: eta; min-width: 88px; max-width: 132px; }
 
-    .state-pill, .load-pill, .stn-busy-pill { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px; font-size: 0.68rem; font-weight: 600; font-variant-numeric: tabular-nums; flex-shrink: 0; white-space: nowrap; background: var(--bg-surface); color: var(--text-sub); border: none; }
+    .state-pill, .load-pill, .stn-busy-pill { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px; font-size: 0.68rem; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; line-height: 1.25; flex-shrink: 0; white-space: nowrap; background: var(--bg-surface); color: var(--text-sub); border: none; }
     .state-pill.live-gps, .load-pill.load-low, .stn-busy-pill.load-low { background: rgba(52, 199, 89, 0.15); color: var(--ios-green); }
     .state-pill.sched-ghost, .load-pill.load-med, .stn-busy-pill.load-med { background: rgba(255, 149, 0, 0.16); color: var(--ios-orange); }
     .load-pill.load-high, .load-pill.load-full, .stn-busy-pill.load-high, .state-pill.load-full { background: var(--ios-red); color: #FFFFFF; }
@@ -681,9 +681,6 @@
 
     .stop-action-strip { display: flex; gap: 6px; padding: 6px 4px 2px 4px; flex-wrap: wrap; }
     .stop-action-pill { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 5px; padding: 7px 10px; border-radius: 999px; font-size: 0.74rem; font-weight: 600; background: var(--bg-surface); color: var(--text-main); border: none; text-decoration: none; cursor: pointer; white-space: nowrap; }
-    .stop-action-pill.rider-report-btn { flex: 0 1 auto; background: rgba(255, 149, 0, 0.12); color: #b45309; border: 1px solid rgba(255, 149, 0, 0.28); }
-    :root:not(.light-mode) .stop-action-pill.rider-report-btn { color: #fbbf24; }
-    .stop-action-pill.rider-report-btn.active-full { background: var(--ios-red); color: #FFFFFF; border-color: var(--ios-red); }
 
     .planner-grid {
       display: grid;

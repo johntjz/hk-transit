@@ -46,6 +46,248 @@ window.__LIVE_TRAFFIC_CAMERAS__ = [];
 window.__LIVE_TRAFFIC_SPEED_GEOJSON__ = null;
 window.__LIVE_TRAFFIC_CAPTURED_AT__ = '';
 window.__HKO_WEATHER__ = null;
+window.__HKO_LIVE_OBS__ = null;
+window.hkoWeather = null;
+
+function parseHkoRhrreadPayload(rhrData, warnsumData = null, existingWeather = null) {
+  const base = (existingWeather && typeof existingWeather === 'object') ? { ...existingWeather } : {};
+  const warnings = new Set(
+    []
+      .concat(Array.isArray(base.warningCodes) ? base.warningCodes : [])
+      .concat(Array.isArray(base.warnings) ? base.warnings : [])
+      .map(c => String(c || '').toUpperCase().trim())
+      .filter(Boolean)
+  );
+
+  let heavyRain = Boolean(base.heavyRain);
+  let rainAdvisory = Boolean(base.rainAdvisory);
+  let typhoon = Boolean(base.typhoon);
+  let preT8 = Boolean(base.preT8 || base.preTyphoonEvac);
+  let labelEn = String(base.labelEn || '');
+  let labelTc = String(base.labelTc || '');
+
+  if (warnsumData && typeof warnsumData === 'object') {
+    for (const val of Object.values(warnsumData)) {
+      const code = String(val?.code || '').toUpperCase().trim();
+      if (!code) continue;
+      warnings.add(code);
+      if (/^TC(8|9|10)/.test(code)) {
+        typhoon = true;
+        heavyRain = true;
+        labelEn = `Typhoon ${code}`;
+        labelTc = '八號或以上風球';
+      } else if (code === 'PRE_T8' || /PRE.?8/i.test(String(val?.name || ''))) {
+        preT8 = true;
+      } else if (code === 'WRAINB') {
+        heavyRain = true;
+        if (!typhoon) { labelEn = 'Black Rainstorm'; labelTc = '黑色暴雨'; }
+      } else if (code === 'WRAINR') {
+        heavyRain = true;
+        if (!typhoon && !labelEn) { labelEn = 'Red Rainstorm'; labelTc = '紅色暴雨'; }
+      } else if (code === 'WRAINA' || code === 'TC3') {
+        rainAdvisory = true;
+        if (!labelEn && code === 'WRAINA') { labelEn = 'Amber Rainstorm'; labelTc = '黃色暴雨'; }
+      }
+    }
+  }
+
+  let temp = Number.isFinite(Number(base.temp)) ? Number(base.temp) : null;
+  let humidity = Number.isFinite(Number(base.humidity)) ? Number(base.humidity) : null;
+  let rainfallMm = Number.isFinite(Number(base.rainfallMm)) ? Number(base.rainfallMm) : 0;
+  let icons = [];
+
+  if (rhrData && typeof rhrData === 'object') {
+    const tList = Array.isArray(rhrData?.temperature?.data) ? rhrData.temperature.data : [];
+    const tEntry = tList.find(d => /hong kong observatory/i.test(String(d?.place || '')))
+      || tList.find(d => /king.?s park/i.test(String(d?.place || '')))
+      || tList.find(d => Number.isFinite(Number(d?.value)));
+    if (tEntry && Number.isFinite(Number(tEntry.value))) {
+      temp = Number(tEntry.value);
+    }
+
+    const hList = Array.isArray(rhrData?.humidity?.data) ? rhrData.humidity.data : [];
+    const hEntry = hList.find(d => /hong kong observatory/i.test(String(d?.place || '')))
+      || hList.find(d => Number.isFinite(Number(d?.value)));
+    if (hEntry && Number.isFinite(Number(hEntry.value))) {
+      humidity = Number(hEntry.value);
+    }
+
+    const rList = Array.isArray(rhrData?.rainfall?.data) ? rhrData.rainfall.data : [];
+    let maxRain = 0;
+    for (const r of rList) {
+      const v = Number(r?.max);
+      if (Number.isFinite(v) && v > maxRain) maxRain = v;
+    }
+    rainfallMm = maxRain;
+
+    if (Array.isArray(rhrData.icon)) {
+      icons = rhrData.icon.map(n => Number(n)).filter(n => Number.isFinite(n));
+    }
+    const warnMsgs = Array.isArray(rhrData.warningMessage) ? rhrData.warningMessage.join(' ') : '';
+    if (/pre-no\.?\s*8|no\.?\s*8.*within\s*2\s*hours/i.test(warnMsgs)) {
+      preT8 = true;
+      warnings.add('PRE_T8');
+    }
+  }
+
+  const hasRainIcon = icons.some(ic => ic >= 62 && ic <= 65);
+  const hasClearIcon = icons.some(ic => (ic >= 50 && ic <= 54) || (ic >= 70 && ic <= 77));
+  const hasDryIcon = icons.includes(81);
+  const hasHumidIcon = icons.includes(82);
+
+  const isRainy = Boolean(heavyRain || rainAdvisory || rainfallMm >= 1 || hasRainIcon);
+  const isDry = Boolean(!isRainy && (hasDryIcon || (humidity !== null && humidity <= 78 && !hasHumidIcon)));
+  const isClear = Boolean(!isRainy && (hasClearIcon || isDry));
+
+  let condition = 'Clear';
+  let condTc = '天晴';
+  if (typhoon || preT8) {
+    condition = preT8 && !typhoon ? 'Pre-T8' : 'Typhoon';
+    condTc = '八號風球';
+  } else if (heavyRain) {
+    condition = 'Heavy Rain';
+    condTc = '大雨';
+  } else if (isRainy) {
+    condition = 'Rain';
+    condTc = '有雨';
+  } else if (temp !== null && temp > 31) {
+    condition = 'Hot';
+    condTc = '酷熱';
+  } else if (temp !== null && temp < 12) {
+    condition = 'Cold';
+    condTc = '寒冷';
+  } else if (isDry) {
+    condition = 'Dry';
+    condTc = '乾燥';
+  } else if (humidity !== null && humidity > 85) {
+    condition = 'Humid';
+    condTc = '潮濕';
+  } else if (!hasClearIcon && icons.some(ic => ic === 60 || ic === 61)) {
+    condition = 'Cloudy';
+    condTc = '多雲';
+  }
+
+  const tempPrefix = temp !== null ? `${Math.round(temp)}°C ` : '';
+  const displayLabelEn = (typhoon || preT8)
+    ? (labelEn || condition)
+    : `${tempPrefix}${condition}`.trim();
+  const displayLabelTc = (typhoon || preT8)
+    ? (labelTc || condTc)
+    : `${tempPrefix}${condTc}`.trim();
+
+  return {
+    ...base,
+    temp,
+    humidity,
+    rainfallMm,
+    isDry,
+    isClear,
+    isRainy,
+    heavyRain,
+    rainAdvisory,
+    typhoon,
+    preT8,
+    warningCodes: Array.from(warnings),
+    warnings: Array.from(warnings),
+    condition,
+    labelEn: labelEn || displayLabelEn,
+    labelTc: labelTc || displayLabelTc,
+    displayLabelEn,
+    displayLabelTc,
+    source: 'HKO_LIVE',
+    fetchedAtMs: Date.now()
+  };
+}
+window.parseHkoRhrreadPayload = parseHkoRhrreadPayload;
+
+function getResolvedLiveHkoWeather() {
+  const direct = window.__HKO_WEATHER__ || window.hkoWeather || null;
+  const obs = window.__HKO_LIVE_OBS__ || null;
+  if (direct && typeof direct === 'object') {
+    const directHasTemp = Number.isFinite(Number(direct.temp ?? direct.temperature ?? direct.tempC));
+    if (obs && typeof obs === 'object' && !directHasTemp) {
+      return { ...obs, ...direct, temp: obs.temp, humidity: obs.humidity, rainfallMm: obs.rainfallMm, isDry: obs.isDry, isClear: obs.isClear, isRainy: obs.isRainy || direct.heavyRain || direct.rainAdvisory, displayLabelEn: direct.labelEn || obs.displayLabelEn, displayLabelTc: direct.labelTc || obs.displayLabelTc, source: 'HKO_LIVE' };
+    }
+    return direct;
+  }
+  return obs;
+}
+window.getResolvedLiveHkoWeather = getResolvedLiveHkoWeather;
+
+let _hkoLiveWeatherInFlight = null;
+let _hkoLiveWeatherLastAttemptMs = 0;
+
+async function ensureLiveHkoWeather(force = false) {
+  const existing = getResolvedLiveHkoWeather();
+  const hasTemp = existing && Number.isFinite(Number(existing.temp ?? existing.temperature ?? existing.tempC));
+  const fetchedAt = Number(existing?.fetchedAtMs || 0);
+  if (!force && hasTemp && (Date.now() - fetchedAt < 300000 || existing?.source === 'LIVE_SENTINEL')) {
+    return existing;
+  }
+  if (!force && _hkoLiveWeatherInFlight) {
+    return _hkoLiveWeatherInFlight;
+  }
+  if (!force && (Date.now() - _hkoLiveWeatherLastAttemptMs) < 15000 && existing) {
+    return existing;
+  }
+  if (typeof fetch !== 'function') {
+    return existing;
+  }
+
+  _hkoLiveWeatherLastAttemptMs = Date.now();
+  const fetchWithShortTimeout = async (url, ms = 3200) => {
+    const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const tid = ctrl ? setTimeout(() => ctrl.abort(), ms) : null;
+    try {
+      const resp = await fetch(url, ctrl ? { signal: ctrl.signal } : undefined);
+      if (!resp || !resp.ok) return null;
+      return await resp.json().catch(() => null);
+    } catch (e) {
+      return null;
+    } finally {
+      if (tid) clearTimeout(tid);
+    }
+  };
+
+  _hkoLiveWeatherInFlight = (async () => {
+    try {
+      const [rhrData, warnsumData] = await Promise.all([
+        fetchWithShortTimeout('https://data.weather.gov.hk/weatherAPI/opendata/weather.php?dataType=rhrread&lang=en', 3500),
+        fetchWithShortTimeout('https://data.weather.gov.hk/weatherAPI/opendata/weather.php?dataType=warnsum&lang=en', 3000)
+      ]);
+      if (rhrData || warnsumData) {
+        const parsed = parseHkoRhrreadPayload(rhrData, warnsumData, window.__HKO_WEATHER__ || window.hkoWeather);
+        window.__HKO_LIVE_OBS__ = parsed;
+        window.__HKO_WEATHER__ = parsed;
+        window.hkoWeather = parsed;
+        if (typeof window.syncPeopleFlowOverlaysAllMaps === 'function') {
+          window.syncPeopleFlowOverlaysAllMaps();
+        }
+        return parsed;
+      }
+      // Fallback: warm from edge worker if direct HKO endpoint unreachable
+      if (typeof fetchEdgeApiJSON === 'function') {
+        const edgeData = await fetchEdgeApiJSON('', 3200, false).catch(() => null);
+        if (edgeData?.ok && edgeData.weather && typeof edgeData.weather === 'object') {
+          const merged = { ...(window.__HKO_LIVE_OBS__ || {}), ...edgeData.weather, source: 'HKO_LIVE', fetchedAtMs: Date.now() };
+          window.__HKO_WEATHER__ = merged;
+          window.hkoWeather = merged;
+          if (typeof window.syncPeopleFlowOverlaysAllMaps === 'function') {
+            window.syncPeopleFlowOverlaysAllMaps();
+          }
+          return merged;
+        }
+      }
+    } catch (e) {}
+    return getResolvedLiveHkoWeather();
+  })().finally(() => {
+    _hkoLiveWeatherInFlight = null;
+  });
+
+  return _hkoLiveWeatherInFlight;
+}
+window.ensureLiveHkoWeather = ensureLiveHkoWeather;
+
 window.MULTI_MODAL_HUBS_DIRECTORY = [];
 window.MTR_EXITS_DIRECTORY = [];
 window.QUICK_MTR_LINES = [];
@@ -1924,7 +2166,9 @@ async function fetchEtaRaw(group, stopKey, isExpandedDetailView = false, afterMs
       : 0;
 
     let loadEstimate = null;
-    const hkoWeatherSnap = (typeof window !== 'undefined' && window.__HKO_WEATHER__) ? window.__HKO_WEATHER__ : null;
+    const hkoWeatherSnap = (typeof getResolvedLiveHkoWeather === 'function')
+      ? getResolvedLiveHkoWeather()
+      : ((typeof window !== 'undefined' && (window.__HKO_WEATHER__ || window.hkoWeather)) ? (window.__HKO_WEATHER__ || window.hkoWeather) : null);
     if (group.mode === 'MTR') {
       const mtrAdapterFn = (typeof window !== 'undefined' && window.MtrSurgeEngine && typeof window.MtrSurgeEngine.estimateMtrLoadStatus === 'function')
         ? window.MtrSurgeEngine.estimateMtrLoadStatus

@@ -9276,6 +9276,124 @@ test('94. Primary Route Label Preservation, Stop #1 Rural Headway Calibration, M
   assert.ok(!/people\s*flow|flowBtn|simulator/i.test(switcherMatch[0]), 'Top app-switcher must NOT add any People Flow icon or 5th main tab');
 });
 
+test('95. Vite Build-Time HKT Stamp Plugin, Live HKO Weather Wiring (Non-Fallback), De-Cluttered People Flow Visuals & Collapsible Scrubber', () => {
+  // 1. Vite build-time HKT timestamp plugin present in vite.config.ts
+  const viteSrc = fs.readFileSync('vite.config.ts', 'utf8');
+  assert.ok(viteSrc.includes('stamp-hkt-build-version'), 'vite.config.ts must define stamp-hkt-build-version plugin');
+  assert.ok(viteSrc.includes('Asia/Hong_Kong') && viteSrc.includes('CF_PAGES_COMMIT_SHA'), 'Vite plugin must compute Asia/Hong_Kong HKT stamp and support CF_PAGES_COMMIT_SHA');
+  assert.ok(viteSrc.includes('distVersionPath') && viteSrc.includes('version.json'), 'Vite plugin must update dist/version.json while leaving tracked source files untouched');
+
+  // 2. Vertical stacking & background bus-stop dimming CSS + map.js wiring
+  const cssSrc = fs.readFileSync('public/app.css', 'utf8');
+  assert.ok(/\.leaflet-control-map-chips-row\s*\{[\s\S]*?flex-direction:\s*column;[\s\S]*?align-items:\s*flex-end;[\s\S]*?gap:\s*6px;/m.test(cssSrc),
+    'Traffic and People Flow map pills must stack vertically right-aligned with 6px gap');
+  assert.ok(cssSrc.includes('.people-flow-active .leaflet-browseBusStopPane-pane') && cssSrc.includes('opacity: 0.2'),
+    'app.css must dim background bus-stop dots while People Flow overlay is active');
+
+  const mapSrc = fs.readFileSync('public/map.js', 'utf8');
+  assert.ok(mapSrc.includes('setBrowseMapStopDimming') && mapSrc.includes('browseBusStopPane') && mapSrc.includes('ensureLiveHkoWeather'),
+    'public/map.js must wire bus-stop dimming pane and live HKO weather warm-up on map open');
+
+  // 3. Load eta-engine HKO parser + People Flow engine + overlay in clean VM
+  const win: any = {
+    __HKO_WEATHER__: null,
+    __HKO_LIVE_OBS__: null,
+    hkoWeather: null,
+    __HK_PUBLIC_HOLIDAYS__: new Set<string>()
+  };
+  const sandbox: any = {
+    window: win,
+    globalThis: win,
+    document: { addEventListener: () => {}, getElementById: () => null, querySelector: () => null },
+    Math, Date, Number, String, Array, Map, Set, Object, WeakMap, JSON, Promise,
+    parseFloat, parseInt, isFinite, console
+  };
+  vm.createContext(sandbox);
+  for (const rel of [
+    'public/weathercoorelation.js',
+    'public/monthly_activity.js',
+    'public/hk-people-flow.js',
+    'public/map-flow-overlay.js'
+  ]) {
+    vm.runInContext(fs.readFileSync(rel, 'utf8'), sandbox);
+  }
+
+  // Extract and evaluate parseHkoRhrreadPayload & getResolvedLiveHkoWeather from public/eta-engine.js
+  const etaSrc = fs.readFileSync('public/eta-engine.js', 'utf8');
+  const hkoBlock = etaSrc.match(/function parseHkoRhrreadPayload[\s\S]*?window\.getResolvedLiveHkoWeather = getResolvedLiveHkoWeather;/);
+  assert.ok(hkoBlock, 'public/eta-engine.js must define parseHkoRhrreadPayload and getResolvedLiveHkoWeather');
+  vm.runInContext(hkoBlock[0], sandbox);
+
+  const sampleRhrread = {
+    temperature: { data: [{ place: "King's Park", value: 20, unit: 'C' }, { place: 'Hong Kong Observatory', value: 21, unit: 'C' }] },
+    humidity: { data: [{ place: 'Hong Kong Observatory', value: 64, unit: 'percent' }] },
+    rainfall: { data: [{ place: 'Central & Western District', max: 0, unit: 'mm' }] },
+    icon: [50, 81]
+  };
+  const parsedLive = win.parseHkoRhrreadPayload(sampleRhrread, {}, null);
+  assert.equal(parsedLive.temp, 21);
+  assert.equal(parsedLive.isDry, true);
+  assert.equal(parsedLive.displayLabelEn, '21°C Dry');
+
+  // Wire parsed live HKO weather into window.__HKO_WEATHER__ -> People Flow must show "21°C Dry", NOT "Fallback"
+  win.__HKO_WEATHER__ = parsedLive;
+  win.__HKO_LIVE_OBS__ = parsedLive;
+  win.hkoWeather = parsedLive;
+
+  const sat2015 = Date.parse('2026-11-28T20:15:00+08:00');
+  const liveModel = win.MapPeopleFlowOverlay.buildPeopleFlowOverlayModel(sat2015);
+  assert.ok(liveModel.summaryChip.includes('21°C Dry'), `Summary chip must show real live HKO condition ("21°C Dry"), got: ${liveModel.summaryChip}`);
+  assert.ok(!/Fallback/i.test(liveModel.summaryChip), `Summary chip must NOT show Fallback when live HKO weather is available: ${liveModel.summaryChip}`);
+  assert.ok(liveModel.summaryChip.includes('Sat 20:15'), `Summary chip must include day and HH:MM timestamp: ${liveModel.summaryChip}`);
+
+  // Even if worker overwrites window.__HKO_WEATHER__ with warnings-only payload, getResolvedLiveHkoWeather preserves HKO temp
+  win.__HKO_WEATHER__ = { heavyRain: false, rainAdvisory: false, typhoon: false, warningCodes: [], labelEn: '', labelTc: '' };
+  const mergedResolved = win.getResolvedLiveHkoWeather();
+  assert.equal(mergedResolved.temp, 21, 'getResolvedLiveHkoWeather must preserve rhrread temperature when worker sends warnings-only payload');
+  const modelAfterWorker = win.MapPeopleFlowOverlay.buildPeopleFlowOverlayModel(sat2015);
+  assert.ok(modelAfterWorker.summaryChip.includes('21°C Dry'), `Expected preserved 21°C Dry after worker warnings sync, got: ${modelAfterWorker.summaryChip}`);
+
+  // 4. Tighter, accurately pinned hubs & readable hub+direction labels
+  const zones = win.MapPeopleFlowOverlay.PEOPLE_FLOW_ZONES;
+  const bordersDef = zones.find((z: any) => z.id === 'northern_borders');
+  const hkiaDef = zones.find((z: any) => z.id === 'hkia_tung_chung_awe');
+  assert.ok(bordersDef && Math.abs(bordersDef.lat - 22.5282) < 0.005 && Math.abs(bordersDef.lon - 114.1133) < 0.005,
+    'Northern Borders hub must be pinned accurately at Lo Wu station');
+  assert.ok(hkiaDef && Math.abs(hkiaDef.lat - 22.3135) < 0.005 && Math.abs(hkiaDef.lon - 113.9365) < 0.005,
+    'HKIA hub must be pinned accurately at HKIA Terminal 1');
+  assert.ok(zones.every((z: any) => z.baseRadiusM <= 900), 'All hub base radii must be tightened (<= 900m)');
+
+  const mSatHike = win.MapPeopleFlowOverlay.buildPeopleFlowOverlayModel(Date.parse('2026-11-28T15:00:00+08:00'), parsedLive);
+  const trailZone = mSatHike.zones.find((z: any) => z.id === 'pak_kung_au_trails');
+  assert.ok(trailZone && /^Lantau Trails ↑ \d+\.\dx$/.test(trailZone.badgeLabelEn),
+    `Expected readable directional label "Lantau Trails ↑ X.Xx", got: ${trailZone?.badgeLabelEn}`);
+
+  const mSunBorder = win.MapPeopleFlowOverlay.buildPeopleFlowOverlayModel(Date.parse('2026-11-29T18:30:00+08:00'), parsedLive);
+  const borderZone = mSunBorder.zones.find((z: any) => z.id === 'northern_borders');
+  assert.ok(borderZone && /^Borders ↓ \d+\.\dx$/.test(borderZone.badgeLabelEn),
+    `Expected readable southbound return label "Borders ↓ X.Xx", got: ${borderZone?.badgeLabelEn}`);
+
+  // Balanced/quiet baseline flag check & >= 1.05 arrow threshold
+  assert.ok(mSatHike.arrows.every((a: any) => a.pressure >= 1.05), 'Active directional corridor arrows must all meet >= 1.05 threshold');
+  assert.ok(mSatHike.zones.some((z: any) => typeof z.isQuietBaseline === 'boolean'), 'Each zone must declare isQuietBaseline (< 0.95)');
+
+  // 5. Collapsible scrubber defaults to collapsed and toggles cleanly; preview presets never mutate live HKO weather
+  assert.equal(win.MapPeopleFlowOverlay.PeopleFlowOverlayState.presetsExpanded, false, 'Scrubber presets drawer must default to collapsed');
+  win.togglePeopleFlowPresetsDrawer();
+  assert.equal(win.MapPeopleFlowOverlay.PeopleFlowOverlayState.presetsExpanded, true);
+  win.togglePeopleFlowPresetsDrawer(false);
+  assert.equal(win.MapPeopleFlowOverlay.PeopleFlowOverlayState.presetsExpanded, false);
+
+  win.__HKO_WEATHER__ = parsedLive;
+  const liveBefore = JSON.stringify(win.__HKO_WEATHER__);
+  win.setPeopleFlowPreset('T8');
+  assert.equal(JSON.stringify(win.__HKO_WEATHER__), liveBefore, 'Previewing T8 must never mutate live window.__HKO_WEATHER__');
+  win.resetPeopleFlowToLive();
+  assert.equal(win.MapPeopleFlowOverlay.PeopleFlowOverlayState.isPreview, false);
+  assert.equal(JSON.stringify(win.__HKO_WEATHER__), liveBefore);
+});
+
+
 
 
 

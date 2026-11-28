@@ -2,10 +2,9 @@
  * Dual Browser Global + CommonJS module.
  *
  * Strictly scoped Leaflet overlay consuming simulateCityPeopleFlow() from hk-people-flow.js.
- * - Uses its own dedicated Leaflet layerGroup per map (never touches Traffic & Cams, TD detectors,
+ * - Uses dedicated Leaflet panes & layerGroups per map (never touches Traffic & Cams, TD detectors,
  *   or busspeed.js road-speed polylines).
- * - Off by default; toggleable directly next to the existing Traffic control in both full Map view
- *   (#view-map) and route detail map (#map-container).
+ * - Off by default; stacked vertically below Traffic on the map control column.
  * - Scrubber preview state is strictly isolated to this overlay and NEVER mutates window.__HKO_WEATHER__
  *   or live Bus/Rail/Ferry ETAs.
  */
@@ -43,7 +42,7 @@
   function getPeopleFlowColor(pressure) {
     const p = Number(pressure) || 0;
     if (p >= 1.45) return '#dc2626'; // red
-    if (p >= 1.0) return '#f59e0b';  // amber
+    if (p >= 1.0) return '#d97706';  // high-contrast amber
     return '#16a34a';                // green
   }
 
@@ -54,111 +53,149 @@
     return 'CALM';
   }
 
-  // Hong Kong key population flow pressure zones
+  // Hong Kong key population flow pressure zones — pinned accurately to real transit nodes with tight halos
   const PEOPLE_FLOW_ZONES = Object.freeze([
     {
       id: 'pak_kung_au_trails',
+      shortEn: 'Lantau Trails',
+      shortTc: '大嶼山行山',
       nameEn: 'Pak Kung Au / Nam Shan Trails',
       nameTc: '伯公坳／南山行山徑',
       lat: 22.2486,
       lon: 113.9412,
       vectors: ['TO_TRAIL_EXPOSED', 'FROM_TRAIL_EXPOSED'],
-      baseRadiusM: 1200
+      baseRadiusM: 650
     },
     {
       id: 'mui_wo_pier',
+      shortEn: 'Mui Wo Pier',
+      shortTc: '梅窩碼頭',
       nameEn: 'Mui Wo Ferry Pier',
       nameTc: '梅窩渡輪碼頭',
-      lat: 22.2650,
-      lon: 114.0018,
+      lat: 22.2647,
+      lon: 114.0017,
       vectors: ['ISLAND_OUTBOUND', 'ISLAND_INBOUND', 'TO_TRAIL_EXPOSED', 'FROM_TRAIL_EXPOSED'],
-      baseRadiusM: 1050
+      baseRadiusM: 560
     },
     {
       id: 'cheung_chau_pier',
+      shortEn: 'Cheung Chau',
+      shortTc: '長洲碼頭',
       nameEn: 'Cheung Chau Pier',
       nameTc: '長洲渡輪碼頭',
-      lat: 22.2086,
-      lon: 114.0285,
+      lat: 22.2089,
+      lon: 114.0282,
       vectors: ['ISLAND_OUTBOUND', 'ISLAND_INBOUND'],
-      baseRadiusM: 1000
+      baseRadiusM: 540
     },
     {
       id: 'central_piers',
+      shortEn: 'Central Piers',
+      shortTc: '中環碼頭',
       nameEn: 'Central Ferry Piers',
       nameTc: '中環渡輪碼頭',
-      lat: 22.2876,
-      lon: 114.1594,
+      lat: 22.2869,
+      lon: 114.1602,
       vectors: ['ISLAND_OUTBOUND', 'ISLAND_INBOUND', 'CBD_INBOUND', 'CBD_OUTBOUND'],
-      baseRadiusM: 950
+      baseRadiusM: 520
     },
     {
       id: 'hkia_tung_chung_awe',
-      nameEn: 'HKIA / Tung Chung / AWE',
-      nameTc: '機場／東涌／博覽館',
-      lat: 22.3075,
-      lon: 113.9385,
+      shortEn: 'HKIA',
+      shortTc: '機場／東涌',
+      nameEn: 'HKIA Terminal 1 / Tung Chung Station',
+      nameTc: '機場一號客運大樓／東涌站',
+      lat: 22.3135,
+      lon: 113.9365,
       vectors: ['TO_AIRPORT_AWE', 'FROM_AIRPORT_AWE'],
-      baseRadiusM: 1550
+      baseRadiusM: 820
     },
     {
       id: 'cbd_urban_core',
-      nameEn: 'Central / Causeway Bay / Mong Kok',
-      nameTc: '中環／銅鑼灣／旺角核心區',
-      lat: 22.2975,
-      lon: 114.1715,
+      shortEn: 'Harbour',
+      shortTc: '維港核心',
+      nameEn: 'Central / Tsim Sha Tsui Harbour Core',
+      nameTc: '中環／尖沙咀維港核心區',
+      lat: 22.2935,
+      lon: 114.1705,
       vectors: ['CBD_INBOUND', 'CBD_OUTBOUND', 'SUNDAY_URBAN_HUB'],
-      baseRadiusM: 1650
+      baseRadiusM: 860
     },
     {
       id: 'school_belt_kt_hmt_midlevels',
-      nameEn: 'Kowloon Tong / Ho Man Tin & Mid-Levels Schools',
-      nameTc: '九龍塘／何文田及半山校網',
-      lat: 22.3270,
-      lon: 114.1795,
+      shortEn: 'School Belt',
+      shortTc: '九龍塘校網',
+      nameEn: 'Kowloon Tong / Ho Man Tin Schools',
+      nameTc: '九龍塘／何文田校網',
+      lat: 22.3369,
+      lon: 114.1761,
       vectors: ['SCHOOL_ZONE'],
-      baseRadiusM: 1250
+      baseRadiusM: 680
     },
     {
       id: 'northern_borders',
-      nameEn: 'Lo Wu / Lok Ma Chau / Shenzhen Bay / HZMB Borders',
-      nameTc: '羅湖／落馬洲／深圳灣／港珠澳口岸',
-      lat: 22.5150,
-      lon: 114.0900,
+      shortEn: 'Borders',
+      shortTc: '北區口岸',
+      nameEn: 'Lo Wu / Lok Ma Chau Borders',
+      nameTc: '羅湖／落馬洲口岸',
+      lat: 22.5282,
+      lon: 114.1133,
       vectors: ['TO_BORDER_NORTH', 'FROM_BORDER_NORTH'],
-      baseRadiusM: 1750
+      baseRadiusM: 900
     },
     {
       id: 'sai_kung',
+      shortEn: 'Sai Kung',
+      shortTc: '西貢',
       nameEn: 'Sai Kung Pier & Country Park',
       nameTc: '西貢碼頭及郊野公園',
-      lat: 22.3818,
-      lon: 114.2735,
+      lat: 22.3816,
+      lon: 114.2739,
       vectors: ['TO_BEACH_WATER', 'FROM_BEACH_WATER', 'TO_TRAIL_EXPOSED', 'FROM_TRAIL_EXPOSED'],
-      baseRadiusM: 1400
+      baseRadiusM: 720
     },
     {
       id: 'shek_o_repulse_bay',
-      nameEn: 'Shek O / Repulse Bay Beaches',
-      nameTc: '石澳／淺水灣泳灘',
-      lat: 22.2330,
-      lon: 114.2220,
+      shortEn: 'South Beaches',
+      shortTc: '南區泳灘',
+      nameEn: 'Repulse Bay / Shek O Beaches',
+      nameTc: '淺水灣／石澳泳灘',
+      lat: 22.2367,
+      lon: 114.1973,
       vectors: ['TO_BEACH_WATER', 'FROM_BEACH_WATER'],
-      baseRadiusM: 1200
+      baseRadiusM: 640
     },
     {
       id: 'cemeteries_festival',
-      nameEn: 'Chai Wan / Tseung Kwan O / Diamond Hill Cemeteries',
-      nameTc: '柴灣／將軍澳／鑽石山墳場',
-      lat: 22.2660,
-      lon: 114.2440,
+      shortEn: 'Cemeteries',
+      shortTc: '掃墓人潮',
+      nameEn: 'Chai Wan / Tseung Kwan O Cemeteries',
+      nameTc: '柴灣／將軍澳墳場',
+      lat: 22.2644,
+      lon: 114.2372,
       vectors: ['CEMETERY_FESTIVAL'],
-      baseRadiusM: 1350,
+      baseRadiusM: 700,
       minThreshold: 0.3
     }
   ]);
 
-  // Major directional flow corridors (drawn as dashed arrows whenever vector > 1.0)
+  // Opposing vector pairs for readable hub direction arrows
+  const VECTOR_DIR_INFO = Object.freeze({
+    TO_TRAIL_EXPOSED:   { arrow: '↑', opp: 'FROM_TRAIL_EXPOSED' },
+    FROM_TRAIL_EXPOSED: { arrow: '↓', opp: 'TO_TRAIL_EXPOSED' },
+    TO_BORDER_NORTH:    { arrow: '↑', opp: 'FROM_BORDER_NORTH' },
+    FROM_BORDER_NORTH:  { arrow: '↓', opp: 'TO_BORDER_NORTH' },
+    TO_AIRPORT_AWE:     { arrow: '↑', opp: 'FROM_AIRPORT_AWE' },
+    FROM_AIRPORT_AWE:   { arrow: '↓', opp: 'TO_AIRPORT_AWE' },
+    TO_BEACH_WATER:     { arrow: '↑', opp: 'FROM_BEACH_WATER' },
+    FROM_BEACH_WATER:   { arrow: '↓', opp: 'TO_BEACH_WATER' },
+    ISLAND_OUTBOUND:    { arrow: '↑', opp: 'ISLAND_INBOUND' },
+    ISLAND_INBOUND:     { arrow: '↓', opp: 'ISLAND_OUTBOUND' },
+    CBD_OUTBOUND:       { arrow: '↑', opp: 'CBD_INBOUND' },
+    CBD_INBOUND:        { arrow: '↓', opp: 'CBD_OUTBOUND' }
+  });
+
+  // Major directional flow corridors (drawn with crisp arrows whenever vector >= 1.05)
   const PEOPLE_FLOW_CORRIDORS = Object.freeze([
     {
       id: 'cbd_inbound_corridor',
@@ -193,49 +230,49 @@
       vector: 'FROM_TRAIL_EXPOSED',
       nameEn: 'Pak Kung Au Trails → Tung Chung & Mui Wo',
       nameTc: '伯公坳行山徑 ➔ 東涌及梅窩',
-      coords: [[22.249, 113.941], [22.244, 113.977], [22.265, 114.001]]
+      coords: [[22.249, 113.941], [22.244, 113.977], [22.265, 114.002]]
     },
     {
       id: 'island_outbound_corridor',
       vector: 'ISLAND_OUTBOUND',
       nameEn: 'Central Piers → Mui Wo & Cheung Chau',
       nameTc: '中環碼頭 ➔ 梅窩及長洲',
-      coords: [[22.288, 114.159], [22.272, 114.075], [22.265, 114.002]]
+      coords: [[22.287, 114.160], [22.272, 114.075], [22.265, 114.002]]
     },
     {
       id: 'island_inbound_corridor',
       vector: 'ISLAND_INBOUND',
       nameEn: 'Mui Wo & Cheung Chau → Central Piers',
       nameTc: '梅窩及長洲 ➔ 中環碼頭',
-      coords: [[22.209, 114.029], [22.252, 114.085], [22.288, 114.159]]
+      coords: [[22.209, 114.028], [22.252, 114.085], [22.287, 114.160]]
     },
     {
       id: 'to_border_corridor',
       vector: 'TO_BORDER_NORTH',
       nameEn: 'Urban Core → Lo Wu / Lok Ma Chau Borders',
       nameTc: '市區 ➔ 羅湖／落馬洲口岸',
-      coords: [[22.337, 114.176], [22.414, 114.210], [22.492, 114.139], [22.527, 114.113]]
+      coords: [[22.337, 114.176], [22.414, 114.210], [22.492, 114.139], [22.528, 114.113]]
     },
     {
       id: 'from_border_corridor',
       vector: 'FROM_BORDER_NORTH',
       nameEn: 'Northern Borders → Kowloon & Urban Core',
       nameTc: '北部口岸 ➔ 九龍及市區',
-      coords: [[22.515, 114.066], [22.465, 114.095], [22.382, 114.187], [22.319, 114.169]]
+      coords: [[22.528, 114.113], [22.465, 114.105], [22.382, 114.187], [22.319, 114.169]]
     },
     {
       id: 'to_airport_corridor',
       vector: 'TO_AIRPORT_AWE',
       nameEn: 'West Kowloon / Tsing Yi → HKIA & AWE',
       nameTc: '西九龍／青衣 ➔ 機場及博覽館',
-      coords: [[22.304, 114.161], [22.358, 114.107], [22.339, 114.042], [22.316, 113.937]]
+      coords: [[22.304, 114.161], [22.358, 114.107], [22.339, 114.042], [22.314, 113.937]]
     },
     {
       id: 'from_airport_corridor',
       vector: 'FROM_AIRPORT_AWE',
       nameEn: 'HKIA / AWE → Tsing Yi & West Kowloon',
       nameTc: '機場／博覽館 ➔ 青衣及西九龍',
-      coords: [[22.321, 113.941], [22.339, 114.042], [22.358, 114.107], [22.304, 114.161]]
+      coords: [[22.314, 113.937], [22.339, 114.042], [22.358, 114.107], [22.304, 114.161]]
     },
     {
       id: 'to_beach_corridor',
@@ -249,21 +286,21 @@
       vector: 'FROM_BEACH_WATER',
       nameEn: 'Sai Kung / Shek O Beaches → Urban Core',
       nameTc: '西貢／石澳泳灘 ➔ 市區',
-      coords: [[22.233, 114.222], [22.257, 114.192], [22.279, 114.165]]
+      coords: [[22.237, 114.197], [22.257, 114.185], [22.279, 114.165]]
     },
     {
       id: 'sunday_urban_corridor',
       vector: 'SUNDAY_URBAN_HUB',
       nameEn: 'Sunday Hub Gathering → Central / CWB / Mong Kok',
       nameTc: '週日市區聚會 ➔ 中環／銅鑼灣／旺角',
-      coords: [[22.319, 114.169], [22.298, 114.172], [22.280, 114.184], [22.282, 114.158]]
+      coords: [[22.319, 114.169], [22.294, 114.171], [22.280, 114.184], [22.282, 114.158]]
     },
     {
       id: 'cemetery_festival_corridor',
       vector: 'CEMETERY_FESTIVAL',
       nameEn: 'Festival Grave-Sweeping → Chai Wan / TKO Cemeteries',
       nameTc: '清明／重陽掃墓 ➔ 柴灣／將軍澳墳場',
-      coords: [[22.282, 114.222], [22.265, 114.237], [22.266, 114.244]]
+      coords: [[22.282, 114.222], [22.265, 114.237], [22.264, 114.244]]
     }
   ]);
 
@@ -302,16 +339,17 @@
 
   const PEOPLE_FLOW_WEATHER_OVERRIDES = Object.freeze({
     LIVE:   { key: 'LIVE',   labelEn: 'Live HKO', labelTc: '實時天文台', payload: null },
-    DRY_22: { key: 'DRY_22', labelEn: '22°C Dry', labelTc: '22°C 乾燥', payload: { temp: 22, isDry: true, isClear: true, condition: 'Clear' } },
-    RAIN:   { key: 'RAIN',   labelEn: 'Rain',     labelTc: '大雨',     payload: { temp: 24, isRainy: true, heavyRain: true, warnings: ['WRAINR'], condition: 'Heavy Rain' } },
-    HOT_34: { key: 'HOT_34', labelEn: '34°C',     labelTc: '34°C 酷熱', payload: { temp: 34, isDry: false, condition: 'Very Hot' } },
-    T8:     { key: 'T8',     labelEn: 'T8',       labelTc: '八號風球', payload: { temp: 26, preT8: true, typhoon: true, warnings: ['PRE_T8'], heavyRain: true, condition: 'Pre-T8 Evacuation' } }
+    DRY_22: { key: 'DRY_22', labelEn: '22°C Dry', labelTc: '22°C 乾燥', payload: { temp: 22, isDry: true, isClear: true, condition: 'Dry' } },
+    RAIN:   { key: 'RAIN',   labelEn: 'Rain',     labelTc: '大雨',     payload: { temp: 24, isRainy: true, heavyRain: true, warnings: ['WRAINR'], condition: 'Rain' } },
+    HOT_34: { key: 'HOT_34', labelEn: '34°C',     labelTc: '34°C 酷熱', payload: { temp: 34, isDry: false, condition: 'Hot' } },
+    T8:     { key: 'T8',     labelEn: 'T8',       labelTc: '八號風球', payload: { temp: 26, preT8: true, typhoon: true, warnings: ['PRE_T8'], heavyRain: true, condition: 'T8' } }
   });
 
   // Strictly overlay-scoped preview state (NEVER mutates window.__HKO_WEATHER__ or live ETAs)
   const PeopleFlowOverlayState = {
     enabled: false,
     isPreview: false,
+    presetsExpanded: false,
     presetKey: 'LIVE',
     weatherOverrideKey: 'LIVE',
     baseDateYmd: null,   // 'YYYY-MM-DD' when previewing a preset date
@@ -336,17 +374,101 @@
     return `${hh}:${mm}`;
   }
 
+  function _getLiveHkoWeatherFromRoot() {
+    if (typeof root === 'undefined' || !root) return null;
+    if (typeof root.getResolvedLiveHkoWeather === 'function') {
+      const resolved = root.getResolvedLiveHkoWeather();
+      if (resolved && typeof resolved === 'object') return resolved;
+    }
+    if (root.__HKO_WEATHER__ && typeof root.__HKO_WEATHER__ === 'object') return root.__HKO_WEATHER__;
+    if (root.hkoWeather && typeof root.hkoWeather === 'object') return root.hkoWeather;
+    return null;
+  }
+
+  function _triggerLiveHkoWarmIfNeeded() {
+    if (typeof root === 'undefined' || !root || typeof root.ensureLiveHkoWeather !== 'function') return;
+    const wx = _getLiveHkoWeatherFromRoot();
+    const hasTemp = wx && Number.isFinite(Number(wx.temp ?? wx.temperature ?? wx.tempC));
+    if (!wx || !hasTemp) {
+      try {
+        Promise.resolve(root.ensureLiveHkoWeather()).catch(() => {});
+      } catch (e) {}
+    }
+  }
+
+  function formatPeopleFlowWeatherLabel(wx, isZh) {
+    const zh = Boolean(isZh);
+    if (!wx || typeof wx !== 'object') {
+      return zh ? '預設天氣' : 'Fallback';
+    }
+    if (zh && wx.displayLabelTc) return String(wx.displayLabelTc);
+    if (!zh && wx.displayLabelEn) return String(wx.displayLabelEn);
+
+    const warnTokens = []
+      .concat(Array.isArray(wx.warnings) ? wx.warnings : [])
+      .concat(Array.isArray(wx.warningCodes) ? wx.warningCodes : [])
+      .map(s => String(s || '').toUpperCase());
+    if (wx.typhoon || wx.preT8 || wx.preTyphoonEvac || warnTokens.some(c => /^TC(8|9|10)|PRE_T8/.test(c))) {
+      return zh ? '八號風球' : 'T8';
+    }
+
+    const rawTemp = wx.temp ?? wx.temperature ?? wx.tempC ?? wx.temperatureC;
+    const temp = (rawTemp !== null && rawTemp !== undefined && rawTemp !== '' && Number.isFinite(Number(rawTemp)))
+      ? Math.round(Number(rawTemp))
+      : null;
+    const rawHum = wx.humidity ?? wx.rh ?? wx.relativeHumidity;
+    const hum = (rawHum !== null && rawHum !== undefined && rawHum !== '' && Number.isFinite(Number(rawHum)))
+      ? Number(rawHum)
+      : null;
+    const isRain = Boolean(
+      wx.heavyRain || wx.rainAdvisory || wx.isRainy || wx.rain ||
+      (Number.isFinite(Number(wx.rainfallMm)) && Number(wx.rainfallMm) >= 1) ||
+      warnTokens.some(c => /^WRAIN/.test(c))
+    );
+    const isDry = Boolean(!isRain && (wx.isDry === true || wx.dry === true || (hum !== null && hum <= 78)));
+    const isClear = Boolean(!isRain && (wx.isClear === true || wx.clear === true));
+
+    let condEn = '';
+    let condTc = '';
+    if (wx.heavyRain) { condEn = 'Heavy Rain'; condTc = '大雨'; }
+    else if (isRain) { condEn = 'Rain'; condTc = '有雨'; }
+    else if (temp !== null && temp > 31) { condEn = 'Hot'; condTc = '酷熱'; }
+    else if (temp !== null && temp < 12) { condEn = 'Cold'; condTc = '寒冷'; }
+    else if (isDry) { condEn = 'Dry'; condTc = '乾燥'; }
+    else if (hum !== null && hum > 85) { condEn = 'Humid'; condTc = '潮濕'; }
+    else if (isClear) { condEn = 'Clear'; condTc = '天晴'; }
+    else if (wx.condition) { condEn = String(wx.condition); condTc = String(wx.condition); }
+
+    if (temp !== null) {
+      const cond = zh ? condTc : condEn;
+      return cond ? `${temp}°C ${cond}` : `${temp}°C`;
+    }
+    if (zh && wx.labelTc) return String(wx.labelTc);
+    if (!zh && wx.labelEn) return String(wx.labelEn);
+    if (condEn || condTc) return zh ? (condTc || condEn) : condEn;
+    return zh ? '實時天文台' : 'Live HKO';
+  }
+
+  function formatPeopleFlowHubLabel(zone, isZh) {
+    const zh = Boolean(isZh);
+    const shortName = zh ? (zone.shortTc || zone.nameTc || zone.shortEn || '') : (zone.shortEn || zone.nameEn || '');
+    const arrow = zone.dirArrow ? ` ${zone.dirArrow}` : '';
+    const mult = Number(zone.pressure || 0).toFixed(1);
+    return `${shortName}${arrow} ${mult}x`;
+  }
+
   function _resolveEffectiveSimInputs(nowMsOverride, hkoWeatherOverride) {
     const liveNow = Number.isFinite(Number(nowMsOverride)) ? Number(nowMsOverride) : Date.now();
     const liveWx = hkoWeatherOverride !== undefined
       ? hkoWeatherOverride
-      : ((typeof root !== 'undefined' && root.__HKO_WEATHER__) ? root.__HKO_WEATHER__ : null);
+      : _getLiveHkoWeatherFromRoot();
+    const isZh = _isZh();
 
     if (!PeopleFlowOverlayState.isPreview) {
       return {
         simMs: liveNow,
         simWeather: liveWx,
-        weatherSource: liveWx ? 'Live HKO' : 'Fallback',
+        weatherSource: formatPeopleFlowWeatherLabel(liveWx, isZh),
         isPreview: false
       };
     }
@@ -364,8 +486,8 @@
     const wxPreset = PEOPLE_FLOW_WEATHER_OVERRIDES[wxKey];
     const simWeather = (wxKey !== 'LIVE' && wxPreset && wxPreset.payload) ? wxPreset.payload : liveWx;
     const weatherSource = (wxKey !== 'LIVE' && wxPreset)
-      ? wxPreset.labelEn
-      : (liveWx ? 'Live HKO' : 'Fallback');
+      ? (isZh ? wxPreset.labelTc : wxPreset.labelEn)
+      : formatPeopleFlowWeatherLabel(liveWx, isZh);
 
     return { simMs, simWeather, weatherSource, isPreview: true };
   }
@@ -379,6 +501,17 @@
     return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
   }
 
+  function _computeCorridorMidChevron(coords) {
+    if (!Array.isArray(coords) || coords.length < 2) return null;
+    const segIdx = Math.floor((coords.length - 1) / 2);
+    const a = coords[segIdx];
+    const b = coords[Math.min(coords.length - 1, segIdx + 1)];
+    return {
+      point: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2],
+      bearingDeg: Math.round(_computeBearingDeg(a, b))
+    };
+  }
+
   /**
    * Pure data builder for the Map People Flow overlay (safe for unit tests without DOM/Leaflet).
    *
@@ -389,8 +522,9 @@
   function buildPeopleFlowOverlayModel(nowMs, hkoWeather, opts) {
     const simFn = _getFlowFn('simulateCityPeopleFlow');
     const ms = Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now();
+    const effectiveWx = hkoWeather !== undefined ? hkoWeather : _getLiveHkoWeatherFromRoot();
     const cityFlow = simFn
-      ? simFn(ms, hkoWeather, opts)
+      ? simFn(ms, effectiveWx, opts)
       : {
           calendar: { isoWeek: 1, month: 0, dayType: 'weekday', isEveOfHoliday: false, isSchoolDay: true, hourFloat: 12, dateStr: '', isHoliday: false, isAweEventDate: false },
           weather: { outdoorMod: 1.0, urbanIndoorMod: 1.0, preTyphoonEvacMod: 1.0 },
@@ -423,29 +557,50 @@
         continue;
       }
 
-      const radiusM = Math.round(z.baseRadiusM * (0.62 + Math.min(1.0, peakPressure / 2.0) * 0.78));
-      zones.push({
+      // Show directional arrow (↑/↓) when primary vector clearly dominates its opposing flow
+      let dirArrow = '';
+      const dirInfo = VECTOR_DIR_INFO[peakVector];
+      if (dirInfo && peakPressure >= 0.95) {
+        const oppVal = Number(vec[dirInfo.opp] || 0);
+        if ((peakPressure - oppVal) >= 0.15) {
+          dirArrow = dirInfo.arrow;
+        }
+      }
+
+      // Tighter halo radius (~45% smaller than v1 so hubs sit cleanly over transit nodes)
+      const radiusM = Math.round(z.baseRadiusM * (0.65 + Math.min(1.0, peakPressure / 2.0) * 0.45));
+      const zoneObj = {
         id: z.id,
+        shortEn: z.shortEn,
+        shortTc: z.shortTc,
         nameEn: z.nameEn,
         nameTc: z.nameTc,
         lat: z.lat,
         lon: z.lon,
         pressure: Number(peakPressure.toFixed(2)),
+        isQuietBaseline: peakPressure < 0.95,
         primaryVector: peakVector,
+        dirArrow,
         matchedVectors: matched,
         color: getPeopleFlowColor(peakPressure),
         tier: getPeopleFlowTier(peakPressure),
-        radiusM
-      });
+        radiusM,
+        badgeLabelEn: '',
+        badgeLabelTc: ''
+      };
+      zoneObj.badgeLabelEn = formatPeopleFlowHubLabel(zoneObj, false);
+      zoneObj.badgeLabelTc = formatPeopleFlowHubLabel(zoneObj, true);
+      zones.push(zoneObj);
     }
 
     const arrows = [];
     for (let i = 0; i < PEOPLE_FLOW_CORRIDORS.length; i++) {
       const c = PEOPLE_FLOW_CORRIDORS[i];
       const pressure = Number(vec[c.vector] || 0);
-      if (pressure <= 1.0) continue; // Only show active corridors where vector > 1.0
+      if (pressure < 1.05) continue; // Show active directional corridors whenever vector >= 1.05
       const endA = c.coords[c.coords.length - 2];
       const endB = c.coords[c.coords.length - 1];
+      const midChevron = _computeCorridorMidChevron(c.coords);
       arrows.push({
         id: c.id,
         vector: c.vector,
@@ -456,20 +611,24 @@
         tier: getPeopleFlowTier(pressure),
         coords: c.coords,
         arrowTip: endB,
-        bearingDeg: Math.round(_computeBearingDeg(endA, endB))
+        bearingDeg: Math.round(_computeBearingDeg(endA, endB)),
+        midChevron
       });
     }
 
+    const hk = _getCurrentHkTimeParts(ms);
+    const timeStr = _formatMinutesHHMM(hk.minutesOfDay);
     const dayLabelMap = { weekday: 'Wkdy', saturday: 'Sat', sunday: 'Sun', holiday: 'Hol' };
     const dayTag = dayLabelMap[cal.dayType] || 'Wkdy';
-    const schoolTag = cal.isSchoolDay ? 'School ON' : 'School OFF';
-    const wxTag = hkoWeather ? 'Live HKO' : 'Fallback';
-    const summaryChip = `W${cal.isoWeek || 1} · ${dayTag} · ${schoolTag} · ${wxTag}`;
+    const wxTag = formatPeopleFlowWeatherLabel(effectiveWx, false);
+    const summaryChip = `W${cal.isoWeek || 1} · ${dayTag} ${timeStr} · ${wxTag}`;
 
     return {
       cityFlow,
       calendar: cal,
       weather: wx,
+      weatherLabelEn: wxTag,
+      weatherLabelTc: formatPeopleFlowWeatherLabel(effectiveWx, true),
       zones,
       arrows,
       summaryChip
@@ -482,7 +641,7 @@
     const vecRows = (matchedVectors || []).slice(0, 3).map(v =>
       `<div style="display:flex;justify-content:space-between;gap:10px;font-size:0.72rem;line-height:1.35;">
         <span style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:#374151;">${_esc(v.key)}</span>
-        <strong style="color:${getPeopleFlowColor(v.value)};font-variant-numeric:tabular-nums;">${Number(v.value).toFixed(2)}</strong>
+        <strong style="color:${getPeopleFlowColor(v.value)};font-variant-numeric:tabular-nums;">${Number(v.value).toFixed(2)}x</strong>
       </div>`
     ).join('');
     const flags = [
@@ -493,17 +652,17 @@
     ].filter(Boolean).join(' · ');
 
     return `
-      <div style="min-width:195px;max-width:245px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+      <div style="min-width:195px;max-width:248px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:5px;">
           <strong style="font-size:0.80rem;color:#111827;line-height:1.25;">${_esc(title)}</strong>
-          <span style="padding:1px 7px;border-radius:999px;font-size:0.68rem;font-weight:800;color:#fff;background:${color};font-variant-numeric:tabular-nums;">${Number(pressure).toFixed(2)}</span>
+          <span style="padding:1px 7px;border-radius:999px;font-size:0.68rem;font-weight:800;color:#fff;background:${color};font-variant-numeric:tabular-nums;">${Number(pressure).toFixed(2)}x</span>
         </div>
         <div style="padding:5px 7px;border-radius:8px;background:rgba(15,23,42,0.05);margin-bottom:5px;">
           ${vecRows}
         </div>
         <div style="font-size:0.68rem;color:#4b5563;line-height:1.35;">
           <div><strong>${isZh ? '日曆：' : 'Calendar:'}</strong> ${_esc(flags)}</div>
-          <div><strong>${isZh ? '天氣倍率：' : 'Weather:'}</strong> ${_esc(weatherSource)} · Out ×${Number(wx.outdoorMod || 1).toFixed(2)} · Urb ×${Number(wx.urbanIndoorMod || 1).toFixed(2)}${Number(wx.preTyphoonEvacMod || 1) > 1.05 ? ` · T8 ×${Number(wx.preTyphoonEvacMod).toFixed(2)}` : ''}</div>
+          <div><strong>${isZh ? '天氣：' : 'Weather:'}</strong> ${_esc(weatherSource)} · Out ×${Number(wx.outdoorMod || 1).toFixed(2)} · Urb ×${Number(wx.urbanIndoorMod || 1).toFixed(2)}${Number(wx.preTyphoonEvacMod || 1) > 1.05 ? ` · T8 ×${Number(wx.preTyphoonEvacMod).toFixed(2)}` : ''}</div>
         </div>
       </div>
     `;
@@ -511,6 +670,38 @@
 
   // Dedicated WeakMap of Leaflet LayerGroups per map — 100% isolated from Traffic & Cams layers
   const _peopleFlowLayerByMap = typeof WeakMap !== 'undefined' ? new WeakMap() : null;
+  const _peopleFlowZoomBound = typeof WeakMap !== 'undefined' ? new WeakMap() : null;
+
+  function _ensureFlowPanes(mapInst) {
+    if (!mapInst || typeof mapInst.getPane !== 'function' || typeof mapInst.createPane !== 'function') return;
+    const specs = [
+      ['peopleFlowHaloPane', '440'],
+      ['peopleFlowArrowPane', '520'],
+      ['peopleFlowLabelPane', '620']
+    ];
+    for (let i = 0; i < specs.length; i++) {
+      const [name, zIdx] = specs[i];
+      let pane = mapInst.getPane(name);
+      if (!pane) {
+        pane = mapInst.createPane(name);
+        if (pane && pane.style) {
+          pane.style.zIndex = zIdx;
+        }
+      }
+    }
+  }
+
+  function _syncMapDimmingClass(mapInst, active) {
+    try {
+      const container = mapInst && typeof mapInst.getContainer === 'function' ? mapInst.getContainer() : null;
+      if (container && container.classList) {
+        container.classList.toggle('people-flow-active', Boolean(active));
+      }
+    } catch (e) {}
+    if (typeof root !== 'undefined' && root && mapInst === root.browseMapInstance && typeof root.setBrowseMapStopDimming === 'function') {
+      try { root.setBrowseMapStopDimming(Boolean(active)); } catch (e) {}
+    }
+  }
 
   function _getOrCreateFlowLayer(mapInst) {
     if (!mapInst || typeof L === 'undefined' || !_peopleFlowLayerByMap) return null;
@@ -524,6 +715,7 @@
 
   function clearPeopleFlowOverlayOnMap(mapInst) {
     if (!mapInst || !_peopleFlowLayerByMap) return;
+    _syncMapDimmingClass(mapInst, false);
     const lg = _peopleFlowLayerByMap.get(mapInst);
     if (lg) {
       try { lg.clearLayers(); } catch (e) {}
@@ -538,6 +730,18 @@
       return null;
     }
 
+    _ensureFlowPanes(mapInst);
+    _syncMapDimmingClass(mapInst, true);
+
+    if (_peopleFlowZoomBound && !_peopleFlowZoomBound.get(mapInst) && typeof mapInst.on === 'function') {
+      _peopleFlowZoomBound.set(mapInst, true);
+      mapInst.on('zoomend', () => {
+        if (PeopleFlowOverlayState.enabled) {
+          renderPeopleFlowOverlayOnMap(mapInst);
+        }
+      });
+    }
+
     const lg = _getOrCreateFlowLayer(mapInst);
     if (!lg) return null;
     lg.clearLayers();
@@ -548,18 +752,43 @@
     const { simMs, simWeather, weatherSource } = _resolveEffectiveSimInputs();
     const model = buildPeopleFlowOverlayModel(simMs, simWeather);
     const isZh = _isZh();
+    const currentZoom = typeof mapInst.getZoom === 'function' ? Number(mapInst.getZoom()) : 11;
 
-    // 1. Pressure Zone Halos
+    // 1. Pressure Zone Halos & Clear Hub + Direction Labels
     for (let i = 0; i < model.zones.length; i++) {
       const z = model.zones[i];
       const title = isZh ? z.nameTc : z.nameEn;
+      const isQuiet = z.pressure < 0.95;
+
+      // Hide quiet baseline zones (< 0.95) at overview zoom unless zoomed in (>= 13);
+      // keep a subtle tappable hit area when zoomed in or keep quiet zones out of clutter.
+      if (isQuiet && currentZoom < 13) {
+        const faintHit = L.circle([z.lat, z.lon], {
+          pane: 'peopleFlowHaloPane',
+          radius: Math.round(z.radiusM * 0.72),
+          color: z.color,
+          weight: 1,
+          opacity: 0.22,
+          fillColor: z.color,
+          fillOpacity: 0.04,
+          interactive: true
+        });
+        faintHit.bindPopup(_buildFlowPopupHtml(title, z.matchedVectors, z.pressure, model.calendar, model.weather, weatherSource), {
+          maxWidth: 260,
+          closeButton: true
+        });
+        lg.addLayer(faintHit);
+        continue;
+      }
+
       const circle = L.circle([z.lat, z.lon], {
+        pane: 'peopleFlowHaloPane',
         radius: z.radiusM,
         color: z.color,
-        weight: z.pressure >= 1.45 ? 2.2 : 1.5,
-        opacity: 0.72,
+        weight: z.pressure >= 1.45 ? 2.2 : 1.6,
+        opacity: 0.85,
         fillColor: z.color,
-        fillOpacity: z.pressure >= 1.45 ? 0.28 : (z.pressure >= 1.0 ? 0.22 : 0.14),
+        fillOpacity: z.pressure >= 1.45 ? 0.20 : (z.pressure >= 1.0 ? 0.14 : 0.08),
         interactive: true
       });
       circle.bindPopup(_buildFlowPopupHtml(title, z.matchedVectors, z.pressure, model.calendar, model.weather, weatherSource), {
@@ -568,33 +797,48 @@
       });
       lg.addLayer(circle);
 
-      // Compact center label pill for elevated/high pressure zones
-      if (z.pressure >= 0.85) {
-        const icon = L.divIcon({
-          className: 'people-flow-zone-badge-wrap',
-          html: `<div class="people-flow-zone-badge" style="border-color:${z.color};color:${z.color};">${_esc(z.pressure.toFixed(1))}</div>`,
-          iconSize: [34, 18],
-          iconAnchor: [17, 9]
-        });
-        const badgeMarker = L.marker([z.lat, z.lon], { icon, interactive: true });
-        badgeMarker.bindPopup(_buildFlowPopupHtml(title, z.matchedVectors, z.pressure, model.calendar, model.weather, weatherSource), {
-          maxWidth: 260,
-          closeButton: true
-        });
-        lg.addLayer(badgeMarker);
-      }
+      // Clear Hub + Direction tag pill (e.g., "Borders ↓ 1.2x", "HKIA 1.1x", "Lantau Trails ↑ 1.6x")
+      const pillText = isZh ? z.badgeLabelTc : z.badgeLabelEn;
+      const icon = L.divIcon({
+        className: 'people-flow-zone-badge-wrap',
+        html: `<div class="people-flow-zone-badge tier-${z.tier.toLowerCase()}" style="border-color:${z.color};color:${z.color};">${_esc(pillText)}</div>`,
+        iconSize: null,
+        iconAnchor: [0, 0]
+      });
+      const badgeMarker = L.marker([z.lat, z.lon], { icon, pane: 'peopleFlowLabelPane', interactive: true });
+      badgeMarker.bindPopup(_buildFlowPopupHtml(title, z.matchedVectors, z.pressure, model.calendar, model.weather, weatherSource), {
+        maxWidth: 260,
+        closeButton: true
+      });
+      lg.addLayer(badgeMarker);
     }
 
-    // 2. Directional Flow Arrows (only active corridors where vector > 1.0)
+    // 2. Visible Directional Flow Arrows on dedicated pane above halos & OSM ferry lines (vector >= 1.05)
     for (let i = 0; i < model.arrows.length; i++) {
       const a = model.arrows[i];
       const title = isZh ? a.nameTc : a.nameEn;
-      const line = L.polyline(a.coords, {
-        color: a.color,
-        weight: a.pressure >= 1.45 ? 4 : 3,
-        opacity: 0.84,
-        dashArray: '8, 7',
+      const strokeW = a.pressure >= 1.45 ? 4.5 : 3.5;
+
+      // Crisp light casing underneath so arrows stand out sharply over OSM ferry lines & roads
+      const casing = L.polyline(a.coords, {
+        pane: 'peopleFlowArrowPane',
+        color: '#ffffff',
+        weight: strokeW + 3,
+        opacity: 0.88,
         lineCap: 'round',
+        lineJoin: 'round',
+        interactive: false
+      });
+      lg.addLayer(casing);
+
+      const line = L.polyline(a.coords, {
+        pane: 'peopleFlowArrowPane',
+        color: a.color,
+        weight: strokeW,
+        opacity: 0.95,
+        dashArray: '10, 7',
+        lineCap: 'round',
+        lineJoin: 'round',
         interactive: true
       });
       const popupHtml = _buildFlowPopupHtml(
@@ -608,15 +852,22 @@
       line.bindPopup(popupHtml, { maxWidth: 260, closeButton: true });
       lg.addLayer(line);
 
-      const arrowIcon = L.divIcon({
-        className: 'people-flow-arrow-head-wrap',
-        html: `<div class="people-flow-arrow-head" style="transform:rotate(${a.bearingDeg}deg);color:${a.color};">▲</div>`,
-        iconSize: [18, 18],
-        iconAnchor: [9, 9]
-      });
-      const arrowMarker = L.marker(a.arrowTip, { icon: arrowIcon, interactive: true });
-      arrowMarker.bindPopup(popupHtml, { maxWidth: 260, closeButton: true });
-      lg.addLayer(arrowMarker);
+      const addArrowChevron = (latLon, deg, sizePx) => {
+        const arrowIcon = L.divIcon({
+          className: 'people-flow-arrow-head-wrap',
+          html: `<div class="people-flow-arrow-head" style="transform:rotate(${deg}deg);color:${a.color};width:${sizePx}px;height:${sizePx}px;">▲</div>`,
+          iconSize: [sizePx, sizePx],
+          iconAnchor: [sizePx / 2, sizePx / 2]
+        });
+        const arrowMarker = L.marker(latLon, { icon: arrowIcon, pane: 'peopleFlowArrowPane', interactive: true });
+        arrowMarker.bindPopup(popupHtml, { maxWidth: 260, closeButton: true });
+        lg.addLayer(arrowMarker);
+      };
+
+      if (a.midChevron && a.midChevron.point) {
+        addArrowChevron(a.midChevron.point, a.midChevron.bearingDeg, 18);
+      }
+      addArrowChevron(a.arrowTip, a.bearingDeg, 22);
     }
 
     return model;
@@ -661,11 +912,13 @@
     const isZh = _isZh();
     const hk = _getCurrentHkTimeParts(simMs);
     const sliderVal = Math.floor(hk.minutesOfDay / 15) * 15;
-    const timeStr = _formatMinutesHHMM(sliderVal);
-    const dayMap = { weekday: 'Wkdy', saturday: 'Sat', sunday: 'Sun', holiday: 'Hol' };
-    const dayTag = dayMap[model.calendar.dayType] || 'Wkdy';
-    const schoolTag = model.calendar.isSchoolDay ? (isZh ? '上課' : 'School ON') : (isZh ? '休假' : 'School OFF');
-    const liveChipText = `W${model.calendar.isoWeek || 1} · ${dayTag} · ${schoolTag} · ${weatherSource}`;
+    const timeStr = _formatMinutesHHMM(hk.minutesOfDay);
+    const dayMap = isZh
+      ? { weekday: '平日', saturday: '週六', sunday: '週日', holiday: '假期' }
+      : { weekday: 'Wkdy', saturday: 'Sat', sunday: 'Sun', holiday: 'Hol' };
+    const dayTag = dayMap[model.calendar.dayType] || (isZh ? '平日' : 'Wkdy');
+    const liveChipText = `W${model.calendar.isoWeek || 1} · ${dayTag} ${timeStr} · ${weatherSource}`;
+    const expanded = Boolean(PeopleFlowOverlayState.presetsExpanded);
 
     const presetsHtml = Object.values(PEOPLE_FLOW_PRESETS).map((p) => {
       const active = PeopleFlowOverlayState.presetKey === p.key;
@@ -679,6 +932,10 @@
       return `<button type="button" class="pf-chip pf-wx-chip ${active ? 'active' : ''}" onclick="setPeopleFlowWeatherOverride('${w.key}')">${_esc(lbl)}</button>`;
     }).join('');
 
+    const presetsToggleLabel = expanded
+      ? (isZh ? '預設 ▴' : 'Presets ▴')
+      : (isZh ? '預設 ▾' : 'Presets ▾');
+
     return `
       <div class="pf-scrubber-top">
         <span class="pf-state-chip">${_esc(liveChipText)}</span>
@@ -686,14 +943,17 @@
           ? `<span class="pf-preview-pill">PREVIEW</span>
              <button type="button" class="pf-reset-btn" onclick="resetPeopleFlowToLive()">${isZh ? '重設實時' : 'Reset to Live'}</button>`
           : ''}
+        <button type="button" class="pf-presets-toggle-btn ${expanded ? 'open' : ''}" onclick="togglePeopleFlowPresetsDrawer()" aria-expanded="${expanded ? 'true' : 'false'}">${_esc(presetsToggleLabel)}</button>
         <button type="button" class="pf-close-btn" onclick="togglePeopleFlowOverlay(false)" title="${isZh ? '關閉人流模擬' : 'Close People Flow'}">✕</button>
       </div>
       <div class="pf-slider-row">
-        <span class="pf-time-readout">${_esc(timeStr)}</span>
+        <span class="pf-time-readout">${_esc(_formatMinutesHHMM(sliderVal))}</span>
         <input type="range" class="pf-time-slider" min="0" max="1425" step="15" value="${sliderVal}" oninput="onPeopleFlowTimeScrub(this.value)" aria-label="Simulation time of day">
       </div>
-      <div class="pf-chip-row">${presetsHtml}</div>
-      <div class="pf-chip-row pf-wx-row">${wxHtml}</div>
+      <div class="pf-presets-drawer" style="display:${expanded ? 'flex' : 'none'};">
+        <div class="pf-chip-row">${presetsHtml}</div>
+        <div class="pf-chip-row pf-wx-row">${wxHtml}</div>
+      </div>
     `;
   }
 
@@ -742,6 +1002,13 @@
     _syncScrubberBars();
   }
 
+  function togglePeopleFlowPresetsDrawer(forceState) {
+    PeopleFlowOverlayState.presetsExpanded = typeof forceState === 'boolean'
+      ? forceState
+      : !PeopleFlowOverlayState.presetsExpanded;
+    _syncScrubberBars();
+  }
+
   function togglePeopleFlowOverlay(forceState) {
     const next = typeof forceState === 'boolean' ? forceState : !PeopleFlowOverlayState.enabled;
     PeopleFlowOverlayState.enabled = next;
@@ -750,6 +1017,9 @@
     }
     if (typeof root !== 'undefined' && typeof root.triggerHaptic === 'function') {
       root.triggerHaptic(10);
+    }
+    if (next) {
+      _triggerLiveHkoWarmIfNeeded();
     }
     syncPeopleFlowOverlaysAllMaps();
     // Zoom browse map slightly out to Hong Kong overview when turning ON at high street zoom so halos & arrows are immediately visible
@@ -820,15 +1090,17 @@
     PeopleFlowOverlayState.weatherOverrideKey = 'LIVE';
     PeopleFlowOverlayState.baseDateYmd = null;
     PeopleFlowOverlayState.minutesOfDay = null;
+    _triggerLiveHkoWarmIfNeeded();
     syncPeopleFlowOverlaysAllMaps();
   }
 
   /**
-   * Attaches the off-by-default "People Flow" toggle pill right beside the existing
+   * Attaches the off-by-default "People Flow" toggle pill stacked directly below the existing
    * Traffic pill inside the full browse map (#view-map).
    */
   function attachPeopleFlowOverlayToMap(mapInst) {
     if (!mapInst || typeof L === 'undefined') return;
+    _triggerLiveHkoWarmIfNeeded();
     if (typeof document !== 'undefined' && !document.getElementById('browseMapFlowBtn')) {
       const trafficCtrl = document.querySelector('#view-map .leaflet-control-global-traffic');
       const isZh = _isZh();
@@ -885,6 +1157,8 @@
     PeopleFlowOverlayState,
     getPeopleFlowColor,
     getPeopleFlowTier,
+    formatPeopleFlowWeatherLabel,
+    formatPeopleFlowHubLabel,
     buildPeopleFlowOverlayModel,
     renderPeopleFlowOverlayOnMap,
     clearPeopleFlowOverlayOnMap,
@@ -892,6 +1166,7 @@
     attachPeopleFlowOverlayToMap,
     syncPeopleFlowOverlayOnMap,
     togglePeopleFlowOverlay,
+    togglePeopleFlowPresetsDrawer,
     setPeopleFlowPreset,
     onPeopleFlowTimeScrub,
     setPeopleFlowWeatherOverride,
@@ -906,6 +1181,7 @@
     root.syncPeopleFlowOverlayOnMap = syncPeopleFlowOverlayOnMap;
     root.syncPeopleFlowOverlaysAllMaps = syncPeopleFlowOverlaysAllMaps;
     root.togglePeopleFlowOverlay = togglePeopleFlowOverlay;
+    root.togglePeopleFlowPresetsDrawer = togglePeopleFlowPresetsDrawer;
     root.setPeopleFlowPreset = setPeopleFlowPreset;
     root.onPeopleFlowTimeScrub = onPeopleFlowTimeScrub;
     root.setPeopleFlowWeatherOverride = setPeopleFlowWeatherOverride;

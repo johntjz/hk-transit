@@ -1239,6 +1239,24 @@ function clearAllActiveBrowseMarkers() {
   activeBrowseMarkersByKey.clear();
 }
 
+function setBrowseMapStopDimming(dimmed) {
+  const isDim = Boolean(dimmed);
+  const canvasEl = document.getElementById('browse-map-canvas');
+  if (canvasEl) canvasEl.classList.toggle('people-flow-active', isDim);
+  for (const marker of activeBrowseMarkersByKey.values()) {
+    if (!marker) continue;
+    if (marker._isBusStopDot && typeof marker.setStyle === 'function') {
+      try {
+        marker.setStyle({
+          opacity: isDim ? 0.2 : 1,
+          fillOpacity: isDim ? 0.18 : 0.95
+        });
+      } catch (e) {}
+    }
+  }
+}
+window.setBrowseMapStopDimming = setBrowseMapStopDimming;
+
 function initAndRenderBrowseMap() {
   if (typeof L === 'undefined') {
     if (typeof window.ensureLeafletLoaded === 'function') {
@@ -1250,10 +1268,17 @@ function initAndRenderBrowseMap() {
     }
     return;
   }
+  if (typeof window.ensureLiveHkoWeather === 'function') {
+    window.ensureLiveHkoWeather();
+  }
   const centerLat = lastKnownPos?.lat || 22.2855;
   const centerLon = lastKnownPos?.lon || 114.1577;
   if (!window.browseMapInstance) {
     window.browseMapInstance = L.map('browse-map-canvas', { zoomControl: false, preferCanvas: true }).setView([centerLat, centerLon], 15);
+    if (!window.browseMapInstance.getPane('browseBusStopPane')) {
+      const p = window.browseMapInstance.createPane('browseBusStopPane');
+      if (p) p.style.zIndex = '390';
+    }
     window.attachStandardMapLayers(window.browseMapInstance);
     attachGlobalTrafficControlToBrowseMap(window.browseMapInstance);
     if (typeof window.attachPeopleFlowOverlayToMap === 'function') {
@@ -1343,6 +1368,7 @@ function createBrowseMapStopMarker(s, displayLat = null, displayLon = null) {
   const isLrt = (s.mode === 'MTR' && (s.company === 'LRT' || s.lrtCode));
   const subType = s.mode === 'FERRY' ? 'FERRY' : (isLrt ? 'LRT' : (s.mode === 'MTR' ? 'MTR' : 'BUS'));
   const routesStr = Array.from(s.routeNos || []).map(r => cleanFerryLabel(r)).slice(0, 8).join(', ');
+  const isFlowDimmed = Boolean(window.peopleFlowOverlayEnabled);
 
   let m;
   if (subType !== 'BUS') {
@@ -1351,7 +1377,7 @@ function createBrowseMapStopMarker(s, displayLat = null, displayLon = null) {
     const sz = subType === 'LRT' ? 20 : 24;
     m = L.marker([lat, lon], {
       icon: L.divIcon({
-        className: '',
+        className: 'browse-major-hub-pin',
         html: `<div style="width:${sz}px;height:${sz}px;border-radius:6px;background:${bgCol};color:#fff;border:2px solid #fff;display:flex;align-items:center;justify-content:center;font-size:0.54rem;font-weight:800;box-shadow:0 2px 6px rgba(0,0,0,0.35);">${tagTxt}</div>`,
         iconSize: [sz, sz],
         iconAnchor: [sz / 2, sz / 2]
@@ -1360,12 +1386,16 @@ function createBrowseMapStopMarker(s, displayLat = null, displayLon = null) {
     }).addTo(window.browseMapInstance);
   } else {
     m = L.circleMarker([lat, lon], {
+      pane: 'browseBusStopPane',
+      className: 'browse-bus-stop-dot',
       radius: 6,
       fillColor: '#FFFFFF',
       color: '#FF3B30',
       weight: 2.2,
-      fillOpacity: 0.95
+      opacity: isFlowDimmed ? 0.2 : 1,
+      fillOpacity: isFlowDimmed ? 0.18 : 0.95
     }).addTo(window.browseMapInstance);
+    m._isBusStopDot = true;
   }
 
   m.bindTooltip(`${getStopName(s)}${routesStr ? ` (${routesStr})` : ''}`, { direction: 'top', className: 'kmb-map-stop-label' });

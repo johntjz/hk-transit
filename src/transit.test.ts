@@ -6528,6 +6528,7 @@ test('Tasks 1-3 Regression: Modularized domain scripts in exact 12-script order,
     'public/hardcode.js',
     'public/busspeed.js',
     'public/map-traffic-overlay.js',
+    'public/map-flow-overlay.js',
     'public/map.js',
     'public/commute-hubs.js',
     'public/raptor-cost-engine.js',
@@ -6553,6 +6554,7 @@ test('Tasks 1-3 Regression: Modularized domain scripts in exact 12-script order,
     'hardcode.js',
     'busspeed.js',
     'map-traffic-overlay.js',
+    'map-flow-overlay.js',
     'map.js',
     'commute-hubs.js',
     'raptor-cost-engine.js',
@@ -9055,6 +9057,225 @@ test('Multi-Modal MTR & Ferry Load Adapters (mtrsurge.js, ferrysurge.js) + Mui W
       `${rel} must remain strictly decoupled from mtrsurge.js and ferrysurge.js`);
   }
 });
+
+test('94. Primary Route Label Preservation, Stop #1 Rural Headway Calibration, Map People Flow Overlay & Load X-Ray Breakdowns', async () => {
+  // 1. Build-time & runtime primary origin/destination preservation (NLB 3M & 11)
+  const buildMod: any = await import('../scripts/build-transit-index.mjs');
+  assert.equal(typeof buildMod.selectPrimaryRouteVariant, 'function');
+  assert.equal(typeof buildMod.mergeRouteVariantsIntoGroup, 'function');
+
+  const nlb3mVariants = [
+    {
+      routeId: 'NLB_8',
+      service_type: '2',
+      orig_e: 'Mui Wo (from Pui O)',
+      orig_tc: '梅窩 (貝澳開)',
+      dest_e: 'Tung Chung Station Bus Terminus',
+      dest_tc: '東涌站巴士總站',
+      stopsCount: 22
+    },
+    {
+      routeId: 'NLB_7',
+      service_type: '1',
+      orig_e: 'Mui Wo Ferry Pier',
+      orig_tc: '梅窩碼頭',
+      dest_e: 'Tung Chung Station Bus Terminus',
+      dest_tc: '東涌站巴士總站',
+      stopsCount: 35
+    }
+  ];
+  const merged3m = buildMod.mergeRouteVariantsIntoGroup(nlb3mVariants, {
+    key: 'NLB_3M___Tung_Chung_Station_Bus_Terminus',
+    routeNo: '3M',
+    company: 'NLB'
+  });
+  assert.equal(merged3m.orig_e, 'Mui Wo Ferry Pier', 'Build-time merger must preserve main 35-stop Mui Wo Ferry Pier origin over 22-stop short-working');
+  assert.equal(merged3m.orig_tc, '梅窩碼頭');
+  assert.equal(merged3m.routeIds[0], 'NLB_7', 'Primary full-length routeId NLB_7 must lead routeIds');
+
+  // Verify runtime sanitizer fixes real public/bus_index.min.json immediately on unpack
+  const tdWin: any = {};
+  const tdSandbox: any = { window: tdWin, globalThis: tdWin, Math, Date, Number, String, Array, Map, Set, Object, parseFloat, parseInt, isFinite };
+  vm.createContext(tdSandbox);
+  vm.runInContext(fs.readFileSync('public/transit-data.js', 'utf8'), tdSandbox);
+  assert.equal(typeof tdWin.sanitizeGroupedRoutePrimaryLabels, 'function');
+
+  const realDb = JSON.parse(fs.readFileSync('public/bus_index.min.json', 'utf8'));
+  const dict = realDb.stopsDict || [];
+  const raw3m = realDb.groupedRoutes.find((g: any) => g.key === 'NLB_3M___Tung_Chung_Station_Bus_Terminus');
+  const raw11 = realDb.groupedRoutes.find((g: any) => g.key === 'NLB_11___Tung_Chung_Station_Bus_Terminus');
+  assert.ok(raw3m && raw11, 'Real bus_index.min.json must contain NLB 3M and NLB 11 groups');
+
+  const unpackIds = (ids: string[]) => {
+    const cache: Record<string, any[]> = {};
+    for (const rId of ids) {
+      const list = realDb.routeStopsCache[rId] || [];
+      cache[rId] = list.map((item: any, idx: number) => {
+        const d = Array.isArray(item) ? (dict[item[0]] || []) : [];
+        return {
+          stopId: String(d[0] ?? ''),
+          stopName_e: String(d[1] ?? ''),
+          name_tc: String(d[2] ?? ''),
+          seq: idx + 1
+        };
+      });
+    }
+    return cache;
+  };
+  const sampleGroups = [{ ...raw3m }, { ...raw11 }];
+  const sampleCache = unpackIds([...(raw3m.routeIds || []), ...(raw11.routeIds || [])]);
+  tdWin.sanitizeGroupedRoutePrimaryLabels(sampleGroups, sampleCache);
+  assert.equal(sampleGroups[0].orig_e, 'Mui Wo Ferry Pier', 'Runtime unpack sanitizer must restore Mui Wo Ferry Pier for NLB 3M');
+  assert.equal(sampleGroups[1].orig_e, 'Tai O', 'Runtime unpack sanitizer must restore Tai O for NLB 11');
+  assert.ok(!/\(from\s+/i.test(sampleGroups[0].orig_e), 'Sanitized 3M origin must not contain parenthetical (from ...)');
+
+  // 2. Load People Flow + Bus/MTR/Ferry adapters + FareLoadEngine + MapPeopleFlowOverlay in VM
+  const win: any = {
+    __HKO_WEATHER__: { temp: 22, dry: true, clear: true, rain: false, source: 'LIVE_SENTINEL' },
+    __HK_PUBLIC_HOLIDAYS__: new Set<string>()
+  };
+  const sandbox: any = {
+    window: win,
+    globalThis: win,
+    Math, Date, Number, String, Array, Map, Set, Object, WeakMap, JSON,
+    parseFloat, parseInt, isFinite, console
+  };
+  vm.createContext(sandbox);
+  for (const rel of [
+    'public/weathercoorelation.js',
+    'public/monthly_activity.js',
+    'public/hk-people-flow.js',
+    'public/mtrsurge.js',
+    'public/ferrysurge.js',
+    'public/bussurge.js',
+    'public/fare-load-engine.js',
+    'public/map-flow-overlay.js'
+  ]) {
+    vm.runInContext(fs.readFileSync(rel, 'utf8'), sandbox);
+  }
+
+  // 3. Stop #1 (Mui Wo Ferry Pier) at 19:30 with normal 30-min rural headway must NOT falsely flip to Likely Full or suggest boarding upstream
+  const sat1930 = Date.parse('2026-11-28T19:30:00+08:00');
+  const nlb3mGroup = {
+    routeNo: '3M',
+    company: 'NLB',
+    mode: 'BUS',
+    orig_e: 'Mui Wo Ferry Pier',
+    dest_e: 'Tung Chung Station Bus Terminus',
+    headwayMins: 30
+  };
+  const bus3mStop1 = win.estimateGlobalBusLoadRisk(nlb3mGroup, 0, {
+    stopName: 'Mui Wo Ferry Pier',
+    totalStops: 35,
+    obsHeadwaySec: 1800,
+    expectedHeadwaySec: 1800,
+    medianHeadwaySec: 1800,
+    ferryArrivals: [] // No recent ferry dock pulse
+  }, { temp: 22, dry: true, clear: true, rain: false }, sat1930);
+
+  assert.notEqual(bus3mStop1.level, 'HIGH_LOAD', `NLB 3M Stop #1 at 19:30 with normal 30m rural headway must not falsely flip to HIGH_LOAD, got ${bus3mStop1.level} (score=${bus3mStop1.score})`);
+  assert.ok(!/upstream/i.test(bus3mStop1.tip || ''), `Stop #1 must NEVER show upstream boarding advice, got: "${bus3mStop1.tip}"`);
+
+  const fareLoad3mStop1 = win.LoadFactorEngine.inferBusLoad({
+    group: nlb3mGroup,
+    stopObj: { stopName_e: 'Mui Wo Ferry Pier' },
+    origName: 'Mui Wo Ferry Pier',
+    destName: 'Tung Chung Station Bus Terminus',
+    stopIdx: 0,
+    totalStops: 35,
+    obsHeadwaySec: 1800,
+    schedHeadwaySec: 1800,
+    expectedHeadwaySec: 1800,
+    medianHeadwaySec: 1800,
+    corridorStatus: 'SMOOTH',
+    nowMs: sat1930
+  });
+  assert.notEqual(fareLoad3mStop1.level, 'HIGH_LOAD', `LoadFactorEngine.inferBusLoad at Stop #1 19:30 must not falsely mark Likely Full, got ${fareLoad3mStop1.labelEn}`);
+  assert.ok(!/upstream/i.test(fareLoad3mStop1.tipEn || ''), `LoadFactorEngine tip at Stop #1 must never recommend boarding upstream, got: "${fareLoad3mStop1.tipEn}"`);
+
+  // 4. Bus, MTR, and Ferry adapters all emit populated breakdown objects for Load X-Ray popover
+  const assertBreakdown = (bd: any, label: string) => {
+    assert.ok(bd && typeof bd === 'object', `${label} must emit a breakdown object`);
+    assert.ok(bd.mode === 'fused' || bd.mode === 'timetable', `${label} breakdown.mode must be fused or timetable`);
+    assert.ok(Array.isArray(bd.matchedVectors) && bd.matchedVectors.length > 0, `${label} breakdown.matchedVectors must be non-empty`);
+    assert.ok(bd.calendar && Number.isFinite(Number(bd.calendar.isoWeek)), `${label} breakdown.calendar must include isoWeek`);
+    assert.ok(bd.weather && typeof bd.weather.source === 'string', `${label} breakdown.weather must include source`);
+    assert.ok(bd.liveFactors && typeof bd.liveFactors === 'object', `${label} breakdown.liveFactors must be present`);
+    assert.ok(Number.isFinite(Number(bd.rawScore)), `${label} breakdown.rawScore must be numeric`);
+    assert.ok(typeof bd.tier === 'string' && bd.tier.length > 0, `${label} breakdown.tier must be non-empty`);
+  };
+
+  assertBreakdown(bus3mStop1.breakdown, 'Bus adapter');
+  assertBreakdown(fareLoad3mStop1.breakdown, 'FareLoadEngine bus wrapper');
+
+  const mtrEst = win.estimateMtrLoadStatus({
+    lineCode: 'TWL',
+    stationCode: 'ADM',
+    direction: 'DOWN',
+    nextTrains: [{ targetMs: sat1930 + 180000 }, { targetMs: sat1930 + 420000 }],
+    hkoWeather: win.__HKO_WEATHER__,
+    nowMs: Date.parse('2026-11-23T08:15:00+08:00')
+  });
+  assertBreakdown(mtrEst.breakdown, 'MTR adapter');
+
+  const ferryEst = win.estimateFerryLoadStatus({
+    operator: 'Sun Ferry',
+    routeName: 'Central - Mui Wo',
+    pierOrigin: 'Central Pier 6',
+    pierDest: 'Mui Wo Ferry Pier',
+    vesselType: 'FAST',
+    sailingIntervalMins: 40,
+    hasLiveApi: true,
+    hkoWeather: win.__HKO_WEATHER__,
+    nowMs: Date.parse('2026-11-28T15:00:00+08:00')
+  });
+  assertBreakdown(ferryEst.breakdown, 'Ferry adapter');
+
+  // 5. Map People Flow Overlay model across 5 canonical scenarios + non-mutation of live HKO state
+  const buildModel = win.MapPeopleFlowOverlay.buildPeopleFlowOverlayModel;
+  const dry22 = { temp: 22, dry: true, clear: true, rain: false };
+
+  const mSchool = buildModel(Date.parse('2026-11-23T15:00:00+08:00'), dry22);
+  assert.ok(mSchool.zones.length >= 10, 'Weekday school model must emit core HK pressure zones');
+  assert.ok(!mSchool.zones.some((z: any) => z.id === 'cemeteries_festival'), 'Cemeteries zone must remain hidden on normal weekday');
+  assert.ok(mSchool.arrows.some((a: any) => a.vector === 'SCHOOL_ZONE'), 'Weekday 15:00 must activate SCHOOL_ZONE directional arrow');
+
+  const mSatHike = buildModel(Date.parse('2026-11-28T15:00:00+08:00'), dry22);
+  const lantauSat = mSatHike.zones.find((z: any) => z.id === 'pak_kung_au_trails');
+  assert.ok(lantauSat && lantauSat.pressure >= 1.45, `Sat 15:00 Pak Kung Au / Nam Shan Trails must show red sunset hike pressure, got ${lantauSat?.pressure}`);
+  assert.ok(mSatHike.arrows.some((a: any) => a.vector === 'TO_TRAIL_EXPOSED'), 'Sat 15:00 must draw TO_TRAIL_EXPOSED directional arrow');
+
+  const mSunBorder = buildModel(Date.parse('2026-11-29T18:30:00+08:00'), dry22);
+  const borderSun = mSunBorder.zones.find((z: any) => z.id === 'northern_borders');
+  assert.ok(borderSun && borderSun.pressure >= 1.45, `Sun 18:30 Northern Borders must show red southbound return pressure, got ${borderSun?.pressure}`);
+  assert.ok(mSunBorder.arrows.some((a: any) => a.vector === 'FROM_BORDER_NORTH'), 'Sun 18:30 must draw FROM_BORDER_NORTH arrow');
+
+  const mChingMing = buildModel(Date.parse('2026-04-05T10:30:00+08:00'), dry22);
+  const cemZone = mChingMing.zones.find((z: any) => z.id === 'cemeteries_festival');
+  assert.ok(cemZone && cemZone.pressure > 0.3, 'Ching Ming festival must activate Cemeteries zone halo');
+  assert.ok(mChingMing.arrows.some((a: any) => a.vector === 'CEMETERY_FESTIVAL'), 'Ching Ming festival must activate CEMETERY_FESTIVAL directional arrow');
+
+  const mT8 = buildModel(Date.parse('2026-09-10T16:30:00+08:00'), win.MapPeopleFlowOverlay.PEOPLE_FLOW_WEATHER_OVERRIDES.T8.payload);
+  assert.ok(mT8.weather.preTyphoonEvacMod >= 1.5, `T8 scenario must raise preTyphoonEvacMod, got ${mT8.weather.preTyphoonEvacMod}`);
+  assert.ok(mT8.arrows.some((a: any) => a.vector === 'CBD_OUTBOUND'), 'T8 evacuation must activate CBD_OUTBOUND directional arrow');
+
+  // Toggling preview presets & resetting must NEVER mutate live window.__HKO_WEATHER__
+  const wxBefore = JSON.stringify(win.__HKO_WEATHER__);
+  win.setPeopleFlowPreset('T8');
+  assert.equal(win.MapPeopleFlowOverlay.PeopleFlowOverlayState.isPreview, true);
+  assert.equal(JSON.stringify(win.__HKO_WEATHER__), wxBefore, 'Preview preset must never mutate window.__HKO_WEATHER__');
+  win.resetPeopleFlowToLive();
+  assert.equal(win.MapPeopleFlowOverlay.PeopleFlowOverlayState.isPreview, false);
+  assert.equal(JSON.stringify(win.__HKO_WEATHER__), wxBefore, 'Reset to Live must leave window.__HKO_WEATHER__ intact');
+
+  // 6. UI shell constraints: no new top-header icon, no 5th main tab, detailMapFlowBtn beside detailMapTrafficBtn
+  const html = fs.readFileSync('index.html', 'utf8');
+  assert.ok(html.includes('id="detailMapFlowBtn"'), 'Route Detail map must expose off-by-default People Flow toggle pill beside Traffic & Cams');
+  const switcherMatch = html.match(/<div class="app-switcher">[\s\S]*?<\/div>\s*\n\s*<!-- 1\. MAIN VIEW -->/);
+  assert.ok(switcherMatch, 'Top app-switcher header must exist');
+  assert.ok(!/people\s*flow|flowBtn|simulator/i.test(switcherMatch[0]), 'Top app-switcher must NOT add any People Flow icon or 5th main tab');
+});
+
 
 
 

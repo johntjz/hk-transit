@@ -1329,6 +1329,11 @@ function onStopSearchInput() {
       ? `<div class="section-bar"><span>${t('busRoutesHeader')}</span></div>` +
         `<div style="margin:0 12px 12px 12px;border-radius:16px;overflow:hidden;border:1px solid var(--border-color);background:var(--bg-white);box-shadow:var(--card-shadow);">` + matchedRoutes.map(g => {
           const dispBadge = window.getDisplayRouteBadge ? window.getDisplayRouteBadge(g) : g.routeNo;
+          if (typeof window.hasSpecialVariantOriginLabel === 'function' && window.hasSpecialVariantOriginLabel(g.orig_e) && typeof window.resolvePrimaryRouteGroupEndpoints === 'function') {
+            const cleaned = window.resolvePrimaryRouteGroupEndpoints(g, routeStopsCache);
+            if (cleaned?.orig_e) g.orig_e = cleaned.orig_e;
+            if (cleaned?.orig_tc) g.orig_tc = cleaned.orig_tc;
+          }
           const origTxt = cleanFerryLabel(isZh && g.orig_tc ? g.orig_tc : g.orig_e);
           return `
             <div class="route-list-item ${g.mode === 'FERRY' ? 'ferry-card' : ''}" onclick="if(!isUserSelectingText()){clearStopSearchInput(); openRouteDetail('${escapeJsAttr(g.key)}');}">
@@ -1982,6 +1987,10 @@ function switchView(viewName, skipHistoryPush = false, forcePushSameView = false
 
   syncTopNavHighlights();
   updateTopBackButtonVisibility();
+  if (typeof closeLoadXrayPopover === 'function') closeLoadXrayPopover();
+  if (typeof window.syncPeopleFlowOverlaysAllMaps === 'function') {
+    window.syncPeopleFlowOverlaysAllMaps();
+  }
 
   if (viewName !== 'detail' && typeof window.hideDetailBackToStopPill === 'function') {
     window.hideDetailBackToStopPill();
@@ -1995,7 +2004,12 @@ function switchView(viewName, skipHistoryPush = false, forcePushSameView = false
       if (typeof fitTransferPlannerMapBounds === 'function') fitTransferPlannerMapBounds();
     });
   } else if (viewName === 'map') {
-    requestAnimationFrame(() => initAndRenderBrowseMap());
+    requestAnimationFrame(() => {
+      initAndRenderBrowseMap();
+      if (typeof window.syncPeopleFlowOverlaysAllMaps === 'function') {
+        window.syncPeopleFlowOverlaysAllMaps();
+      }
+    });
   } else if (viewName === 'fav') {
     renderFavList(false);
   }
@@ -2042,6 +2056,11 @@ function handleBackClick(fromUiButton = false) {
     }
 
     if (prev.view === 'main') {
+      // Returning to root main clears stale stack entries so < Back hides cleanly unless a manual stop is pinned
+      if (Date.now() >= userManualStopBrowseUntilMs) {
+        navHistoryStack.length = 0;
+      }
+      updateTopBackButtonVisibility();
       updateMainStopHeaderDisplay();
       renderMainNearby(true);
     } else if (prev.view === 'fav') {
@@ -3649,3 +3668,144 @@ window.openCompanionAppAtCurrentStop = function(target) {
 
   setInterval(syncEdgeTrafficCorridors, 60000);
 })();
+
+// ============================================================================
+// TAP-TO-INSPECT LOAD X-RAY POPOVER (Bus / Rail / Ferry)
+// ============================================================================
+let _activeLoadXrayPopoverEl = null;
+
+function closeLoadXrayPopover() {
+  if (_activeLoadXrayPopoverEl) {
+    try { _activeLoadXrayPopoverEl.remove(); } catch (e) {}
+    _activeLoadXrayPopoverEl = null;
+  }
+}
+
+function openLoadXrayPopover(xrayId, anchorEl) {
+  const reg = typeof window !== 'undefined' ? window.__LOAD_XRAY_REGISTRY__ : null;
+  const loadEst = reg && xrayId ? reg.get(xrayId) : null;
+  if (!loadEst) return;
+
+  // Toggle off if clicking the same pill again
+  if (_activeLoadXrayPopoverEl && _activeLoadXrayPopoverEl.dataset.xrayId === xrayId) {
+    closeLoadXrayPopover();
+    return;
+  }
+  closeLoadXrayPopover();
+
+  const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
+  const bd = loadEst.breakdown || {};
+  const tier = bd.tier || loadEst.level || loadEst.state || 'NORMAL';
+  const rawScore = Number.isFinite(Number(bd.rawScore)) ? Number(bd.rawScore) : (Number(loadEst.pct || 45) / 50);
+  const barPct = Math.max(8, Math.min(100, Math.round((rawScore / 2.2) * 100)));
+  const scoreColor = rawScore >= 1.45 ? '#dc2626' : (rawScore >= 1.0 ? '#d97706' : '#16a34a');
+  const pillLabel = isZh ? (loadEst.labelTc || '座位充足') : (loadEst.labelEn || 'Seats');
+  const modeTag = bd.mode === 'timetable'
+    ? (isZh ? '時間表估算' : 'Timetable')
+    : (isZh ? '實時融合模型' : 'Fused Live');
+
+  const vectors = Array.isArray(bd.matchedVectors) ? bd.matchedVectors.slice(0, 4) : [];
+  const vecHtml = vectors.length
+    ? vectors.map(v => {
+        const vVal = Number(v.value || 0);
+        const vCol = vVal >= 1.45 ? '#dc2626' : (vVal >= 1.0 ? '#d97706' : '#16a34a');
+        return `<div class="lx-row"><span class="lx-vec-key">${escapeHtml(v.key)}</span><strong style="color:${vCol};">${vVal.toFixed(2)}</strong></div>`;
+      }).join('')
+    : `<div class="lx-row"><span class="lx-muted">${isZh ? '基準需求模型' : 'Baseline demand profile'}</span><strong>${rawScore.toFixed(2)}</strong></div>`;
+
+  const cal = bd.calendar || {};
+  const wx = bd.weather || {};
+  const live = bd.liveFactors || {};
+  const calSummary = [
+    cal.isoWeek ? `W${cal.isoWeek}` : null,
+    cal.dayType || null,
+    cal.isSchoolDay ? (isZh ? '上課日' : 'School ON') : (cal.dayType === 'weekday' ? (isZh ? '非上課日' : 'School OFF') : null),
+    cal.isEveOfHoliday ? (isZh ? '假期前夕' : 'Holiday Eve') : null
+  ].filter(Boolean).join(' · ');
+
+  const wxSourceText = wx.source === 'HKO_LIVE'
+    ? (isZh ? 'HKO 實時' : 'HKO Live')
+    : (isZh ? '季節後備' : 'Fallback');
+  const wxSummary = `${wxSourceText} · Out ×${Number(wx.outdoorMod || 1).toFixed(2)} · Urb ×${Number(wx.urbanIndoorMod || 1).toFixed(2)}`;
+
+  const liveChips = [];
+  if (Number.isFinite(Number(live.stopIdx))) liveChips.push(`#${Number(live.stopIdx) + 1}`);
+  if (Number.isFinite(Number(live.gapAheadMin))) liveChips.push(`${isZh ? '前車距' : 'Gap'} ${Number(live.gapAheadMin)}m`);
+  if (Number.isFinite(Number(live.expectedHeadwayMin))) liveChips.push(`${isZh ? '班距' : 'Hw'} ${Number(live.expectedHeadwayMin)}m`);
+  if (Number.isFinite(Number(live.sailingIntervalMins))) liveChips.push(`${isZh ? '船距' : 'Sailing'} ${Number(live.sailingIntervalMins)}m`);
+  if (Number.isFinite(Number(live.liveDelayMins)) && Number(live.liveDelayMins) > 0) liveChips.push(`+${Number(live.liveDelayMins)}m delay`);
+  if (live.isDelay) liveChips.push(isZh ? '列車延誤' : 'Train Delay');
+  if (live.ferryPulseActive) liveChips.push(isZh ? '渡輪剛抵岸' : 'Ferry Dock Pulse');
+  if (live.vesselClass) liveChips.push(String(live.vesselClass));
+  if (live.corridorStatus && live.corridorStatus !== 'SMOOTH') liveChips.push(String(live.corridorStatus));
+
+  const tipText = isZh ? (loadEst.tipTc || '') : (loadEst.tipEn || '');
+
+  const pop = document.createElement('div');
+  pop.className = 'load-xray-popover';
+  pop.setAttribute('role', 'dialog');
+  pop.setAttribute('aria-label', isZh ? '載客量模型解析' : 'Load X-Ray Breakdown');
+  pop.dataset.xrayId = xrayId;
+  pop.innerHTML = `
+    <div class="lx-head">
+      <div class="lx-title-wrap">
+        <span class="load-pill ${escapeHtml(loadEst.cssClass)}">${escapeHtml(pillLabel)}</span>
+        <span class="lx-mode-tag">${escapeHtml(modeTag)}</span>
+      </div>
+      <button type="button" class="lx-close-btn" aria-label="Close" onclick="closeLoadXrayPopover()">✕</button>
+    </div>
+    <div class="lx-score-wrap">
+      <div class="lx-score-meta">
+        <span>${isZh ? '融合負荷分數' : 'Fused Load Score'}</span>
+        <strong style="color:${scoreColor};">${rawScore.toFixed(2)} · ${escapeHtml(String(tier))}</strong>
+      </div>
+      <div class="lx-score-track"><div class="lx-score-fill" style="width:${barPct}%;background:${scoreColor};"></div></div>
+    </div>
+    <div class="lx-section">
+      <div class="lx-sec-lbl">${isZh ? '活躍人流向量' : 'Active People-Flow Vectors'}</div>
+      ${vecHtml}
+    </div>
+    <div class="lx-section lx-meta-grid">
+      ${calSummary ? `<div class="lx-meta-line"><span>${isZh ? '日曆' : 'Calendar'}</span><span>${escapeHtml(calSummary)}</span></div>` : ''}
+      <div class="lx-meta-line"><span>${isZh ? '天氣' : 'Weather'}</span><span>${escapeHtml(wxSummary)}</span></div>
+      ${liveChips.length ? `<div class="lx-meta-line"><span>${isZh ? '實時參數' : 'Live'}</span><span>${escapeHtml(liveChips.join(' · '))}</span></div>` : ''}
+    </div>
+    ${tipText ? `<div class="lx-tip">${escapeHtml(tipText)}</div>` : ''}
+  `;
+
+  pop.addEventListener('click', (e) => e.stopPropagation());
+  document.body.appendChild(pop);
+  _activeLoadXrayPopoverEl = pop;
+
+  // Smart viewport clamping anchored near the tapped pill
+  const vw = window.innerWidth || 390;
+  const vh = window.innerHeight || 700;
+  const rect = anchorEl && typeof anchorEl.getBoundingClientRect === 'function'
+    ? anchorEl.getBoundingClientRect()
+    : { top: vh * 0.35, bottom: vh * 0.35 + 24, left: vw * 0.5, right: vw * 0.5 };
+  const popRect = pop.getBoundingClientRect();
+  let left = rect.left + (rect.width / 2) - (popRect.width / 2);
+  left = Math.max(10, Math.min(vw - popRect.width - 10, left));
+  let top = rect.bottom + 8;
+  if (top + popRect.height > vh - 14) {
+    top = Math.max(10, rect.top - popRect.height - 8);
+  }
+  pop.style.left = `${Math.round(left)}px`;
+  pop.style.top = `${Math.round(top)}px`;
+}
+
+if (typeof document !== 'undefined') {
+  document.addEventListener('click', (e) => {
+    if (!_activeLoadXrayPopoverEl) return;
+    if (_activeLoadXrayPopoverEl.contains(e.target)) return;
+    if (e.target && e.target.closest && e.target.closest('.load-pill-interactive')) return;
+    closeLoadXrayPopover();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && _activeLoadXrayPopoverEl) closeLoadXrayPopover();
+  });
+}
+
+window.openLoadXrayPopover = openLoadXrayPopover;
+window.closeLoadXrayPopover = closeLoadXrayPopover;
+

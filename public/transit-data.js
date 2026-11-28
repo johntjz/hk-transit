@@ -1012,6 +1012,167 @@ const SECTIONAL_FARE_REGISTRY = {
   }
 };
 
+const SPECIAL_VARIANT_LABEL_RE = /\(\s*(?:from|via|special|short|peak|express|morning|evening|school|holiday|由|經|特別|短途|晨早|特快)|(?:開|特別班次|短途)\s*\)/i;
+
+function hasSpecialVariantOriginLabel(label) {
+  return SPECIAL_VARIANT_LABEL_RE.test(String(label || '').trim());
+}
+
+function rankRouteVariant(variant) {
+  if (!variant || typeof variant !== 'object') return -1e9;
+  const svcType = String(variant.service_type ?? variant.serviceType ?? '').trim();
+  const origEn = String(variant.orig_en ?? variant.orig_e ?? '').trim();
+  const origTc = String(variant.orig_tc ?? '').trim();
+  const destEn = String(variant.dest_en ?? variant.dest_e ?? '').trim();
+  const destTc = String(variant.dest_tc ?? '').trim();
+  const stopCount = Array.isArray(variant.stops)
+    ? variant.stops.length
+    : (Number.isFinite(Number(variant.stopCount)) ? Number(variant.stopCount) : 0);
+
+  let score = 0;
+  // (a) Main service type strongly preferred over special variants
+  if (svcType === '1') score += 10000;
+  else if (svcType && svcType !== '1') score -= 4000;
+  if (variant.isSpecial === true || variant.isSpecialVariant === true) score -= 5000;
+
+  // (b) Longest stop count preferred (full-route terminus-to-terminus over short-working)
+  score += stopCount * 100;
+
+  // (c) Clean non-parenthetical origin/destination names preferred over "(from ...)" / "(Special)"
+  if (!hasSpecialVariantOriginLabel(origEn) && !hasSpecialVariantOriginLabel(origTc)) {
+    score += 3000;
+  } else {
+    score -= 3000;
+  }
+  if (!hasSpecialVariantOriginLabel(destEn) && !hasSpecialVariantOriginLabel(destTc)) {
+    score += 1200;
+  } else {
+    score -= 1200;
+  }
+
+  return score;
+}
+
+function selectPrimaryRouteVariant(variants) {
+  if (!Array.isArray(variants) || variants.length === 0) return null;
+  let best = variants[0];
+  let bestScore = rankRouteVariant(best);
+  for (let i = 1; i < variants.length; i++) {
+    const sc = rankRouteVariant(variants[i]);
+    if (sc > bestScore) {
+      best = variants[i];
+      bestScore = sc;
+    }
+  }
+  return best;
+}
+
+function _extractStopEndpointName(stopEntry, stopsDict) {
+  if (!stopEntry) return { en: '', tc: '' };
+  if (Array.isArray(stopEntry) && Array.isArray(stopsDict)) {
+    const d = stopsDict[stopEntry[0]] || [];
+    return { en: String(d[1] || '').trim(), tc: String(d[2] || '').trim() };
+  }
+  return {
+    en: String(stopEntry.stopName_e || stopEntry.name_en || stopEntry.en || '').trim(),
+    tc: String(stopEntry.name_tc || stopEntry.tc || '').trim()
+  };
+}
+
+function resolvePrimaryRouteGroupEndpoints(group, routeStopsCache, stopsDict) {
+  if (!group || typeof group !== 'object') return group;
+  const rIds = Array.isArray(group.routeIds) ? group.routeIds : [];
+  if (!rIds.length || !routeStopsCache || typeof routeStopsCache !== 'object') {
+    return group;
+  }
+
+  // Build candidate descriptors from every merged routeId and pick the highest-ranked primary variant
+  const candidates = [];
+  for (let i = 0; i < rIds.length; i++) {
+    const rid = rIds[i];
+    const list = routeStopsCache[rid];
+    if (!Array.isArray(list) || !list.length) continue;
+    const first = _extractStopEndpointName(list[0], stopsDict);
+    const last = _extractStopEndpointName(list[list.length - 1], stopsDict);
+    const svcMatch = String(rid).match(/_(\d+)$/);
+    candidates.push({
+      routeId: rid,
+      service_type: i === 0 ? '1' : (svcMatch ? svcMatch[1] : ''),
+      stopCount: list.length,
+      orig_e: first.en,
+      orig_tc: first.tc,
+      dest_e: last.en,
+      dest_tc: last.tc
+    });
+  }
+
+  if (!candidates.length) return group;
+  const primary = selectPrimaryRouteVariant(candidates);
+  if (!primary) return group;
+
+  const origEnRaw = String(group.orig_e || group.orig_en || '').trim();
+  const origTcRaw = String(group.orig_tc || '').trim();
+  const destEnRaw = String(group.dest_e || group.dest_en || '').trim();
+  const destTcRaw = String(group.dest_tc || '').trim();
+
+  let nextOrigEn = origEnRaw;
+  let nextOrigTc = origTcRaw;
+  let nextDestEn = destEnRaw;
+  let nextDestTc = destTcRaw;
+
+  // Defensively restore primary terminus name whenever a special/short-working label overwrote orig/dest
+  if ((hasSpecialVariantOriginLabel(origEnRaw) || !origEnRaw) && primary.orig_e && !hasSpecialVariantOriginLabel(primary.orig_e)) {
+    nextOrigEn = primary.orig_e;
+  }
+  if ((hasSpecialVariantOriginLabel(origTcRaw) || !origTcRaw) && primary.orig_tc && !hasSpecialVariantOriginLabel(primary.orig_tc)) {
+    nextOrigTc = primary.orig_tc;
+  }
+  if ((hasSpecialVariantOriginLabel(destEnRaw) || !destEnRaw) && primary.dest_e && !hasSpecialVariantOriginLabel(primary.dest_e)) {
+    nextDestEn = primary.dest_e;
+  }
+  if ((hasSpecialVariantOriginLabel(destTcRaw) || !destTcRaw) && primary.dest_tc && !hasSpecialVariantOriginLabel(primary.dest_tc)) {
+    nextDestTc = primary.dest_tc;
+  }
+
+  // Keep primary routeId first so downstream default stop sequences also prefer the full mainline variant
+  let nextRouteIds = rIds;
+  if (rIds.length > 1 && primary.routeId && rIds[0] !== primary.routeId) {
+    nextRouteIds = [primary.routeId, ...rIds.filter(id => id !== primary.routeId)];
+  }
+
+  if (
+    nextOrigEn === origEnRaw &&
+    nextOrigTc === origTcRaw &&
+    nextDestEn === destEnRaw &&
+    nextDestTc === destTcRaw &&
+    nextRouteIds === rIds
+  ) {
+    return group;
+  }
+
+  return {
+    ...group,
+    orig_e: nextOrigEn,
+    ...(group.orig_en !== undefined ? { orig_en: nextOrigEn } : {}),
+    orig_tc: nextOrigTc,
+    dest_e: nextDestEn,
+    ...(group.dest_en !== undefined ? { dest_en: nextDestEn } : {}),
+    dest_tc: nextDestTc,
+    routeIds: nextRouteIds
+  };
+}
+
+function sanitizeGroupedRoutePrimaryLabels(groupedRoutes, routeStopsCache, stopsDict) {
+  if (!Array.isArray(groupedRoutes)) return [];
+  for (let i = 0; i < groupedRoutes.length; i++) {
+    const resolved = resolvePrimaryRouteGroupEndpoints(groupedRoutes[i], routeStopsCache, stopsDict);
+    if (resolved && resolved !== groupedRoutes[i]) {
+      Object.assign(groupedRoutes[i], resolved);
+    }
+  }
+  return groupedRoutes;
+}
+
 if (typeof window !== 'undefined') {
   window.__MTR_LINE_COLORS__ = MTR_LINE_COLORS;
   window.__GET_ROUTE_COLOR_HEX__ = getRouteColorHex;
@@ -1038,6 +1199,11 @@ if (typeof window !== 'undefined') {
   window.MAJOR_BBI_HUBS = MAJOR_BBI_HUBS;
   window.HK_STRATEGIC_CORRIDORS = HK_STRATEGIC_CORRIDORS;
   window.SECTIONAL_FARE_REGISTRY = SECTIONAL_FARE_REGISTRY;
+  window.hasSpecialVariantOriginLabel = hasSpecialVariantOriginLabel;
+  window.rankRouteVariant = rankRouteVariant;
+  window.selectPrimaryRouteVariant = selectPrimaryRouteVariant;
+  window.resolvePrimaryRouteGroupEndpoints = resolvePrimaryRouteGroupEndpoints;
+  window.sanitizeGroupedRoutePrimaryLabels = sanitizeGroupedRoutePrimaryLabels;
 }
 
 if (typeof module !== 'undefined' && module.exports) {
@@ -1067,6 +1233,11 @@ if (typeof module !== 'undefined' && module.exports) {
     MTR_EXITS_SEED,
     MAJOR_BBI_HUBS,
     HK_STRATEGIC_CORRIDORS,
-    SECTIONAL_FARE_REGISTRY
+    SECTIONAL_FARE_REGISTRY,
+    hasSpecialVariantOriginLabel,
+    rankRouteVariant,
+    selectPrimaryRouteVariant,
+    resolvePrimaryRouteGroupEndpoints,
+    sanitizeGroupedRoutePrimaryLabels
   };
 }

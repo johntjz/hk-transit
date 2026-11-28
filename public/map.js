@@ -1089,6 +1089,9 @@ function drawRouteOnMap(group, activeStopIdx = 0) {
     } catch (e) {}
   }
   renderTrafficOverlayOnMap(window.mapInstance, true);
+  if (typeof window.syncPeopleFlowOverlayOnMap === 'function') {
+    window.syncPeopleFlowOverlayOnMap(window.mapInstance);
+  }
   if (isBusRoute) {
     syncDetailRouteBusSpeedSegments(group, stops);
   }
@@ -1253,6 +1256,9 @@ function initAndRenderBrowseMap() {
     window.browseMapInstance = L.map('browse-map-canvas', { zoomControl: false, preferCanvas: true }).setView([centerLat, centerLon], 15);
     window.attachStandardMapLayers(window.browseMapInstance);
     attachGlobalTrafficControlToBrowseMap(window.browseMapInstance);
+    if (typeof window.attachPeopleFlowOverlayToMap === 'function') {
+      window.attachPeopleFlowOverlayToMap(window.browseMapInstance);
+    }
     window.browseMapInstance.on('moveend', () => {
       scheduleBrowseMapPinDiff();
       if (window.globalTrafficLayerEnabled) {

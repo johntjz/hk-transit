@@ -146,6 +146,7 @@
     const vec = cityFlow.vectors || {};
     let flowPressure = 0.0;
     let primaryVector = mapping.primaryVector || 'ISLAND_OUTBOUND';
+    const matchedVectors = [];
 
     if (mapping.vectors && mapping.vectors.length > 0) {
       // Outlying island ferries use strictly their directional ISLAND_OUTBOUND / ISLAND_INBOUND vector
@@ -157,6 +158,7 @@
           continue;
         }
         const rawP = Number(vec[v.key] || 0) * Number(v.weight || 1.0);
+        matchedVectors.push({ key: v.key, value: Number(rawP.toFixed(2)) });
         if (rawP > flowPressure) {
           flowPressure = rawP;
           primaryVector = v.key;
@@ -167,14 +169,17 @@
         for (let i = 0; i < mapping.vectors.length; i++) {
           const v = mapping.vectors[i];
           const rawP = Number(vec[v.key] || 0) * Number(v.weight || 1.0);
+          matchedVectors.push({ key: v.key, value: Number(rawP.toFixed(2)) });
           if (rawP > flowPressure) {
             flowPressure = rawP;
             primaryVector = v.key;
           }
         }
       }
+      matchedVectors.sort((a, b) => b.value - a.value);
     } else {
       flowPressure = Math.max(Number(vec.CBD_INBOUND || 0), Number(vec.CBD_OUTBOUND || 0), 0.35);
+      matchedVectors.push({ key: primaryVector, value: Number(flowPressure.toFixed(2)) });
     }
 
     // Active T8+ suspension suppresses marine ferry operations cleanly
@@ -244,6 +249,48 @@
       }
     }
 
+    const cal = cityFlow.calendar || {};
+    const wxSummaryParts = [];
+    if (p.hkoWeather) {
+      if (Number.isFinite(Number(p.hkoWeather.temp))) wxSummaryParts.push(`${Math.round(Number(p.hkoWeather.temp))}°C`);
+      if (p.hkoWeather.typhoon || p.hkoWeather.tcSignal) wxSummaryParts.push(String(p.hkoWeather.tcSignal || 'Typhoon'));
+      else if (p.hkoWeather.heavyRain) wxSummaryParts.push('Heavy Rain');
+      else if (p.hkoWeather.rain || p.hkoWeather.rainAdvisory) wxSummaryParts.push('Rain');
+      else wxSummaryParts.push('Dry');
+    }
+    const breakdown = {
+      mode: hasLiveApi ? 'fused' : 'timetable',
+      matchedVectors: matchedVectors.slice(0, 4),
+      calendar: {
+        isoWeek: cal.isoWeek || 1,
+        dayType: cal.dayType || 'weekday',
+        isSchoolDay: Boolean(cal.isSchoolDay),
+        isEveOfHoliday: Boolean(cal.isEveOfHoliday),
+        hourFloat: cal.hourFloat ?? 12,
+        dateStr: cal.dateStr || ''
+      },
+      weather: {
+        source: p.hkoWeather ? 'Live' : 'Fallback',
+        outdoorMod: Number(wx.outdoorMod || 1.0),
+        urbanIndoorMod: Number(wx.urbanIndoorMod || 1.0),
+        preTyphoonEvacMod: Number(wx.preTyphoonEvacMod || 1.0),
+        summary: p.hkoWeather ? wxSummaryParts.join(' · ') : 'Seasonal baseline (no live HKO)'
+      },
+      liveFactors: {
+        operator,
+        vesselClass,
+        vesselMod,
+        sailingIntervalMins: intervalMins,
+        intervalMod,
+        liveDelayMins,
+        delayMod,
+        isLiveDelayAmplified,
+        hasLiveApi
+      },
+      rawScore: score,
+      tier: state
+    };
+
     return {
       mode: 'FERRY',
       fusionMode: hasLiveApi ? 'SENSOR_FUSED' : 'TIMETABLE_ONLY',
@@ -269,7 +316,8 @@
       primaryVector,
       tipEn,
       tipTc,
-      cityFlow
+      cityFlow,
+      breakdown
     };
   }
 

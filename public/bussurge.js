@@ -227,9 +227,43 @@
     return null;
   }
 
+  const RURAL_LOW_FREQ_ROUTE_RE = /^(1|2|3M|4|7S|11|11A|21|23|34|36|94|96R|99|289R)$/i;
+  const RURAL_CORRIDOR_RE = /mui\s*wo|tai\s*o|ngong\s*ping|pak\s*kung\s*au|pui\s*o|cheung\s*sha|tong\s*fuk|shui\s*hau|sai\s*kung|wong\s*shek|shek\s*o|stanley|梅窩|大澳|昂坪|伯公坳|貝澳|長沙|塘福|水口|西貢|黃石|石澳|赤柱/i;
+
+  function _isRuralLowFrequencyBusRoute(routeGroup, entry) {
+    const g = routeGroup && typeof routeGroup === 'object' ? routeGroup : {};
+    const e = entry && typeof entry === 'object' ? entry : {};
+    const co = String(g.company || e.company || '').trim().toUpperCase();
+    const rNo = String(g.routeNo || e.routeNo || '').trim().toUpperCase();
+    if (co === 'NLB' && !/^B\d/i.test(rNo)) return true;
+    if (RURAL_LOW_FREQ_ROUTE_RE.test(rNo)) return true;
+    const text = [g.orig_en, g.orig_e, g.orig_tc, g.dest_en, g.dest_e, g.dest_tc, e.stopName, e.name_tc]
+      .filter(Boolean)
+      .join(' ');
+    return RURAL_CORRIDOR_RE.test(text);
+  }
+
+  function _resolveExpectedHeadwaySec(entry, routeGroup) {
+    const e = entry && typeof entry === 'object' ? entry : {};
+    const g = routeGroup && typeof routeGroup === 'object' ? routeGroup : {};
+    const isRural = _isRuralLowFrequencyBusRoute(g, e);
+    const minRuralSec = isRural ? 1500 : 300; // 25m baseline for rural/Lantau NLB routes (20–30m scheduled)
+
+    const candidates = [
+      Number(e.expectedHeadwaySec),
+      Number(e.medianHeadwaySec),
+      Number(e.schedHeadwaySec),
+      Number(g.headwayMins) > 0 ? Number(g.headwayMins) * 60 : NaN
+    ].filter((v) => Number.isFinite(v) && v > 0);
+
+    const baseSec = candidates.length > 0 ? Math.max(...candidates) : (isRural ? 1800 : 720);
+    return Math.max(minRuralSec, baseSec);
+  }
+
   /**
    * Stop-Position Progress Curve (stopIdx / totalStops):
-   * - Origin / first 15% stops: easier to board (0.65)
+   * - Origin terminus (stopIdx === 0): strongly damped (0.55) against false Likely Full flips
+   * - First 15% stops: easier to board (0.65)
    * - Mid-corridor (25%–75%): peak accumulated passenger load (1.15)
    * - Post-dropoff (>85%): lighter remaining load (0.78)
    * Smooth linear transitions between bands.
@@ -237,9 +271,9 @@
   function computeStopPositionMod(stopIdx, totalStops) {
     const idx = Number(stopIdx);
     if (!Number.isFinite(idx) || idx < 0) return 1.0;
+    if (idx === 0) return 0.55;
     let total = Number(totalStops);
     if (!Number.isFinite(total) || total <= 1) {
-      if (idx === 0) return 0.65;
       total = Math.max(16, idx + 8);
     }
     const progress = Math.max(0, Math.min(1, idx / Math.max(1, total - 1)));
@@ -257,8 +291,8 @@
   /**
    * Headway-Gap Bunching Kinematics:
    * - Trailing bus arriving <= 4 min behind lead bus: gets significant load relief (headwayMod < 0.75).
-   * - Lead bus after wide gap (>= 18 min on frequent route or >= 1.75x scheduled headway):
-   *   amplifies load (headwayMod up to 1.55).
+   * - Lead bus after wide gap: ONLY amplifies when liveGap >= Math.max(20m, expectedHeadway * 1.6)
+   *   so normal 20–30m rural/Lantau scheduled headways (e.g. NLB 3M, 1, 11) never trigger false gap surges.
    * - Lead bus with bunched follower <= 4 min behind: surfaces nextBusGapMins decision tip.
    */
   function computeHeadwayBunchingMod(etaEntry, routeGroup) {
@@ -268,9 +302,8 @@
     const nextBusGapSec = Number.isFinite(Number(entry.nextBusGapSec)) ? Number(entry.nextBusGapSec) : null;
     const rawGapAhead = entry.gapAheadSec !== undefined ? entry.gapAheadSec : entry.obsHeadwaySec;
     const gapAheadSec = Number.isFinite(Number(rawGapAhead)) && Number(rawGapAhead) > 0 ? Number(rawGapAhead) : null;
-    const schedHwSec = Number.isFinite(Number(entry.schedHeadwaySec)) && Number(entry.schedHeadwaySec) > 0
-      ? Number(entry.schedHeadwaySec)
-      : (Number(routeGroup?.headwayMins) > 0 ? Number(routeGroup.headwayMins) * 60 : 720);
+    const expectedHwSec = _resolveExpectedHeadwaySec(entry, routeGroup);
+    const wideGapThresholdSec = Math.max(1200, expectedHwSec * 1.6);
 
     // Trailing bunched bus (following <= 4 min behind the bus in front)
     const isTrailing = (etaIdx !== null && etaIdx >= 1) || Boolean(entry.isTrailingBunched);
@@ -279,7 +312,10 @@
         headwayMod: prevBusGapSec <= 120 ? 0.55 : 0.68,
         isBunchedTrailing: true,
         isWideGap: false,
-        gapRatio: Number((prevBusGapSec / Math.max(300, schedHwSec)).toFixed(2)),
+        gapRatio: Number((prevBusGapSec / Math.max(300, expectedHwSec)).toFixed(2)),
+        expectedHeadwaySec: expectedHwSec,
+        wideGapThresholdSec,
+        obsGapSec: gapAheadSec,
         nextBusGapMins: null
       };
     }
@@ -289,13 +325,12 @@
     let gapRatio = 1.0;
 
     if (gapAheadSec !== null) {
-      gapRatio = gapAheadSec / Math.max(300, schedHwSec);
-      const isFrequentRoute = schedHwSec <= 900;
-      if ((isFrequentRoute && gapAheadSec >= 1080) || (gapAheadSec >= 900 && gapRatio >= 1.75)) {
-        headwayMod = Number(Math.min(1.55, 1.0 + Math.min(0.55, (gapRatio - 1.0) * 0.45)).toFixed(3));
+      gapRatio = gapAheadSec / Math.max(300, expectedHwSec);
+      if (gapAheadSec >= wideGapThresholdSec) {
+        headwayMod = Number(Math.min(1.55, 1.0 + Math.min(0.55, Math.max(0.22, (gapRatio - 1.0) * 0.45))).toFixed(3));
         isWideGap = true;
-      } else if (gapAheadSec >= 900 && gapRatio >= 1.45) {
-        headwayMod = Number(Math.min(1.30, 1.0 + (gapRatio - 1.0) * 0.30).toFixed(3));
+      } else if (gapAheadSec >= Math.max(1080, expectedHwSec * 1.45)) {
+        headwayMod = Number(Math.min(1.22, 1.0 + (gapRatio - 1.0) * 0.25).toFixed(3));
       }
     }
 
@@ -309,7 +344,37 @@
       isBunchedTrailing: false,
       isWideGap,
       gapRatio: Number(gapRatio.toFixed(2)),
+      expectedHeadwaySec: expectedHwSec,
+      wideGapThresholdSec,
+      obsGapSec: gapAheadSec,
       nextBusGapMins
+    };
+  }
+
+  function _summarizeWeatherCondition(hkoWeather, cityFlow) {
+    const wx = cityFlow?.weather || { outdoorMod: 1.0, urbanIndoorMod: 1.0, preTyphoonEvacMod: 1.0 };
+    if (!hkoWeather) {
+      return {
+        source: 'Fallback',
+        outdoorMod: Number(wx.outdoorMod || 1.0),
+        urbanIndoorMod: Number(wx.urbanIndoorMod || 1.0),
+        preTyphoonEvacMod: Number(wx.preTyphoonEvacMod || 1.0),
+        summary: 'Seasonal baseline (no live HKO)'
+      };
+    }
+    const parts = [];
+    if (Number.isFinite(Number(hkoWeather.temp))) parts.push(`${Math.round(Number(hkoWeather.temp))}°C`);
+    if (hkoWeather.typhoon || hkoWeather.tcSignal) parts.push(String(hkoWeather.tcSignal || 'Typhoon'));
+    else if (hkoWeather.preTyphoon || hkoWeather.preT8) parts.push('Pre-T8');
+    else if (hkoWeather.heavyRain) parts.push('Heavy Rain');
+    else if (hkoWeather.rain || hkoWeather.rainAdvisory) parts.push('Rain');
+    else parts.push('Dry');
+    return {
+      source: 'Live',
+      outdoorMod: Number(wx.outdoorMod || 1.0),
+      urbanIndoorMod: Number(wx.urbanIndoorMod || 1.0),
+      preTyphoonEvacMod: Number(wx.preTyphoonEvacMod || 1.0),
+      summary: parts.join(' · ')
     };
   }
 
@@ -396,10 +461,12 @@
     // Pull baseline demand exclusively from People Flow Simulator vectors
     let flowPressure = 0.0;
     let activeVector = mapping.primaryVector || 'URBAN_GENERAL';
+    const matchedVectors = [];
     if (mapping.vectors && mapping.vectors.length > 0) {
       for (let i = 0; i < mapping.vectors.length; i++) {
         const v = mapping.vectors[i];
         const rawP = Number(cityFlow.vectors[v.key] || 0) * Number(v.weight || 1.0);
+        matchedVectors.push({ key: v.key, value: Number(rawP.toFixed(2)) });
         if (rawP > flowPressure) {
           flowPressure = rawP;
           activeVector = v.key;
@@ -419,20 +486,23 @@
           activeVector = minsOfDay >= 1320 ? 'FROM_AIRPORT_AWE' : 'TO_AIRPORT_AWE';
         }
       }
+      matchedVectors.sort((a, b) => b.value - a.value);
     } else {
       // Unspecialized urban corridor fallback
       flowPressure = 0.45 * Number(cityFlow.weather?.urbanIndoorMod || 1.0);
+      matchedVectors.push({ key: 'URBAN_GENERAL', value: Number(flowPressure.toFixed(2)) });
     }
     flowPressure = Number(flowPressure.toFixed(3));
 
     // Bus kinematics: Stop-Position Progress Curve + Headway-Gap Bunching + Skip-Stop Velocity
+    const numStopIdx = Number.isFinite(Number(stopIdx)) ? Number(stopIdx) : 0;
+    const isOriginTerminus = numStopIdx <= 0;
     const totalStops = entry.totalStops ?? group.totalStops ?? null;
-    const stopPositionMod = computeStopPositionMod(stopIdx, totalStops);
+    const stopPositionMod = computeStopPositionMod(numStopIdx, totalStops);
     const bunching = computeHeadwayBunchingMod(entry, group);
     const headwayMod = bunching.headwayMod;
 
     // Cross-modal Mui Wo Ferry-to-Bus Pulse (NLB 1, 2, 3M departing from Mui Wo Pier right after ferry docks)
-    const numStopIdx = Number.isFinite(Number(stopIdx)) ? Number(stopIdx) : 0;
     const isMuiWoPierOriginStop = numStopIdx <= 2 && (
       /mui\s*wo|梅窩/i.test(originText) ||
       /mui\s*wo|梅窩/i.test(stopText)
@@ -463,79 +533,102 @@
     }
 
     const etaSpacing = _extractEtaSpacingSec(entry);
-    const hasFastSkipStop = etaSpacing !== null && etaSpacing >= 0 && etaSpacing < 60;
+    const hasFastSkipStop = !isOriginTerminus && etaSpacing !== null && etaSpacing >= 0 && etaSpacing < 60;
 
     // When a high-load Central -> Mui Wo ferry just docked, origin boarding at Mui Wo Pier
     // bypasses the usual quiet-origin discount (300-400 passengers hit Stop #1 simultaneously)
     const effectiveStopMod = ferryPulse.active ? Math.max(stopPositionMod, 1.0) : stopPositionMod;
     const score = Number((flowPressure * effectiveStopMod * headwayMod * (ferryPulse.active ? ferryPulse.pulseMultiplier : 1.0)).toFixed(3));
 
-    const meta = {
-      score,
-      flowPressure,
-      primaryVector: activeVector,
-      vectorKeys: mapping.vectorKeys || [],
-      stopPositionMod: effectiveStopMod,
-      headwayMod,
-      ferryPulse,
-      isBunchedTrailing: bunching.isBunchedTrailing,
-      isWideGap: bunching.isWideGap,
-      nextBusGapMins: bunching.nextBusGapMins,
-      weatherMultiplier,
-      seasonalMultiplier,
-      timeMultiplier,
-      aweMultiplier,
-      dayType: cal.dayType,
-      isHoliday: cal.isHoliday,
-      isEveOfHoliday: cal.isEveOfHoliday,
-      isSchoolDay: cal.isSchoolDay,
-      isLeisureRoute,
-      hasFastSkipStop,
-      cityFlow
+    const stopProgressPct = Number.isFinite(Number(totalStops)) && Number(totalStops) > 1
+      ? Math.round(Math.max(0, Math.min(1, numStopIdx / (Number(totalStops) - 1))) * 100)
+      : (isOriginTerminus ? 0 : null);
+
+    const buildResult = (level, label, labelTc, tip, tipTc) => {
+      const breakdown = {
+        mode: 'fused',
+        matchedVectors: matchedVectors.slice(0, 4),
+        calendar: {
+          isoWeek: cal.isoWeek,
+          dayType: cal.dayType,
+          isSchoolDay: Boolean(cal.isSchoolDay),
+          isEveOfHoliday: Boolean(cal.isEveOfHoliday),
+          hourFloat: cal.hourFloat,
+          dateStr: cal.dateStr || ''
+        },
+        weather: _summarizeWeatherCondition(hkoWeather, cityFlow),
+        liveFactors: {
+          stopIdx: numStopIdx,
+          totalStops: Number.isFinite(Number(totalStops)) ? Number(totalStops) : null,
+          stopProgressPct,
+          stopPositionMod: effectiveStopMod,
+          obsHeadwayMins: bunching.obsGapSec !== null ? Number((bunching.obsGapSec / 60).toFixed(1)) : null,
+          expectedHeadwayMins: Number((bunching.expectedHeadwaySec / 60).toFixed(1)),
+          headwayMod,
+          isWideGap: bunching.isWideGap,
+          isBunchedTrailing: bunching.isBunchedTrailing,
+          etaSpacingSec: etaSpacing,
+          hasFastSkipStop,
+          ferryPulseActive: Boolean(ferryPulse.active),
+          ferryPulseMinsAgo: ferryPulse.minsSinceDock
+        },
+        rawScore: score,
+        tier: level
+      };
+      return {
+        level,
+        label,
+        labelTc,
+        tip,
+        tipTc,
+        score,
+        flowPressure,
+        primaryVector: activeVector,
+        vectorKeys: mapping.vectorKeys || [],
+        stopPositionMod: effectiveStopMod,
+        headwayMod,
+        ferryPulse,
+        isBunchedTrailing: bunching.isBunchedTrailing,
+        isWideGap: bunching.isWideGap,
+        expectedHeadwaySec: bunching.expectedHeadwaySec,
+        nextBusGapMins: bunching.nextBusGapMins,
+        weatherMultiplier,
+        seasonalMultiplier,
+        timeMultiplier,
+        aweMultiplier,
+        dayType: cal.dayType,
+        isHoliday: cal.isHoliday,
+        isEveOfHoliday: cal.isEveOfHoliday,
+        isSchoolDay: cal.isSchoolDay,
+        isLeisureRoute,
+        hasFastSkipStop,
+        cityFlow,
+        breakdown
+      };
     };
 
     // 1. Bunched trailing bus relief: cap below HIGH_LOAD and prefer Seats / Standing
     if (bunching.isBunchedTrailing) {
       if (score >= 1.45) {
-        return {
-          level: 'MODERATE',
-          label: 'Standing',
-          labelTc: '企位',
-          tip: 'Bunched trailing bus — lighter load than bus ahead.',
-          tipTc: '緊隨前車班次 — 載客量較前車鬆動。',
-          ...meta
-        };
+        return buildResult(
+          'MODERATE',
+          'Standing',
+          '企位',
+          'Bunched trailing bus — lighter load than bus ahead.',
+          '緊隨前車班次 — 載客量較前車鬆動。'
+        );
       }
-      return {
-        level: 'NORMAL',
-        label: 'Seats',
-        labelTc: '有位',
-        tip: '',
-        tipTc: '',
-        ...meta
-      };
+      return buildResult('NORMAL', 'Seats', '有位', '', '');
     }
 
-    // 2. HIGH_LOAD: high people-flow pressure fused with skip-stop velocity, severe headway gap, OR Mui Wo ferry arrival pulse
-    if ((score >= 1.35 && hasFastSkipStop) || (bunching.isWideGap && score >= 1.55) || (ferryPulse.active && score >= 1.65)) {
-      const tip = bunching.nextBusGapMins
-        ? `Next bus ${bunching.nextBusGapMins}m behind likely has space`
-        : (ferryPulse.active && ferryPulse.tipEn ? ferryPulse.tipEn : 'Consider boarding upstream.');
-      const tipTc = bunching.nextBusGapMins
-        ? `下班車${bunching.nextBusGapMins}分鐘後到，較大機會有位`
-        : (ferryPulse.active && ferryPulse.tipTc ? ferryPulse.tipTc : '建議改於上游總站上車。');
-      return {
-        level: 'HIGH_LOAD',
-        label: '⚠️ Likely Full',
-        labelTc: '⚠️ 易滿座',
-        tip,
-        tipTc,
-        ...meta
-      };
-    }
+    // 2. HIGH_LOAD:
+    //    - At origin terminus (Stop #1), strongly damped: ONLY flip to HIGH_LOAD on active ferry pulse OR extreme terminus crush
+    //    - Downstream stops: high people-flow fused with skip-stop velocity, severe headway gap, or ferry pulse
+    const highLoadTriggered = isOriginTerminus
+      ? ((ferryPulse.active && score >= 1.65) || (bunching.isWideGap && score >= 1.85))
+      : ((score >= 1.35 && hasFastSkipStop) || (bunching.isWideGap && score >= 1.55) || (ferryPulse.active && score >= 1.65));
 
-    // 3. MODERATE: elevated vector pressure, wide headway gap, or active Mui Wo ferry pulse
-    if (score >= 1.15 || (bunching.isWideGap && score >= 0.95) || (ferryPulse.active && score >= 1.05)) {
+    if (highLoadTriggered) {
       let tip = '';
       let tipTc = '';
       if (bunching.nextBusGapMins) {
@@ -544,6 +637,37 @@
       } else if (ferryPulse.active && ferryPulse.tipEn) {
         tip = ferryPulse.tipEn;
         tipTc = ferryPulse.tipTc;
+      } else if (isOriginTerminus) {
+        // NEVER suggest boarding upstream at Stop #1 terminus
+        tip = 'Queue early at terminus.';
+        tipTc = '總站候車人數較多，建議提早排隊。';
+      } else {
+        tip = 'Consider boarding upstream.';
+        tipTc = '建議改於上游總站上車。';
+      }
+      return buildResult('HIGH_LOAD', '⚠️ Likely Full', '⚠️ 易滿座', tip, tipTc);
+    }
+
+    // 3. MODERATE: elevated vector pressure, wide headway gap, or active Mui Wo ferry pulse
+    const moderateTriggered = isOriginTerminus
+      ? (score >= 1.25 || (bunching.isWideGap && score >= 1.15) || (ferryPulse.active && score >= 1.05))
+      : (score >= 1.15 || (bunching.isWideGap && score >= 0.95) || (ferryPulse.active && score >= 1.05));
+
+    if (moderateTriggered) {
+      let tip = '';
+      let tipTc = '';
+      if (bunching.nextBusGapMins) {
+        tip = `Next bus ${bunching.nextBusGapMins}m behind likely has space`;
+        tipTc = `下班車${bunching.nextBusGapMins}分鐘後到，較大機會有位`;
+      } else if (ferryPulse.active && ferryPulse.tipEn) {
+        tip = ferryPulse.tipEn;
+        tipTc = ferryPulse.tipTc;
+      } else if (isOriginTerminus) {
+        // Only surface terminus tip when extreme terminus crush or active ferry pulse applies; otherwise omit
+        if (score >= 1.45 && bunching.isWideGap) {
+          tip = 'Queue early at terminus.';
+          tipTc = '總站候車人數較多，建議提早排隊。';
+        }
       } else if (aweMultiplier > 1.0) {
         tip = 'AsiaWorld-Expo event crowd — expect fuller A/E buses.';
         tipTc = '亞博館大型活動人潮 — A/E線班次可能較滿。';
@@ -560,24 +684,10 @@
         tip = 'Busy corridor window — expect fuller buses.';
         tipTc = '繁忙時段 — 班次可能較滿。';
       }
-      return {
-        level: 'MODERATE',
-        label: 'Standing',
-        labelTc: '企位',
-        tip,
-        tipTc,
-        ...meta
-      };
+      return buildResult('MODERATE', 'Standing', '企位', tip, tipTc);
     }
 
-    return {
-      level: 'NORMAL',
-      label: 'Seats',
-      labelTc: '有位',
-      tip: '',
-      tipTc: '',
-      ...meta
-    };
+    return buildResult('NORMAL', 'Seats', '有位', '', '');
   }
 
   const BusSurgeEngine = {

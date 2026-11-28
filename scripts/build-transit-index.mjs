@@ -1,5 +1,86 @@
 import fs from 'fs';
+import path from 'path';
 import vm from 'vm';
+import { fileURLToPath } from 'url';
+
+const SPECIAL_VARIANT_LABEL_RE = /\(\s*(?:from|via|special|short|peak|express|morning|evening|school|holiday|由|經|特別|短途|晨早|特快)|(?:開|特別班次|短途)\s*\)/i;
+
+export function hasSpecialVariantLabel(label) {
+  return SPECIAL_VARIANT_LABEL_RE.test(String(label || '').trim());
+}
+
+export function rankRouteVariant(variant) {
+  if (!variant || typeof variant !== 'object') return -1e9;
+  const svcType = String(variant.service_type ?? variant.serviceType ?? '').trim();
+  const origEn = String(variant.orig_en ?? variant.orig_e ?? '').trim();
+  const origTc = String(variant.orig_tc ?? '').trim();
+  const destEn = String(variant.dest_en ?? variant.dest_e ?? '').trim();
+  const destTc = String(variant.dest_tc ?? '').trim();
+  const stopCount = Array.isArray(variant.stops)
+    ? variant.stops.length
+    : (Number.isFinite(Number(variant.stopCount)) ? Number(variant.stopCount) : 0);
+
+  let score = 0;
+  // (a) Main service type preferred over special/short-working departures
+  if (svcType === '1') score += 10000;
+  else if (svcType && svcType !== '1') score -= 4000;
+  if (variant.isSpecial === true || variant.isSpecialVariant === true) score -= 5000;
+
+  // (b) Longest stop count preferred (full terminus-to-terminus mainline)
+  score += stopCount * 100;
+
+  // (c) Clean non-parenthetical origin/destination names preferred over "(from ...)" / "(Special)"
+  if (!hasSpecialVariantLabel(origEn) && !hasSpecialVariantLabel(origTc)) {
+    score += 3000;
+  } else {
+    score -= 3000;
+  }
+  if (!hasSpecialVariantLabel(destEn) && !hasSpecialVariantLabel(destTc)) {
+    score += 1200;
+  } else {
+    score -= 1200;
+  }
+  return score;
+}
+
+export function selectPrimaryRouteVariant(variants) {
+  if (!Array.isArray(variants) || variants.length === 0) return null;
+  let best = variants[0];
+  let bestScore = rankRouteVariant(best);
+  for (let i = 1; i < variants.length; i++) {
+    const sc = rankRouteVariant(variants[i]);
+    if (sc > bestScore) {
+      best = variants[i];
+      bestScore = sc;
+    }
+  }
+  return best;
+}
+
+export function mergeRouteVariantsIntoGroup(variants) {
+  if (!Array.isArray(variants) || variants.length === 0) return null;
+  const ranked = [...variants].sort((a, b) => rankRouteVariant(b) - rankRouteVariant(a));
+  const primary = ranked[0];
+  const mergedRouteIds = [];
+  for (const v of ranked) {
+    const ids = Array.isArray(v.routeIds) ? v.routeIds : (v.routeId ? [v.routeId] : []);
+    for (const id of ids) {
+      if (id && !mergedRouteIds.includes(id)) mergedRouteIds.push(id);
+    }
+  }
+  const origEn = primary.orig_en ?? primary.orig_e ?? '';
+  const destEn = primary.dest_en ?? primary.dest_e ?? '';
+  return {
+    ...primary,
+    orig_e: origEn,
+    orig_en: origEn,
+    orig_tc: primary.orig_tc || '',
+    dest_e: destEn,
+    dest_en: destEn,
+    dest_tc: primary.dest_tc || '',
+    routeIds: mergedRouteIds
+  };
+}
 
 const ctx = { window: {} };
 vm.createContext(ctx);
@@ -460,5 +541,8 @@ const out = {
   routeStopsCache
 };
 
-fs.writeFileSync('public/bus_index.min.json', JSON.stringify(out), 'utf8');
-console.log(`Generated public/bus_index.min.json: ${groupedRoutes.length} routes, ${stopsDict.length} unique stops, ${mtrFareStations.length} MTR fare stations.`);
+const __isDirectRun = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+if (__isDirectRun) {
+  fs.writeFileSync('public/bus_index.min.json', JSON.stringify(out), 'utf8');
+  console.log(`Generated public/bus_index.min.json: ${groupedRoutes.length} routes, ${stopsDict.length} unique stops, ${mtrFareStations.length} MTR fare stations.`);
+}

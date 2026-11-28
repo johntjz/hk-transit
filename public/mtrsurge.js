@@ -205,17 +205,22 @@
     let isHomeboundLine = false;
     let corridorAlreadyIndoorWeighted = false;
 
+    let matchedVectors = [];
     const pickMax = (candidates) => {
       let bestVal = 0;
       let bestKey = primaryVector;
+      const list = [];
       for (let i = 0; i < candidates.length; i++) {
         const [k, w] = candidates[i];
         const v = Number(vec[k] || 0) * w;
+        if (w > 0) list.push({ key: k, value: Number(v.toFixed(2)) });
         if (v > bestVal) {
           bestVal = v;
           bestKey = k;
         }
       }
+      list.sort((a, b) => b.value - a.value);
+      matchedVectors = list.slice(0, 4);
       basePressure = bestVal;
       primaryVector = bestKey;
     };
@@ -523,6 +528,48 @@
       }
     }
 
+    const wxSummaryParts = [];
+    if (p.hkoWeather) {
+      if (Number.isFinite(Number(p.hkoWeather.temp))) wxSummaryParts.push(`${Math.round(Number(p.hkoWeather.temp))}°C`);
+      if (p.hkoWeather.typhoon || p.hkoWeather.tcSignal) wxSummaryParts.push(String(p.hkoWeather.tcSignal || 'Typhoon'));
+      else if (p.hkoWeather.preTyphoon || p.hkoWeather.preT8) wxSummaryParts.push('Pre-T8');
+      else if (p.hkoWeather.heavyRain) wxSummaryParts.push('Heavy Rain');
+      else if (p.hkoWeather.rain || p.hkoWeather.rainAdvisory) wxSummaryParts.push('Rain');
+      else wxSummaryParts.push('Dry');
+    }
+    const breakdown = {
+      mode: 'fused',
+      matchedVectors: matchedVectors.length ? matchedVectors : [{ key: primaryVector, value: Number(basePressure.toFixed(2)) }],
+      calendar: {
+        isoWeek: cal.isoWeek || 1,
+        dayType: cal.dayType || 'weekday',
+        isSchoolDay: Boolean(cal.isSchoolDay),
+        isEveOfHoliday: Boolean(cal.isEveOfHoliday),
+        hourFloat: cal.hourFloat ?? 12,
+        dateStr: cal.dateStr || ''
+      },
+      weather: {
+        source: p.hkoWeather ? 'Live' : 'Fallback',
+        outdoorMod: Number(wx.outdoorMod || 1.0),
+        urbanIndoorMod: Number(wx.urbanIndoorMod || 1.0),
+        preTyphoonEvacMod: Number(wx.preTyphoonEvacMod || 1.0),
+        summary: p.hkoWeather ? wxSummaryParts.join(' · ') : 'Seasonal baseline (no live HKO)'
+      },
+      liveFactors: {
+        lineCode,
+        stationCode: staCode,
+        direction: dir,
+        chokeBoost: Number(chokeBoost.toFixed(2)),
+        headwayGapMins,
+        expectedCadenceMins: Number((expectedCadenceSec / 60).toFixed(1)),
+        headwayMod: Number(headwayMod.toFixed(2)),
+        isHeadwayStretched,
+        isDelay: Boolean(p.isDelay)
+      },
+      rawScore: score,
+      tier: state
+    };
+
     return {
       mode: 'MTR',
       lineCode,
@@ -546,7 +593,8 @@
       primaryVector,
       tipEn,
       tipTc,
-      cityFlow
+      cityFlow,
+      breakdown
     };
   }
 

@@ -781,21 +781,27 @@ const LoadFactorEngine = {
     const corStatus = String(opts.corridorStatus || 'SMOOTH').toUpperCase();
     const isSchedOnly = Boolean(opts.isSched);
     const obsHw = Number(opts.obsHeadwaySec || 0);
-    const minRuralHwSec = isLantauVillage ? 1800 : (isLantauTrunk ? 1080 : 180);
-    const rawSchedHw = Math.max(minRuralHwSec, Number(opts.schedHeadwaySec || ((Number(g.headwayMins) || (isLantauRural ? 25 : 12)) * 60)));
+    const minRuralHwSec = isLantauVillage ? 1800 : (isLantauTrunk ? 1500 : 180);
+    const rawSchedHw = Math.max(
+      minRuralHwSec,
+      Number(opts.expectedHeadwaySec || 0),
+      Number(opts.medianHeadwaySec || 0),
+      Number(opts.schedHeadwaySec || ((Number(g.headwayMins) || (isLantauRural ? 25 : 12)) * 60))
+    );
     const periodHwMult = prof.isEveningQuiet
-      ? (isLantauRural ? 1.65 : 1.35)
-      : (!prof.isPeak ? (isLantauRural ? 1.35 : 1.10) : 1.0);
+      ? (isLantauRural ? 1.35 : 1.35)
+      : (!prof.isPeak ? (isLantauRural ? 1.15 : 1.10) : 1.0);
     const trailingHw = Number(opts.trailingHeadwaySec || 0);
     const schedHw = Math.max(rawSchedHw * periodHwMult, trailingHw > 180 ? trailingHw * 0.85 : 0);
+    const wideGapFloorSec = Math.max(1200, schedHw * 1.6);
 
     const hasLiveGapSignal = (obsHw > 60 && schedHw > 0 && !(isSchedOnly && corStatus === 'INCIDENT') && !isSchedOnly);
     if (hasLiveGapSignal) {
       const hwRatio = obsHw / schedHw;
       const gapScale = Math.max(0.28, Math.min(1.15, (isLantauRural ? effectiveBase : prof.baseBusPct) / 42));
-      if (hwRatio >= 2.0) score += Math.round(27 * gapScale);
-      else if (hwRatio >= 1.65) score += Math.round(19 * gapScale);
-      else if (hwRatio >= 1.35) score += Math.round(11 * gapScale);
+      if (obsHw >= wideGapFloorSec && hwRatio >= 2.0) score += Math.round(27 * gapScale);
+      else if (obsHw >= wideGapFloorSec) score += Math.round(19 * gapScale);
+      else if (!isLantauRural && obsHw >= 1080 && hwRatio >= 1.45) score += Math.round(10 * gapScale);
       else if (hwRatio <= 0.62) score -= 14;
       else if (hwRatio <= 0.78) score -= 7;
     }
@@ -821,15 +827,17 @@ const LoadFactorEngine = {
     const confidence = hasLiveGapSignal ? 'HIGH' : (driftSec >= 40 && !isSchedOnly ? 'MEDIUM' : 'BASELINE');
 
     let tipEn = '', tipTc = '';
-    if (isGmb && band.pct >= 75) {
-      tipEn = '19-seat GMB — high chance of full/skip';
-      tipTc = '19座小巴 — 較大機會客滿飛站';
-    } else if (band.isSkipRisk) {
-      tipEn = 'High load inferred — check next departure';
-      tipTc = '推算載客率偏高 — 可留意下一班車';
-    } else if (basis === 'LIVE_GAP' && (obsHw / schedHw) >= 1.45 && band.pct >= 55) {
-      tipEn = 'Wider live gap than scheduled — heavier boarding likely';
-      tipTc = '實時班距較正常寬 — 候車人數可能較多';
+    if (stopIdx > 0) {
+      if (isGmb && band.pct >= 75) {
+        tipEn = '19-seat GMB — high chance of full/skip';
+        tipTc = '19座小巴 — 較大機會客滿飛站';
+      } else if (band.isSkipRisk) {
+        tipEn = 'High load inferred — check next departure';
+        tipTc = '推算載客率偏高 — 可留意下一班車';
+      } else if (basis === 'LIVE_GAP' && obsHw >= wideGapFloorSec && band.pct >= 55) {
+        tipEn = 'Wider live gap than scheduled — heavier boarding likely';
+        tipTc = '實時班距較正常寬 — 候車人數可能較多';
+      }
     }
 
     const baseResult = {
@@ -874,6 +882,12 @@ const LoadFactorEngine = {
     }
     if (baseEtaEntry.schedHeadwaySec === undefined && Number.isFinite(Number(opts.schedHeadwaySec)) && Number(opts.schedHeadwaySec) > 0) {
       baseEtaEntry.schedHeadwaySec = Number(opts.schedHeadwaySec);
+    }
+    if (baseEtaEntry.expectedHeadwaySec === undefined && Number.isFinite(Number(opts.expectedHeadwaySec)) && Number(opts.expectedHeadwaySec) > 0) {
+      baseEtaEntry.expectedHeadwaySec = Number(opts.expectedHeadwaySec);
+    }
+    if (baseEtaEntry.medianHeadwaySec === undefined && Number.isFinite(Number(opts.medianHeadwaySec)) && Number(opts.medianHeadwaySec) > 0) {
+      baseEtaEntry.medianHeadwaySec = Number(opts.medianHeadwaySec);
     }
     if (baseEtaEntry.etaIdx === undefined && Number.isFinite(Number(opts.etaIdx))) {
       baseEtaEntry.etaIdx = Number(opts.etaIdx);
@@ -1450,6 +1464,9 @@ function estimateBusSeatStatus(routeGroup, stopIdx, etaEntry = null, opts = {}) 
     ? riskFn(routeGroup, stopIdx, enrichedEtaEntry, hkoWeather, nowMs)
     : null;
 
+  const isOriginTerminus = Number.isFinite(Number(stopIdx)) && Number(stopIdx) <= 0;
+  const surgeBreakdown = surgeRisk?.breakdown || null;
+
   // 1. Bunched trailing bus relief overrides crowded lead-bus bias downward
   if (surgeRisk && surgeRisk.isBunchedTrailing && surgeRisk.level === 'NORMAL') {
     return {
@@ -1462,14 +1479,21 @@ function estimateBusSeatStatus(routeGroup, stopIdx, etaEntry = null, opts = {}) 
       isSkipRisk: false,
       basis: 'PEOPLE_FLOW_BUNCH_RELIEF',
       confidence: 'HIGH',
-      tipEn: baseLoad.tipEn || '',
-      tipTc: baseLoad.tipTc || '',
-      surgeRisk
+      tipEn: isOriginTerminus ? '' : (baseLoad.tipEn || ''),
+      tipTc: isOriginTerminus ? '' : (baseLoad.tipTc || ''),
+      surgeRisk,
+      breakdown: surgeBreakdown
     };
   }
 
-  // 2. High people-flow + kinematic surge (skip-stop / wide gap) flags Likely Full
+  // 2. High people-flow + kinematic surge (skip-stop / wide gap / ferry pulse) flags Likely Full
   if (surgeRisk && surgeRisk.level === 'HIGH_LOAD') {
+    const highTipEn = isOriginTerminus
+      ? (surgeRisk.tip && !/upstream/i.test(surgeRisk.tip) ? surgeRisk.tip : 'Queue early at terminus.')
+      : (surgeRisk.tip || 'Consider boarding upstream.');
+    const highTipTc = isOriginTerminus
+      ? (surgeRisk.tipTc && !/上游/.test(surgeRisk.tipTc) ? surgeRisk.tipTc : '總站候車人數較多，建議提早排隊。')
+      : (surgeRisk.tipTc || '建議改於上游總站上車。');
     return {
       ...baseLoad,
       pct: Math.max(Number(baseLoad.pct) || 0, 88),
@@ -1480,15 +1504,22 @@ function estimateBusSeatStatus(routeGroup, stopIdx, etaEntry = null, opts = {}) 
       isSkipRisk: true,
       basis: 'PEOPLE_FLOW_KINEMATICS',
       confidence: 'HIGH',
-      tipEn: surgeRisk.tip || 'Consider boarding upstream.',
-      tipTc: surgeRisk.tipTc || '建議改於上游總站上車。',
-      surgeRisk
+      tipEn: highTipEn,
+      tipTc: highTipTc,
+      surgeRisk,
+      breakdown: surgeBreakdown
     };
   }
 
   // 3. Moderate pressure with actionable bunching/corridor decision tip
   if (surgeRisk && surgeRisk.level === 'MODERATE') {
     const nextPct = Math.max(Number(baseLoad.pct) || 0, surgeRisk.isWideGap ? 68 : 60);
+    const modTipEn = isOriginTerminus
+      ? (surgeRisk.ferryPulse?.active ? (surgeRisk.tip || '') : (surgeRisk.tip && /terminus/i.test(surgeRisk.tip) ? surgeRisk.tip : ''))
+      : (surgeRisk.tip || baseLoad.tipEn || '');
+    const modTipTc = isOriginTerminus
+      ? (surgeRisk.ferryPulse?.active ? (surgeRisk.tipTc || '') : (surgeRisk.tipTc && /總站/.test(surgeRisk.tipTc) ? surgeRisk.tipTc : ''))
+      : (surgeRisk.tipTc || baseLoad.tipTc || '');
     return {
       ...baseLoad,
       pct: nextPct,
@@ -1496,15 +1527,20 @@ function estimateBusSeatStatus(routeGroup, stopIdx, etaEntry = null, opts = {}) 
       labelEn: baseLoad.band === 'LOW' ? 'Standing' : baseLoad.labelEn,
       labelTc: baseLoad.band === 'LOW' ? '企位' : baseLoad.labelTc,
       cssClass: baseLoad.band === 'LOW' ? 'load-med' : baseLoad.cssClass,
-      tipEn: surgeRisk.tip || baseLoad.tipEn || '',
-      tipTc: surgeRisk.tipTc || baseLoad.tipTc || '',
-      surgeRisk
+      tipEn: modTipEn,
+      tipTc: modTipTc,
+      surgeRisk,
+      breakdown: surgeBreakdown
     };
   }
 
+  // Normal: ensure origin terminus never leaks an upstream boarding tip
   return {
     ...baseLoad,
-    surgeRisk
+    tipEn: isOriginTerminus ? '' : (baseLoad.tipEn || ''),
+    tipTc: isOriginTerminus ? '' : (baseLoad.tipTc || ''),
+    surgeRisk,
+    breakdown: surgeBreakdown
   };
 }
 

@@ -812,7 +812,8 @@ function updateTopBackButtonVisibility() {
   if (!backBtn) return;
   if (backLbl) backLbl.innerText = currentLang === 'zh' ? '返回' : 'Back';
   const isManualStopPinned = (currentView === 'main' && Date.now() < userManualStopBrowseUntilMs);
-  const showBack = (currentView !== 'main') || isStopSearchOpen() || navHistoryStack.length > 0 || isManualStopPinned;
+  // On the root main view, only show < Back when search is open or a manual non-GPS stop is pinned
+  const showBack = (currentView !== 'main') || isStopSearchOpen() || isManualStopPinned;
   backBtn.style.display = showBack ? 'flex' : 'none';
 }
 
@@ -821,12 +822,14 @@ async function switchTransitAppMode(mode) {
   activeAppMode = (mode === 'MTR' || mode === 'FERRY') ? mode : 'BUS';
   countdown = getAdaptiveRefreshIntervalSec();
 
+  // Switching root transit tabs resets root navigation depth so < Back never stays stuck on Bus/Rail/Ferry
+  navHistoryStack.length = 0;
   userManualStopBrowseUntilMs = 0;
   lastRenderedCenterStopKey = null;
   clearStopSearchInput();
 
   if (currentView !== 'main') {
-    switchView('main', false);
+    switchView('main', true);
   } else {
     syncTopNavHighlights();
     updateTopBackButtonVisibility();
@@ -1813,14 +1816,34 @@ async function fetchStopSingleRaw(group, targetStop, bypassCache = false, afterM
 // ============================================================================
 // LIVE BUS/MTR LOAD FACTOR INJECTION
 // ============================================================================
+function _registerLoadXrayPayload(loadEst) {
+  if (typeof window === 'undefined' || !loadEst) return '';
+  if (!window.__LOAD_XRAY_REGISTRY__) {
+    window.__LOAD_XRAY_REGISTRY__ = new Map();
+    window.__LOAD_XRAY_SEQ__ = 0;
+  }
+  const reg = window.__LOAD_XRAY_REGISTRY__;
+  if (reg.size > 160) {
+    const oldestKey = reg.keys().next().value;
+    if (oldestKey !== undefined) reg.delete(oldestKey);
+  }
+  const id = `lx_${++window.__LOAD_XRAY_SEQ__}`;
+  reg.set(id, loadEst);
+  return id;
+}
+
 function formatLoadPillHtml(loadEst, compact = false) {
   if (!loadEst || !loadEst.cssClass) return '';
   const isZh = (typeof currentLang !== 'undefined' && currentLang === 'zh');
   const lbl = isZh ? loadEst.labelTc : loadEst.labelEn;
-  const titleAttr = (isZh ? loadEst.tipTc : loadEst.tipEn) || `${loadEst.pct}%`;
+  const titleAttr = (isZh ? loadEst.tipTc : loadEst.tipEn) || `${loadEst.pct || ''}%`;
   const pad = compact ? 'padding:1px 6px;font-size:0.62rem;' : 'padding:1px 7px;font-size:0.64rem;';
   const stateAttr = loadEst.state || loadEst.level || '';
-  return `<span class="load-pill ${escapeHtml(loadEst.cssClass)}" data-load-state="${escapeHtml(stateAttr)}" style="${pad}" title="${escapeHtml(titleAttr)}">${escapeHtml(lbl)}</span>`;
+  const xrayId = _registerLoadXrayPayload(loadEst);
+  const xrayAttrs = xrayId
+    ? ` role="button" tabindex="0" data-load-xray-id="${escapeHtml(xrayId)}" onclick="event.stopPropagation(); if(typeof openLoadXrayPopover==='function') openLoadXrayPopover('${escapeJsAttr(xrayId)}', this);" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();event.stopPropagation();if(typeof openLoadXrayPopover==='function') openLoadXrayPopover('${escapeJsAttr(xrayId)}', this);}"`
+    : '';
+  return `<span class="load-pill load-pill-interactive ${escapeHtml(loadEst.cssClass)}" data-load-state="${escapeHtml(stateAttr)}"${xrayAttrs} style="${pad}" title="${escapeHtml(titleAttr)}">${escapeHtml(lbl)}</span>`;
 }
 
 async function fetchEtaRaw(group, stopKey, isExpandedDetailView = false, afterMs = Date.now(), explicitStopIdx = null) {
@@ -1990,6 +2013,14 @@ async function fetchEtaRaw(group, stopKey, isExpandedDetailView = false, afterMs
         const periodBusHwSec = (typeof getPeriodHeadwaySecs === 'function')
           ? getPeriodHeadwaySecs(group, item.targetMs || now)
           : ((Number(group.headwayMins) || 12) * 60);
+        // Compute observed median inter-arrival gap from upcoming live ETAs to calibrate low-frequency/rural schedules
+        const liveGaps = [];
+        for (let gIdx = 1; gIdx < rawK.length; gIdx++) {
+          const gSec = Math.round((rawK[gIdx].targetMs - rawK[gIdx - 1].targetMs) / 1000);
+          if (gSec >= 120 && gSec <= 7200) liveGaps.push(gSec);
+        }
+        liveGaps.sort((a, b) => a - b);
+        const medianHeadwaySec = liveGaps.length > 0 ? liveGaps[Math.floor(liveGaps.length / 2)] : null;
         const upstreamSeg = (effStopIdx > 0 && Array.isArray(window.__DETAIL_STOP_SEGMENTS__))
           ? window.__DETAIL_STOP_SEGMENTS__[effStopIdx - 1]
           : null;
@@ -2016,6 +2047,8 @@ async function fetchEtaRaw(group, stopKey, isExpandedDetailView = false, afterMs
           obsHeadwaySec: obsHwSec,
           trailingHeadwaySec: trailingHwSec,
           schedHeadwaySec: periodBusHwSec,
+          expectedHeadwaySec: periodBusHwSec,
+          medianHeadwaySec,
           etaDriftSec: idx === 0 ? busDriftSec : 0,
           etaSpacingSec: liveEtaSpacingSec,
           corridorStatus: corStatus,

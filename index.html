@@ -153,6 +153,7 @@
   <script src="hardcode.js"></script>
   <script src="busspeed.js"></script>
   <script src="map-traffic-overlay.js"></script>
+  <script src="map-flow-overlay.js"></script>
   <script src="map.js"></script>
   <script src="commute-hubs.js"></script>
   <script src="raptor-cost-engine.js"></script>
@@ -336,10 +337,14 @@
         activeWindows: window.__DERIVE_DEFAULT_ACTIVE_WINDOWS__(g)
       }));
 
+      const sanitizedRoutes = (typeof window.sanitizeGroupedRoutePrimaryLabels === 'function')
+        ? window.sanitizeGroupedRoutePrimaryLabels(unpackedRoutes, unpackedCache)
+        : unpackedRoutes;
+
       return {
         ...db,
         __unpacked__: true,
-        groupedRoutes: unpackedRoutes,
+        groupedRoutes: sanitizedRoutes,
         routeStopsCache: unpackedCache
       };
     };
@@ -646,6 +651,7 @@
     <button type="button" class="map-back-to-stop-pill" id="detailBackToStopPill" style="display:none;" onclick="returnToActiveDetailStop()">↩ Back to Stop 1</button>
     <div class="map-bottom-left-chips">
       <button type="button" class="map-traffic-chip-btn map-traffic-toggle active" id="detailMapTrafficBtn" onclick="toggleTrafficLayerOverlay()">🚦 Traffic &amp; Cams ON</button>
+      <button type="button" class="map-traffic-chip-btn map-flow-toggle" id="detailMapFlowBtn" onclick="togglePeopleFlowOverlay()" aria-pressed="false">👥 People Flow</button>
     </div>
     <div class="map-floating-controls">
       <button class="map-ctrl-btn" id="mapGpsRecenterBtn" onclick="toggleDetailGpsLock()" title="Lock / Unlock GPS Follow">🎯</button>
